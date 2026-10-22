@@ -9,6 +9,8 @@ on:
 concurrency:
   group: gold-bot
   cancel-in-progress: false
+permissions:
+  contents: write        # nécessaire pour sauvegarder l'état sur la branche « data »
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -20,15 +22,28 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+
+      # État critique (trades suivis, garde-fous, alertes déjà envoyées) : branche « data » du dépôt.
+      # Contrairement au cache GitHub, elle n'est jamais supprimée automatiquement.
+      - name: Restaurer l'état
+        run: |
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch --depth=1 origin data
+            for f in trades.json guard.json state.json; do
+              git show "FETCH_HEAD:$f" > "$f" 2>/dev/null || rm -f "$f"
+            done
+            echo "État restauré depuis la branche data"
+          else
+            echo "Branche data absente : premier lancement"
+          fi
+
+      # Bougies téléchargées : simple accélérateur, sans importance si le cache est supprimé.
       - uses: actions/cache@v4
         with:
-          path: |
-            cache.json
-            state.json
-            trades.json
-            guard.json
-          key: gold-state-${{ github.run_id }}
-          restore-keys: gold-state-
+          path: cache.json
+          key: gold-candles-${{ github.run_id }}
+          restore-keys: gold-candles-
+
       - run: python gold.py
         env:
           NOTIFY_OK: ${{ github.event.inputs.test == 'true' && '1' || '0' }}
@@ -38,4 +53,26 @@ jobs:
           RISK_PCT: ${{ vars.RISK_PCT }}
           STRATEGIES: ${{ vars.STRATEGIES }}
           SYMBOLS: ${{ vars.SYMBOLS }}
+          SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
           ALERT_FORMAT: ${{ vars.ALERT_FORMAT }}
+          ENTRY_MODE: ${{ vars.ENTRY_MODE }}
+          ENTRY_MODES: ${{ vars.ENTRY_MODES }}
+          SPREAD_PCT: ${{ vars.SPREAD_PCT }}
+          MAX_AGE_MIN: ${{ vars.MAX_AGE_MIN }}
+          WEEKEND_EXIT: ${{ vars.WEEKEND_EXIT }}
+
+      # Une seule révision (orpheline, écrasée à chaque fois) : le dépôt ne grossit pas.
+      - name: Sauvegarder l'état
+        if: always()
+        run: |
+          mkdir -p /tmp/state
+          for f in trades.json guard.json state.json; do [ -f "$f" ] && cp "$f" /tmp/state/ || true; done
+          [ -n "$(ls -A /tmp/state)" ] || exit 0
+          git config user.name "gold-bot"
+          git config user.email "gold-bot@users.noreply.github.com"
+          git checkout --orphan data-state
+          git rm -rf --quiet . || true
+          cp /tmp/state/* .
+          git add trades.json guard.json state.json
+          git commit --quiet -m "état du bot"
+          git push --quiet --force origin HEAD:data
