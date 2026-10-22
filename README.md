@@ -45,7 +45,7 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limites de risque, lot, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 34 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `tests.py` | 37 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 4 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
@@ -65,6 +65,7 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
      `ENTRY_MODES` : par stratégie, ex. `S3:market,S4:market`.
    - `SPREAD_PCT` : spread supposé en % du prix, pour tous les actifs (défaut : or 0,015, majeures 0,006, BTC/ETH 0,05).
    - `MAX_AGE_MIN` : âge maximal d'un signal en minutes (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi.
+   - `ALERT_FUSEAU` : fuseau d'affichage de l'heure (défaut `Africa/Porto-Novo`, soit l'heure du Bénin ; `none` pour désactiver).
    - `ALERT_FORMAT` : `complet`, `compact`, `contexte` ou `minimal` (voir plus bas).
    - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures, BTC et ETH).
 4. Le workflow n'a pas de `schedule` : déclenche-le toutes les 5 minutes avec ton cron externe
@@ -81,7 +82,8 @@ Pour les jours d'annonces non couverts par le calendrier automatique, copie `new
 
 ## Récapitulatif de tendance journalier
 
-Chaque jour, à la première passe après **17h15 New York** (clôture de la journée de trading), le bot envoie un message
+Chaque matin du lundi au vendredi, à **01h00 New York** (une heure avant l'ouverture de Londres, qui ouvre à 02h00 New
+York ; environ 07h00 à Paris), à la première passe après cette heure, le bot envoie un message
 avec, pour chaque actif, la tendance en **D1, H4 et H1**, son **âge** et une phrase de synthèse sur l'alignement :
 
 ```
@@ -98,6 +100,8 @@ trop tard), avec des fractales de 2 bougies (1 seule en D1, pour confirmer un sw
 réglage `SWING_N_BY_TF` de `trend.py`, à comparer avec les colonnes `tend_d1` du backtest). La structure doit être intacte (aucune clôture au-delà du dernier creux/sommet), le sommet précédent doit
 être cassé par une **clôture**, et ⚡ signale une cassure impulsive. L'invalidation est le dernier creux (hausse) ou
 sommet (baisse). Les actifs dont le marché est fermé (forex le week-end) sont listés en bas du message.
+L'heure se règle avec les variables `RECAP_HEURE` (ex. `07:00`) et `RECAP_FUSEAU` (ex. `Europe/Paris` ; défaut :
+`America/New_York`). Si le workflow n'a pas pu tourner dans les 6 heures suivant l'heure prévue, la journée est sautée.
 La commande `/tendance` renvoie le récapitulatif à la demande (au prochain scan, sous 5 minutes). Réglages dans
 `trend.py` (`AGE_ESTABLISHED`, `AGE_MATURE`, `BOS_BY_CLOSE`). Le récapitulatif informe : aucune alerte de trade n'en dépend.
 
@@ -167,6 +171,12 @@ stratégie avec `ENTRY_MODES` (ex. `S3:market`) ou repasse tout au marché avec 
 - **Écart de prix avec ton courtier** : non mesurable ici. Compare le prix de quelques alertes à celui de ta plateforme
   (spread inclus) et ajuste `SPREAD_PCT` en conséquence.
 
+## Heure locale dans les messages
+
+Chaque alerte, chaque message de suivi et le récapitulatif affichent l'heure du Bénin (« 08h15 Bénin »), et un ordre
+limite indique sa fin de validité (« valable jusqu'à 10h15 Bénin »). Variable `ALERT_FUSEAU` pour un autre fuseau
+(ex. `Europe/Paris`, avec `ALERT_FUSEAU_NOM=Paris` pour le libellé) ou `none` pour ne plus afficher d'heure.
+
 ## Format des alertes (variable `ALERT_FORMAT`)
 
 Le graphique est toujours joint (désactivable avec `CHARTS=0`). Le texte existe en 4 formats, choisis par la variable
@@ -179,7 +189,7 @@ GitHub `ALERT_FORMAT` (défaut : `complet` ; une valeur inconnue revient à `com
 | `contexte` | niveaux + risque, résumé du setup, tendance D1/H4 détaillée (jambes), invalidation, lot | ~11 lignes |
 | `minimal` | direction, entrée, SL, TP1/2/3, lot | 3 lignes |
 
-Les messages de suivi (TP1 atteint, stop, structure cassée…) ne changent pas. La ligne « Lot » n'apparaît que si
+Les messages de suivi (TP1 atteint, stop, structure cassée…) gardent leur forme, avec l'heure en plus. La ligne « Lot » n'apparaît que si
 `ACCOUNT_BALANCE` est renseigné. Exemple `compact` :
 
 ```
@@ -194,6 +204,27 @@ TP1 2656.00 (1:1) · TP2 2659.60 (1:2) · TP3 2663.20 (1:3)
 
 Lot 0.27 · Réf. #15
 ```
+
+## Horaires en heure du Bénin (UTC+1, sans heure d'été)
+
+Le bot raisonne en heure de New York, qui change avec l'heure d'été américaine (du 2e dimanche de mars au 1er dimanche de
+novembre). Au Bénin, l'heure ne change pas : les horaires glissent donc d'une heure d'une saison à l'autre.
+
+| Événement | New York | Bénin (heure d'été US) | Bénin (heure d'hiver US) |
+|---|---|---|---|
+| **Récapitulatif de tendance** | 01h00 | **06h00** | **07h00** |
+| Début de la plage asiatique | 20h00 | 01h00 | 02h00 |
+| Ouverture de la killzone de Londres | 02h00 | 07h00 | 08h00 |
+| Fin de la killzone de Londres | 05h00 | 10h00 | 11h00 |
+| Killzone de New York | 07h00-10h00 | 12h00-15h00 | 13h00-16h00 |
+| London Close | 10h00-12h00 | 15h00-17h00 | 16h00-18h00 |
+| Rollover (plus d'alerte dès) | 16h55 | 21h55 | 22h55 |
+| Ouverture des bougies D1 et H4 | 17h00 | 22h00 | 23h00 |
+| Vendredi : plus d'alerte dès / trades clôturés dès | 15h30 / 16h30 | 20h30 / 21h30 | 21h30 / 22h30 |
+
+Avec le réglage par défaut (01h00 New York), le récapitulatif arrive donc **toujours une heure avant Londres** : à 06h00
+au Bénin jusqu'au 1er novembre 2026, puis à 07h00. Pour le recevoir à heure fixe au Bénin, définis `RECAP_HEURE=06:00` et
+`RECAP_FUSEAU=Africa/Porto-Novo` (mais il sera alors à 1 h ou 2 h de Londres selon la saison).
 
 ## Commandes Telegram
 

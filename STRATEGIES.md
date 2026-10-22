@@ -182,7 +182,7 @@ moyenne. C'est la stratégie la plus risquée si une tendance démarre : le rég
 
 ## Récapitulatif de tendance (information, hors stratégies)
 
-Message quotidien après 17h15 New York : tendance D1 / H4 / H1 de chaque actif, avec son âge (naissante 1 jambe,
+Message quotidien (lundi au vendredi, 01h00 New York par défaut, réglable) : tendance D1 / H4 / H1 de chaque actif, avec son âge (naissante 1 jambe,
 établie 2-3, mûre 4 et plus). Règles de `trend.py` (fractales de 2 bougies, 1 en D1) : dernier sommet et dernier creux plus hauts (plus bas pour une
 baisse), structure intacte, sommet précédent cassé par une clôture. Il est indépendant des filtres de tendance de
 Trend Pullback (EMA 50/200 du H4) : les deux lectures peuvent différer.

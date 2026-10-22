@@ -101,7 +101,12 @@ def dec_of(sym):
 def is_247(sym):
     """Cryptos : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S3 et S4."""
     return sym.startswith("cry")
-ENABLED = [x.strip().upper() for x in os.getenv("STRATEGIES", "S1,S2,S3,S4").split(",") if x.strip()]
+def parse_strategies(text):
+    """'S2,S3' -> ['S2', 'S3'] ; vide ou absent -> les 4 stratégies (GitHub transmet une chaîne vide si la variable n'existe pas)."""
+    return [x.strip().upper() for x in (text or "").split(",") if x.strip()] or ["S1", "S2", "S3", "S4"]
+
+
+ENABLED = parse_strategies(os.getenv("STRATEGIES"))
 GRAN = S.GRAN
 COUNTS = {"M5": 300, "M15": 400}         # bougies téléchargées à chaque scan
 COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York), ~100 jours
@@ -245,6 +250,21 @@ def tf_candles(api, cache, sym, tf):
 # --------------------------------------------------------------------------
 # Telegram
 # --------------------------------------------------------------------------
+def alert_clock(epoch):
+    """« 08h15 Bénin » : heure locale affichée dans les messages. Variable ALERT_FUSEAU (défaut Africa/Porto-Novo ;
+    none pour désactiver) et ALERT_FUSEAU_NOM pour le libellé. Retourne None si désactivé ou fuseau invalide."""
+    name = (os.getenv("ALERT_FUSEAU") or "Africa/Porto-Novo").strip()
+    if name.lower() in ("none", "non", "off", "0"):
+        return None
+    try:
+        tz = ZoneInfo(name)
+    except Exception:
+        return None
+    dt = datetime.fromtimestamp(epoch, tz)
+    label = os.getenv("ALERT_FUSEAU_NOM") or {"Africa/Porto-Novo": "Bénin"}.get(name, dt.tzname())
+    return f"{dt:%Hh%M} {label}"
+
+
 def fmt(x, dec):
     return f"{x:.{dec}f}"
 
@@ -338,6 +358,16 @@ def alert_format():
     return fmt_name if fmt_name in ALERT_FORMATS else "complet"
 
 
+def sig_clock(sig):
+    return alert_clock(sig["ts"]) if sig.get("ts") else None
+
+
+def limit_validity(sig):
+    """« valable jusqu'à 10h15 Bénin » (ou « valable 120 min » sans fuseau d'affichage)."""
+    until = alert_clock(sig["ts"] + sig["ttl"]) if sig.get("ts") else None
+    return f"valable jusqu'à {until}" if until else f"valable {round(sig['ttl'] / 60)} min"
+
+
 def age_txt(sig):
     a = sig.get("age_min")
     if a is None:
@@ -380,9 +410,10 @@ def message_complet(sig, tid):
     c = lambda v: code(v, dec)
     tps = [("TP1", sig["tp1"]), ("TP2", sig["tp2"]), ("TP3", sig["tp3"])]
     lines = [f"{'🟢' if d == 'BUY' else '🔴'} {d} · {sig['name']} · {sig['ltf']} · {sig['label']}",
-             f"Session : {sig['session']}" + (f" · signal {age_txt(sig)}" if age_txt(sig) else ""), "",
+             f"Session : {sig['session']}" + (f" · {sig_clock(sig)}" if sig_clock(sig) else "")
+             + (f" · signal {age_txt(sig)}" if age_txt(sig) else ""), "",
              "────────────────", f"Prix actuel  {c(sig.get('price_now', sig['entry']))}", "────────────────", "",
-             (f"Ordre  {sig['otype']}  {c(sig['entry'])}  (valable {round(sig['ttl'] / 60)} min)" if is_limit(sig)
+             (f"Ordre  {sig['otype']}  {c(sig['entry'])}  ({limit_validity(sig)})" if is_limit(sig)
               else f"Entrée  {c(sig['entry'])}  (au marché)"), f"SL  {c(sig['sl'])}"]
     lines += [f"{n}  {c(v)}{ratio_txt(d, sig['entry'], sig['sl'], v)}" for n, v in tps if v is not None]
     lines += [""] + sig["details"] + ([f"📌 {sig['entry_note']}"] if sig.get("entry_note") else []) + sig.get("trend_lines", [])
@@ -398,7 +429,8 @@ def message_complet(sig, tid):
 
 def message_compact(sig, tid):
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
-    lines = [f"{'🟢' if d == 'BUY' else '🔴'} {d} · {sig['name']} · {sig['ltf']} · {sig['label']} · {sig['session']}", "",
+    when = f" · {sig_clock(sig)}" if sig_clock(sig) else ""
+    lines = [f"{'🟢' if d == 'BUY' else '🔴'} {d} · {sig['name']} · {sig['ltf']} · {sig['label']} · {sig['session']}{when}", "",
              f"Entrée  {entry_txt(sig, c)}", f"SL  {c(sig['sl'])}", _tp_line(sig, c), "",
              f"✅ {sig['short']}"]
     if sig.get("trend_short"):
@@ -412,7 +444,8 @@ def message_minimal(sig, tid):
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
     tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
     tail = " · ".join(x for x in (lot_short(sig), f"#{tid}" if tid else None) if x)
-    return "\n".join([f"{'🟢' if d == 'BUY' else '🔴'} {d} {sig['name']} {sig['ltf']} · {sig['label']}",
+    return "\n".join([f"{'🟢' if d == 'BUY' else '🔴'} {d} {sig['name']} {sig['ltf']} · {sig['label']}"
+                       + (f" · {sig_clock(sig)}" if sig_clock(sig) else ""),
                       f"{sig['otype'] + ' ' if is_limit(sig) else ''}{c(sig['entry'])} · SL {c(sig['sl'])} · TP {tps}"]
                      + ([tail] if tail else []))
 
@@ -421,7 +454,7 @@ def message_contexte(sig, tid):
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
     risk = abs(sig["entry"] - sig["sl"])
     lines = [f"{'🟢' if d == 'BUY' else '🔴'} {d} · {sig['name']} · {sig['ltf']} · {sig['label']}",
-             f"{sig['session']} · Entrée {entry_txt(sig, c)} · SL {c(sig['sl'])} ({risk:.{sig['dec']}f})"
+             f"{sig['session']}{' · ' + sig_clock(sig) if sig_clock(sig) else ''} · Entrée {entry_txt(sig, c)} · SL {c(sig['sl'])} ({risk:.{sig['dec']}f})"
              + (f" · signal {age_txt(sig)}" if age_txt(sig) else ""), "",
              _tp_line(sig, c), "", f"Setup : {sig['short']}"] + sig.get("trend_lines", [])
     if sig.get("inval") is not None and T.STRUCT_EXIT:
@@ -436,9 +469,11 @@ def gold_message(sig, tid=None):
             "contexte": message_contexte}[alert_format()](sig, tid)
 
 
-def trade_event_message(t, e):
+def trade_event_message(t, e, now=None):
     c = lambda v: code(v, t["dec"])
-    head = f"{t['name']} · {t['ltf']} · {t['cascade']}" + (f" #{t['id']}" if t.get("id") else "")
+    clock = alert_clock(now or time.time())
+    head = (f"{t['name']} · {t['ltf']} · {t['cascade']}" + (f" #{t['id']}" if t.get("id") else "")
+            + (f" · {clock}" if clock else ""))
     closed = t["status"] == "closed" and t.get("r") is not None
     res = f"\nRésultat  {t['r']:+.1f} R" + (" (spread inclus)" if t.get("cost_r") is not None else "") if closed else ""
     if e == "filled":
@@ -511,7 +546,7 @@ def track_trades(api, tr, now, g=None):
             lim["cancelled"] += sum(e in ("cancel_tp", "cancel_sl", "cancel_weekend") for e in events)
             lim["expired"] += events.count("expired")
         for e in events:
-            notify(trade_event_message(t, e), html=True)
+            notify(trade_event_message(t, e, now), html=True)
         if t["status"] not in T.ACTIVE:
             T.archive(tr, key)
 
@@ -546,7 +581,7 @@ def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
     buttons = [[{"text": "✅ Pris", "callback_data": f"take:{tid}"},
                 {"text": "❌ Ignoré", "callback_data": f"skip:{tid}"}]]
     delivered = False
-    if os.getenv("CHARTS", "1") != "0" and TG_TOKEN and TG_CHAT:
+    if (os.getenv("CHARTS") or "1") != "0" and TG_TOKEN and TG_CHAT:
         path = f"chart_{tid}.png"
         try:
             charts.render(build_chart(sig, ltf_candles), path)
@@ -680,15 +715,43 @@ def poll_telegram(g, tr, now):
 
 
 # --------------------------------------------------------------------------
-# Récapitulatif de tendance (une fois par journée de trading, à partir de 17h15 New York)
+# Récapitulatif de tendance (chaque matin du lundi au vendredi, une heure avant l'ouverture de Londres)
 # --------------------------------------------------------------------------
-RECAP_DELAY = 15 * 60       # après la clôture 17h NY (passé le rollover)
+RECAP_WINDOW = 6 * 3600     # envoi possible jusqu'à 6 h après l'heure prévue (retard du cron) ; au-delà, on saute la journée
 RECAP_STALE = 4 * 3600      # actif sans données récentes (marché fermé) : absent du récapitulatif
 
 
+def recap_config():
+    """(fuseau, heure, minute) d'envoi : RECAP_FUSEAU (défaut America/New_York) et RECAP_HEURE (défaut 01:00 = une heure
+    avant la killzone de Londres, qui ouvre à 02h00 New York, soit environ 07h00 à Paris). Valeurs invalides : défauts."""
+    try:
+        tz = ZoneInfo(os.getenv("RECAP_FUSEAU") or "America/New_York")
+    except Exception:
+        tz = NY
+    try:
+        h, m = (int(x) for x in (os.getenv("RECAP_HEURE") or "01:00").split(":"))
+        if not (0 <= h < 24 and 0 <= m < 60):
+            raise ValueError
+    except ValueError:
+        h, m = 1, 0
+    return tz, h, m
+
+
+def recap_slot(g, now):
+    """Identifiant (date locale) du créneau d'envoi en cours si le récapitulatif est dû et pas encore envoyé, sinon None.
+    Du lundi au vendredi seulement (la commande /tendance fonctionne tous les jours)."""
+    tz, h, m = recap_config()
+    dt = datetime.fromtimestamp(now, tz)
+    for back in (0, 1):                                    # créneau d'aujourd'hui, ou d'hier s'il déborde minuit
+        target = (dt - timedelta(days=back)).replace(hour=h, minute=m, second=0, microsecond=0)
+        key = target.strftime("%Y-%m-%d")
+        if target.weekday() < 5 and target <= dt < target + timedelta(seconds=RECAP_WINDOW) and g.get("recap_day") != key:
+            return key
+    return None
+
+
 def recap_due(g, now):
-    ds = T.day_start(now)
-    return now >= ds + RECAP_DELAY and g.get("recap_day") != ds
+    return recap_slot(g, now) is not None
 
 
 def build_recap(api, cache, now):
@@ -712,7 +775,9 @@ def send_recap(api, cache, now):
     if not blocks:
         return False
     day = datetime.fromtimestamp(now, NY).strftime("%d/%m")
-    head = (f"📅 Récapitulatif de tendance · {day} (clôture 17h New York)\n"
+    clock = alert_clock(now)
+    head = (f"📅 Récapitulatif de tendance · {day}" + (f" · {clock}" if clock else "")
+            + " (avant l'ouverture de Londres)\n"
             "Âge = jambes consécutives (sommet + creux plus hauts, ou plus bas) : naissante 1 · établie 2-3 · mûre 4 et plus. "
             "⚡ = cassure impulsive.")
     chunk = head
@@ -759,6 +824,7 @@ def scan(sym, provide, now, sent, funnel, news=()):
         sig.update(sym=sym, name=name_of(sym), dec=dec, key=f"{sym}|{sig['key']}")
         if sig["key"] in sent:
             continue
+        sig["ts"] = now
         sig["age_min"] = max(0.0, (now - sig["trig_close"]) / 60) if sig.get("trig_close") else None
         if sig["age_min"] is not None and sig["age_min"] > MAX_AGE_MIN:
             funnel["stale"] += 1       # alerte trop tardive (retard du cron ou du workflow)
@@ -807,11 +873,12 @@ def main():
         check_symbols(api)
         track_trades(api, tr, now, g)
         manual = g.pop("recap_request", False)
-        if manual or recap_due(g, now):
+        slot = recap_slot(g, now)
+        if manual or slot:
             try:
                 sent_ok = send_recap(api, cache, now)
-                if sent_ok and not manual:
-                    g["recap_day"] = T.day_start(now)
+                if sent_ok and slot:
+                    g["recap_day"] = slot
             except Exception as ex:      # le récapitulatif ne doit jamais bloquer le scan
                 print(f"Récapitulatif ignoré : {str(ex)[:100]}")
         for sym in SYMBOLS:

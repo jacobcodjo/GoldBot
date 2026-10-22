@@ -231,6 +231,57 @@ class Messages(unittest.TestCase):
         self.assertIn("signal il y a 3 min", gold.gold_message(self.sig, 15))
         self.assertEqual(gold.age_txt({"age_min": 0.2}), "à l'instant")
 
+    def test_variables_vides(self):
+        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4"])      # variable GitHub non définie
+        self.assertEqual(gold.parse_strategies(None), ["S1", "S2", "S3", "S4"])
+        self.assertEqual(gold.parse_strategies(" s2 , S3 "), ["S2", "S3"])
+
+    def test_heure_du_recapitulatif(self):
+        for k in ("RECAP_HEURE", "RECAP_FUSEAU"):
+            os.environ.pop(k, None)
+        g = {}
+        self.assertIsNone(gold.recap_slot(g, ts(2026, 10, 21, 0, 50)))              # mercredi, trop tôt
+        self.assertEqual(gold.recap_slot(g, ts(2026, 10, 21, 1, 5)), "2026-10-21")   # 01h05 New York
+        self.assertEqual(gold.recap_slot(g, ts(2026, 10, 21, 6, 59)), "2026-10-21")  # encore dans la fenêtre de 6 h
+        self.assertIsNone(gold.recap_slot(g, ts(2026, 10, 21, 7, 30)))               # trop tard : journée sautée
+        self.assertIsNone(gold.recap_slot({"recap_day": "2026-10-21"}, ts(2026, 10, 21, 1, 5)))   # déjà envoyé
+        self.assertIsNone(gold.recap_slot(g, ts(2026, 10, 24, 1, 5)))                # samedi
+        self.assertIsNone(gold.recap_slot(g, ts(2026, 10, 25, 1, 5)))                # dimanche
+        self.assertEqual(gold.recap_slot(g, ts(2026, 10, 26, 1, 5)), "2026-10-26")   # lundi
+        os.environ["RECAP_HEURE"], os.environ["RECAP_FUSEAU"] = "07:00", "Europe/Paris"
+        paris = lambda h, m: datetime(2026, 10, 21, h, m, tzinfo=ZoneInfo("Europe/Paris")).timestamp()
+        self.assertIsNone(gold.recap_slot(g, paris(6, 55)))
+        self.assertEqual(gold.recap_slot(g, paris(7, 5)), "2026-10-21")
+        os.environ["RECAP_HEURE"], os.environ["RECAP_FUSEAU"] = "n'importe quoi", "Pas/UnFuseau"
+        self.assertEqual(gold.recap_config()[1:], (1, 0))                            # valeurs invalides : défauts
+        for k in ("RECAP_HEURE", "RECAP_FUSEAU"):
+            os.environ.pop(k, None)
+
+    def test_heure_locale_dans_les_alertes(self):
+        for k in ("ALERT_FUSEAU", "ALERT_FUSEAU_NOM", "ALERT_FORMAT"):
+            os.environ.pop(k, None)
+        t_ny = ts(2026, 10, 21, 3, 15)                                              # 03h15 New York (heure d'été US)
+        self.assertEqual(gold.alert_clock(t_ny), "08h15 Bénin")                       # UTC+1, sans heure d'été
+        self.assertEqual(gold.alert_clock(ts(2026, 11, 18, 3, 15)), "09h15 Bénin")    # heure d'hiver US : un cran de plus
+        sig = dict(self.sig, ts=t_ny, ttl=3600, otype="BUY LIMIT", price_now=2653.0, entry_note="x")
+        for fmt in gold.ALERT_FORMATS:
+            os.environ["ALERT_FORMAT"] = fmt
+            self.assertIn("08h15 Bénin", gold.gold_message(sig, 3))
+        os.environ["ALERT_FORMAT"] = "complet"
+        self.assertIn("valable jusqu'à 09h15 Bénin", gold.gold_message(sig, 3))
+        os.environ["ALERT_FUSEAU"] = "none"
+        self.assertIsNone(gold.alert_clock(t_ny))
+        self.assertNotIn("Bénin", gold.gold_message(sig, 3))
+        self.assertIn("valable 60 min", gold.gold_message(sig, 3))
+        os.environ["ALERT_FUSEAU"], os.environ["ALERT_FUSEAU_NOM"] = "Europe/Paris", "Paris"
+        self.assertEqual(gold.alert_clock(t_ny), "09h15 Paris")
+        os.environ["ALERT_FUSEAU"] = "Pas/UnFuseau"
+        self.assertIsNone(gold.alert_clock(t_ny))
+        for k in ("ALERT_FUSEAU", "ALERT_FUSEAU_NOM", "ALERT_FORMAT"):
+            os.environ.pop(k, None)
+        ev = gold.trade_event_message(new_buy(), "tp1", t_ny)
+        self.assertIn("08h15 Bénin", ev)
+
     def test_strategies_par_actif(self):
         self.assertEqual(gold.parse_sym_strats("frxEURUSD:S1,S2;cryBTCUSD:s2 , S4"),
                          {"frxEURUSD": ["S1", "S2"], "cryBTCUSD": ["S2", "S4"]})
