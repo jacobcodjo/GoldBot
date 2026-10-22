@@ -25,6 +25,8 @@ BUF_ATR = 0.15            # marge du stop au-delà de l'extrême : 0,15 x ATR du
 MIN_RISK_ATR = 0.5        # risque minimal : 0,5 x ATR du timeframe d'entrée (sinon le stop est éloigné)
 CHASE_ATR = 0.75          # le prix ne doit pas avoir fui de plus de 0,75 x ATR de la clôture de déclenchement
 TP_MULTS = (1.0, 2.0, 3.0)  # TP1, TP2, TP3 en multiples du risque (S1, S2, S3)
+VOL_MIN_RATIO = 0.5       # signal écarté si l'ATR H1 actuel < 0,5 x sa médiane récente (marché mort : le spread domine) ; 0 = off
+VOL_LOOKBACK = 240        # fenêtre (en bougies H1) de la médiane de l'ATR
 
 KILLZONES_NY = [("Asie", 20, 24), ("Asie", 0, 2), ("Londres", 2, 5), ("New York", 7, 10), ("London Close", 10, 12)]
 
@@ -212,12 +214,107 @@ def is_late(d, price, trig_close, a_ltf):
     return a_ltf > 0 and move > CHASE_ATR * a_ltf
 
 
+# --- Ordres limites (entrée au retest d'une zone plutôt qu'au marché) ---
+LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
+LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
+LIMIT_MAX_ATR = 1.5         # zone d'entrée à plus de 1,5 ATR du prix actuel : signal écarté (trop de retracement requis)
+LIMIT_TTL = {"S1": 7200, "S2": 10800, "S3": 3600, "S4": 5400}   # validité de l'ordre limite, en secondes
+
+
+def ob_zone(cs, lo_i, hi_i, d):
+    """Dernier bloc d'ordre : la dernière bougie de sens opposé à d (baissière pour un achat) parmi cs[lo_i..hi_i].
+    Retourne (bas, haut) ou None."""
+    for j in range(hi_i, lo_i - 1, -1):
+        c = cs[j]
+        if (c["close"] < c["open"]) if d == "BUY" else (c["close"] > c["open"]):
+            return c["low"], c["high"]
+    return None
+
+
+def ob_entry(d, zone):
+    """Prix d'entrée dans le bloc d'ordre : par défaut son bord proche (haut pour un achat, bas pour une vente)."""
+    lo, hi = zone
+    return hi - LIMIT_OB_FRACTION * (hi - lo) if d == "BUY" else lo + LIMIT_OB_FRACTION * (hi - lo)
+
+
+def fvg_zone(cs, lo_i, d):
+    """Dernier FVG (déséquilibre sur 3 bougies) créé par un déplacement après cs[lo_i], dans le sens du trade d, et
+    non comblé : achat, le haut de la bougie 1 est sous le bas de la bougie 3 ; vente, l'inverse. La bougie du milieu
+    doit être un déplacement (corps >= DISP_MULT x corps moyen). Retourne (bas, haut) ou None."""
+    avg = body_avg(cs[max(0, lo_i - 20):max(lo_i, 1)])
+    for i in range(len(cs) - 2, lo_i, -1):               # i = bougie du milieu ; la bougie i+1 doit être clôturée
+        a, m, b = cs[i - 1], cs[i], cs[i + 1]
+        if d == "BUY" and a["high"] < b["low"]:
+            gap = (a["high"], b["low"])
+        elif d == "SELL" and a["low"] > b["high"]:
+            gap = (b["high"], a["low"])
+        else:
+            continue
+        if avg > 0 and body(m) < DISP_MULT * avg:
+            continue
+        later = cs[i + 2:]
+        if (d == "BUY" and any(c["low"] <= gap[0] for c in later)) or \
+                (d == "SELL" and any(c["high"] >= gap[1] for c in later)):
+            continue                                       # déjà comblé
+        return gap
+    return None
+
+
+def fvg_entry(d, gap):
+    """Prix d'entrée dans le FVG : son milieu (LIMIT_FVG_FRACTION)."""
+    lo, hi = gap
+    return hi - LIMIT_FVG_FRACTION * (hi - lo) if d == "BUY" else lo + LIMIT_FVG_FRACTION * (hi - lo)
+
+
+def entry_zone(cs, lo_i, hi_i, d):
+    """Zone d'entrée d'un ordre limite : le bloc d'ordre en priorité (entrée à son bord proche), sinon le FVG (entrée
+    à son milieu). Retourne (prix d'entrée, 'OB' | 'FVG', (bas, haut)) ou None. Les bougies de cs[lo_i] à cs[hi_i]
+    cherchent le bloc d'ordre ; le FVG se cherche de cs[lo_i] à la dernière bougie clôturée."""
+    ob = ob_zone(cs, lo_i, hi_i, d)
+    if ob:
+        return ob_entry(d, ob), "OB", ob
+    gap = fvg_zone(cs, lo_i, d)
+    if gap:
+        return fvg_entry(d, gap), "FVG", gap
+    return None
+
+
+def poi_note(poi, tf, dec):
+    kind, (lo, hi) = poi[1], poi[2]
+    where = "au bord du bloc d'ordre" if kind == "OB" else "au milieu du FVG"
+    return f"Ordre limite {where} {tf} ({lo:.{dec}f} - {hi:.{dec}f})"
+
+
+def pick_entry(d, price, zone, sl, mode):
+    """(type d'ordre, prix d'entrée). Mode 'limit' : ordre limite à `zone` si elle se trouve entre le stop et le prix
+    actuel (au bon côté du prix), sinon ordre au marché."""
+    if mode == "limit" and zone is not None:
+        if d == "BUY" and sl < zone < price:
+            return "BUY LIMIT", zone
+        if d == "SELL" and price < zone < sl:
+            return "SELL LIMIT", zone
+    return d, price
+
+
+def vol_ratio(h1c):
+    """ATR H1 actuel rapporté à sa médiane sur les ~240 dernières bougies H1 (1 = volatilité normale)."""
+    n = len(h1c)
+    if n < 60:
+        return 1.0
+    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - VOL_LOOKBACK), n + 1, 6)]
+    med = statistics.median(pts) if pts else 0.0
+    return atr(h1c) / med if med > 0 else 1.0
+
+
 def _signal(strat, label, d, price, lv, ltf, ltf_n, key, details, **kw):
-    sig = {"strat": strat, "label": label, "dir": d, "otype": d, "entry": price, "sl": lv["sl"],
+    sig = {"strat": strat, "label": label, "dir": d, "otype": d, "entry": price, "price_now": price, "ttl": None,
+           "entry_note": "", "sl": lv["sl"],
            "tp1": lv["tp"][0], "tp2": lv["tp"][1], "tp3": lv["tp"][2], "ltf": ltf_n, "gran": GRAN[ltf_n],
            "key": f"{strat}|{d}|{key}", "details": details, "lines": [], "zones": [], "inval": None,
            "extra": {}, "short": "", "session": session_name(ltf[-1]["epoch"])}
     sig.update(kw)
+    if "trig" in sig:                  # heure de clôture de la bougie de déclenchement
+        sig["trig_close"] = sig.pop("trig") + GRAN[ltf_n]
     return sig
 
 
@@ -254,7 +351,7 @@ def s1_trend(h4c):
     return None
 
 
-def scan_s1(provide, now, funnel, dec=2):
+def scan_s1(provide, now, funnel, dec=2, kz=True, mode="market"):
     h4, h1, m15 = provide("H4"), provide("H1"), provide("M15")
     if not (h4 and h1 and m15):
         return None
@@ -313,31 +410,39 @@ def scan_s1(provide, now, funnel, dec=2):
     if body(tc) < DISP_MULT * avg:
         return None
     price = m15[-1]["close"]
-    if is_late(d, price, tc["close"], a_m15):
+    sl = pb_px - BUF_ATR * a_m15 if buy else pb_px + BUF_ATR * a_m15
+    poi = entry_zone(m15c, pb_i, trig - 1, d)
+    otype, entry = pick_entry(d, price, poi[0] if poi else None, sl, mode)
+    if otype != d:
+        if abs(price - entry) > LIMIT_MAX_ATR * a_m15:
+            funnel["stale"] += 1                      # zone d'entrée trop loin du prix
+            return None
+    elif is_late(d, price, tc["close"], a_m15):
         funnel["stale"] += 1
         return None
-    sl = pb_px - BUF_ATR * a_m15 if buy else pb_px + BUF_ATR * a_m15
-    lv = build_levels(d, price, sl, a_m15, a_h1, S1_RISK_CAP_H1)
+    lv = build_levels(d, entry, sl, a_m15, a_h1, S1_RISK_CAP_H1)
     if lv is None:
         return None
     funnel["S1_signal"] += 1
     zone = sorted([top - S1_ZONE[0] * leg, top - S1_ZONE[1] * leg]) if buy else \
         sorted([top + S1_ZONE[0] * leg, top + S1_ZONE[1] * leg])
     return _signal(
-        "S1", "Trend Pullback", d, price, lv, m15, "M15", f"{h1c[ti]['epoch']}|{pb['epoch']}|{tc['epoch']}",
+        "S1", "Trend Pullback", d, entry, lv, m15, "M15", f"{h1c[ti]['epoch']}|{pb['epoch']}|{tc['epoch']}",
         [f"✅ Tendance H4 {'haussière' if buy else 'baissière'} (EMA 50/200, ADX {adx(h4c):.0f})",
          f"✅ Repli H1 à {retr * 100:.0f} % de la jambe ({top:.{dec}f} → {base:.{dec}f})",
          f"✅ Cassure de structure M15 à {level:.{dec}f}"],
         lines=[{"y": level, "label": "Cassure", "kind": "range"}, {"y": pb_px, "label": "Repli", "kind": "sweep"}],
         zones=[{"lo": zone[0], "hi": zone[1], "label": "Fib 50-79 %", "kind": "fib"}],
-        inval=pb_px, extra={"retr": round(retr, 2)},
-        short=f"Repli H1 {retr * 100:.0f} % · cassure M15")
+        inval=pb_px, extra={"retr": round(retr, 2), "poi": poi[1] if otype != d else "marché"},
+        short=f"Repli H1 {retr * 100:.0f} % · cassure M15", trig=tc["epoch"], otype=otype, price_now=price,
+        ttl=LIMIT_TTL["S1"] if otype != d else None,
+        entry_note=poi_note(poi, "M15", dec) if otype != d else "")
 
 
 # ==========================================================================
 # S2  Asian Breakout (cassure de la plage asiatique)
 # ==========================================================================
-def scan_s2(provide, now, funnel, dec=2):
+def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
     h1, m15, h4 = provide("H1"), provide("M15"), provide("H4")
     if not (h1 and m15 and h4):
         return None
@@ -369,22 +474,30 @@ def scan_s2(provide, now, funnel, dec=2):
     if S2_H4_FILTER and bias != (1 if d == "BUY" else -1):
         return None
     price = m15[-1]["close"]
-    if is_late(d, price, tc["close"], a_m15):
+    sl = (lo - BUF_ATR * a_m15) if d == "BUY" else (hi + BUF_ATR * a_m15)
+    edge = hi if d == "BUY" else lo                 # retest du bord de plage cassé
+    otype, entry = pick_entry(d, price, edge, sl, mode)
+    if otype != d:
+        if abs(price - entry) > LIMIT_MAX_ATR * a_m15:
+            funnel["stale"] += 1
+            return None
+    elif is_late(d, price, tc["close"], a_m15):
         funnel["stale"] += 1
         return None
-    sl = (lo - BUF_ATR * a_m15) if d == "BUY" else (hi + BUF_ATR * a_m15)
-    lv = build_levels(d, price, sl, a_m15, a_h1, S2_RISK_CAP_H1)
+    lv = build_levels(d, entry, sl, a_m15, a_h1, S2_RISK_CAP_H1)
     if lv is None:
         return None
     funnel["S2_signal"] += 1
     return _signal(
-        "S2", "Asian Breakout", d, price, lv, m15, "M15", f"{a0}|{tc['epoch']}",
+        "S2", "Asian Breakout", d, entry, lv, m15, "M15", f"{a0}|{tc['epoch']}",
         [f"✅ Plage asiatique {lo:.{dec}f} - {hi:.{dec}f} ({(hi - lo) / a_h1:.1f} x ATR H1)",
          f"✅ Première cassure {'haussière' if d == 'BUY' else 'baissière'} avec clôture forte",
          "✅ Sens aligné avec l'EMA 50 du H4"],
         lines=[{"y": hi, "label": "Asie H", "kind": "range"}, {"y": lo, "label": "Asie B", "kind": "range"}],
         zones=[{"lo": lo, "hi": hi, "label": "Plage asiatique", "kind": "fib"}], inval=None,
-        short=f"Plage Asie cassée par le {'haut' if d == 'BUY' else 'bas'}")
+        short=f"Plage Asie cassée par le {'haut' if d == 'BUY' else 'bas'}", trig=tc["epoch"], otype=otype,
+        price_now=price, ttl=LIMIT_TTL["S2"] if otype != d else None,
+        entry_note=f"Ordre limite au retest du bord de plage ({edge:.{dec}f})" if otype != d else "")
 
 
 # ==========================================================================
@@ -409,7 +522,7 @@ def liquidity_levels(h1c, d1, m15c, now, a_h1):
     return out
 
 
-def scan_s3(provide, now, funnel, dec=2, kz=True):
+def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     d1, h4, h1, m15, m5 = (provide(x) for x in ("D1", "H4", "H1", "M15", "M5"))
     if not (h1 and m15 and m5 and h4):
         return None
@@ -463,18 +576,24 @@ def scan_s3(provide, now, funnel, dec=2, kz=True):
     if kz and sess not in S3_SESSIONS:
         return None
     price = m5[-1]["close"]
-    if is_late(d, price, tc["close"], a_m5):
+    sl = ext_px + BUF_ATR * a_m15 if d == "SELL" else ext_px - BUF_ATR * a_m15
+    poi = entry_zone(m5c, ext_i, trig - 1, d)
+    otype, entry = pick_entry(d, price, poi[0] if poi else None, sl, mode)
+    if otype != d:
+        if abs(price - entry) > LIMIT_MAX_ATR * a_m5:
+            funnel["stale"] += 1
+            return None
+    elif is_late(d, price, tc["close"], a_m5):
         funnel["stale"] += 1
         return None
-    sl = ext_px + BUF_ATR * a_m15 if d == "SELL" else ext_px - BUF_ATR * a_m15
-    lv = build_levels(d, price, sl, a_m5, a_h1, S3_RISK_CAP_H1)
+    lv = build_levels(d, entry, sl, a_m5, a_h1, S3_RISK_CAP_H1)
     if lv is None:
         return None
     funnel["S3_signal"] += 1
     opp = [(n, p) for n, p, k in levels if (k == "low" if d == "SELL" else k == "high")
-           and abs(p - price) >= lv["risk"]
-           and ((p < price) if d == "SELL" else (p > price))]
-    opp.sort(key=lambda x: abs(x[1] - price))
+           and abs(p - entry) >= lv["risk"]
+           and ((p < entry) if d == "SELL" else (p > entry))]
+    opp.sort(key=lambda x: abs(x[1] - entry))
     bias = h4_ema_bias(h4)
     aligned = bias == (-1 if d == "SELL" else 1)
     details = [f"✅ Liquidité prise : {name} {px:.{dec}f} (mèche {ext_px:.{dec}f})",
@@ -484,17 +603,20 @@ def scan_s3(provide, now, funnel, dec=2, kz=True):
     if opp:
         details.append(f"Liquidité opposée  {opp[0][0]} {opp[0][1]:.{dec}f}")
     return _signal(
-        "S3", "Sweep + CHoCH", d, price, lv, m5, "M5", f"{sc['epoch']}|{tc['epoch']}", details,
+        "S3", "Sweep + CHoCH", d, entry, lv, m5, "M5", f"{sc['epoch']}|{tc['epoch']}", details,
         lines=[{"y": px, "label": name, "kind": "range"}, {"y": ext_px, "label": "Sweep", "kind": "sweep"},
                {"y": pivot, "label": "CHoCH", "kind": "info"}],
-        inval=ext_px, session=sess, extra={"liq": name, "h4": "aligné" if aligned else "contre"},
-        short=f"{name} pris · CHoCH M5")
+        inval=ext_px, session=sess,
+        extra={"liq": name, "h4": "aligné" if aligned else "contre", "poi": poi[1] if otype != d else "marché"},
+        short=f"{name} pris · CHoCH M5", trig=tc["epoch"], otype=otype, price_now=price,
+        ttl=LIMIT_TTL["S3"] if otype != d else None,
+        entry_note=poi_note(poi, "M5", dec) if otype != d else "")
 
 
 # ==========================================================================
 # S4  Mean Reversion (marché sans tendance)
 # ==========================================================================
-def scan_s4(provide, now, funnel, dec=2, kz=True):
+def scan_s4(provide, now, funnel, dec=2, kz=True, mode="market"):
     h1, m15 = provide("H1"), provide("M15")
     if not (h1 and m15):
         return None
@@ -529,42 +651,51 @@ def scan_s4(provide, now, funnel, dec=2, kz=True):
         else:
             continue
         price = m15[-1]["close"]
-        if is_late(d, price, c["close"], a_m15):
-            funnel["stale"] += 1
-            return None
         ext = c["low"] if d == "BUY" else c["high"]
         sl = ext - S4_BUF_ATR * a_m15 if d == "BUY" else ext + S4_BUF_ATR * a_m15
         far = up_b if d == "BUY" else lo_b
-        lv = build_levels(d, price, sl, a_m15, a_h1, S4_RISK_CAP_H1, tps=[mid, far, None])
+        band = lo_b if d == "BUY" else up_b             # retest de la bande de Bollinger rejetée
+        otype, entry = pick_entry(d, price, band, sl, mode)
+        if otype != d:
+            if abs(price - entry) > LIMIT_MAX_ATR * a_m15:
+                funnel["stale"] += 1
+                return None
+        elif is_late(d, price, c["close"], a_m15):
+            funnel["stale"] += 1
+            return None
+        lv = build_levels(d, entry, sl, a_m15, a_h1, S4_RISK_CAP_H1, tps=[mid, far, None])
         if lv is None:
             return None
-        gain = lambda t: ((t - price) if d == "BUY" else (price - t)) / lv["risk"]
+        gain = lambda t: ((t - entry) if d == "BUY" else (entry - t)) / lv["risk"]
         if gain(mid) < S4_MIN_RR1 or gain(far) < S4_MIN_RR2:
             return None
         funnel["S4_signal"] += 1
         return _signal(
-            "S4", "Mean Reversion", d, price, lv, m15, "M15", f"{c['epoch']}",
+            "S4", "Mean Reversion", d, entry, lv, m15, "M15", f"{c['epoch']}",
             [f"✅ Range H1 (ADX {a:.0f}, EMA 50 plate)",
              f"✅ Rejet de la bande de Bollinger {'basse' if d == 'BUY' else 'haute'} (RSI {min(recent_rsi) if d == 'BUY' else max(recent_rsi):.0f})",
              f"✅ Heure favorable ({session_name(c['epoch'])})"],
             lines=[{"y": mid, "label": "Moyenne", "kind": "info"}, {"y": ext, "label": "Rejet", "kind": "sweep"}],
             zones=[{"lo": lo_b, "hi": up_b, "label": "Bollinger", "kind": "fib"}], inval=ext,
-            short=f"Rejet Bollinger {'basse' if d == 'BUY' else 'haute'} · RSI {min(recent_rsi) if d == 'BUY' else max(recent_rsi):.0f}")
+            short=f"Rejet Bollinger {'basse' if d == 'BUY' else 'haute'} · RSI {min(recent_rsi) if d == 'BUY' else max(recent_rsi):.0f}", trig=c["epoch"],
+            otype=otype, price_now=price, ttl=LIMIT_TTL["S4"] if otype != d else None,
+            entry_note=f"Ordre limite sur la bande de Bollinger ({band:.{dec}f})" if otype != d else "")
     return None
 
 
 STRATEGIES = [("S1", scan_s1), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4)]
 
 
-def scan_all(provide, now, funnel, only=None, dec=2, kz=True):
+def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
     """Évalue les stratégies (toutes, ou celles de `only`) et renvoie les signaux trouvés.
     dec : décimales du prix de l'actif (affichage uniquement).
+    modes : {"S1": "limit"|"market", ...} (défaut : marché).
     kz : False pour un actif 24/7 (cryptos) : S3 et S4 ne sont alors pas limitées aux heures de session."""
     out = []
     for name, fn in STRATEGIES:
         if only and name not in only:
             continue
-        sig = fn(provide, now, funnel, dec, kz) if name in ("S3", "S4") else fn(provide, now, funnel, dec)
+        sig = fn(provide, now, funnel, dec, kz, (modes or {}).get(name, "market"))
         if sig:
             funnel["signal"] += 1
             out.append(sig)

@@ -1,6 +1,7 @@
 """Tendance et âge de la tendance, pour le récapitulatif journalier (aucune alerte de trade n'en dépend).
 
-Règles (bougies clôturées, fractales de 2 bougies de chaque côté), tendance HAUSSIÈRE :
+Règles (bougies clôturées ; fractales de 2 bougies de chaque côté, 1 seule en D1 pour une lecture plus précoce),
+tendance HAUSSIÈRE :
   1. le dernier sommet ET le dernier creux sont plus hauts que les précédents (2 swings suffisent) ;
   2. structure intacte : aucune clôture sous le dernier creux depuis sa formation ;
   3. cassure par une clôture (pas une simple mèche) du sommet précédent (BOS_BY_CLOSE) ;
@@ -14,6 +15,7 @@ Inspiré de la lecture de tendance de l'ancien bot (jambes consécutives), sans 
 import strategies as S
 
 SWING_N = 2
+SWING_N_BY_TF = {"D1": 1}   # D1 : un swing est confirmé 1 jour après (et non 2) ; réglable, à comparer au backtest
 AGE_ESTABLISHED = 2       # jambes consécutives : 1 = naissante
 AGE_MATURE = 4            # 4 jambes ou plus = mûre
 BOS_BY_CLOSE = True
@@ -37,11 +39,11 @@ def flip(cs):
             for c in cs]
 
 
-def _up(h):
-    """Tendance haussière sur des bougies clôturées, ou None."""
+def _up(h, n=SWING_N):
+    """Tendance haussière sur des bougies clôturées (fractales de n bougies), ou None."""
     if len(h) < MIN_CANDLES:
         return None
-    sh, sl = S.swings(h, "high", SWING_N), S.swings(h, "low", SWING_N)
+    sh, sl = S.swings(h, "high", n), S.swings(h, "low", n)
     if len(sh) < 2 or len(sl) < 2:
         return None
     highs, lows = [h[i]["high"] for i in sh], [h[i]["low"] for i in sl]
@@ -63,14 +65,15 @@ def _up(h):
             "impulsive": impulsive}
 
 
-def trend_info(candles):
+def trend_info(candles, tf=None):
     """candles : bougies du timeframe, la dernière est en formation (ignorée).
     Retourne {"dir": "BUY"|"SELL", "age", "legs", "start_epoch", "invalid", "impulsive"} ou None."""
     h = candles[:-1]
-    up = _up(h)
+    n = SWING_N_BY_TF.get(tf, SWING_N)
+    up = _up(h, n)
     if up:
         return dict(up, dir="BUY")
-    dn = _up(flip(h))
+    dn = _up(flip(h), n)
     if dn:
         return dict(dn, dir="SELL", invalid=-dn["invalid"])
     return None

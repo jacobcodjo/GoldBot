@@ -45,9 +45,11 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limites de risque, lot, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
+| `tests.py` | 34 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 4 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
-| `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) |
+| `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
+| `.github/workflows/tests.yml` | Lance les tests à chaque modification du dépôt |
 | `.github/workflows/backtest.yml` | Backtest manuel |
 
 ## Installation
@@ -57,6 +59,12 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
 3. Variables facultatives (onglet Variables) :
    - `ACCOUNT_BALANCE` et `RISK_PCT` (ex. 10000 et 1) : affichent le lot suggéré (100 oz par lot ; vérifie sur ta plateforme).
    - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4`).
+   - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (un actif absent garde toutes les
+     stratégies actives). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
+   - `ENTRY_MODE` : `auto` (défaut : ordres limites pour les 4 stratégies), `market` ou `limit` pour tout forcer ;
+     `ENTRY_MODES` : par stratégie, ex. `S3:market,S4:market`.
+   - `SPREAD_PCT` : spread supposé en % du prix, pour tous les actifs (défaut : or 0,015, majeures 0,006, BTC/ETH 0,05).
+   - `MAX_AGE_MIN` : âge maximal d'un signal en minutes (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi.
    - `ALERT_FORMAT` : `complet`, `compact`, `contexte` ou `minimal` (voir plus bas).
    - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures, BTC et ETH).
 4. Le workflow n'a pas de `schedule` : déclenche-le toutes les 5 minutes avec ton cron externe
@@ -64,7 +72,11 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
    quinzaine de secondes avec la temporisation anti-limite de requêtes).
 5. Lance une fois le workflow avec `test = true` : tu reçois un message de contrôle avec l'entonnoir.
 
-Les fichiers d'état (`cache.json`, `state.json`, `trades.json`, `guard.json`) sont conservés par le cache GitHub.
+**Sauvegarde de l'état.** Les trades suivis, les garde-fous et les alertes déjà envoyées (`trades.json`, `guard.json`,
+`state.json`) sont sauvegardés à chaque scan sur une branche `data` du dépôt (une seule révision, écrasée à chaque fois),
+puisque le cache GitHub peut être supprimé sans prévenir. Les bougies (`cache.json`) restent dans le cache GitHub : leur
+perte ne fait que ralentir un scan. Il faut **Settings > Actions > General > Workflow permissions : Read and write**.
+Si ton dépôt est public, la branche `data` (historique de tes trades simulés, aucun secret) est lisible par tous.
 Pour les jours d'annonces non couverts par le calendrier automatique, copie `news.example.json` en `news.json`.
 
 ## Récapitulatif de tendance journalier
@@ -82,7 +94,8 @@ XAUUSD
 
 Âge = nombre de jambes consécutives (sommet **et** creux plus hauts pour une hausse, plus bas pour une baisse) :
 naissante 1 · établie 2-3 · mûre 4 et plus. Deux swings suffisent pour reconnaître une tendance (pas trois, qui arrive
-trop tard). La structure doit être intacte (aucune clôture au-delà du dernier creux/sommet), le sommet précédent doit
+trop tard), avec des fractales de 2 bougies (1 seule en D1, pour confirmer un swing après 1 jour au lieu de 2 ;
+réglage `SWING_N_BY_TF` de `trend.py`, à comparer avec les colonnes `tend_d1` du backtest). La structure doit être intacte (aucune clôture au-delà du dernier creux/sommet), le sommet précédent doit
 être cassé par une **clôture**, et ⚡ signale une cassure impulsive. L'invalidation est le dernier creux (hausse) ou
 sommet (baisse). Les actifs dont le marché est fermé (forex le week-end) sont listés en bas du message.
 La commande `/tendance` renvoie le récapitulatif à la demande (au prochain scan, sous 5 minutes). Réglages dans
@@ -101,6 +114,58 @@ le récapitulatif), marquées ✅ si elle va dans le sens du trade et ⚠️ si 
 Ce n'est **pas un filtre** : l'alerte part quelle que soit la tendance. Le backtest enregistre ces deux informations
 (colonnes `tend_d1` et `tend_h4` du rapport, ex. « mûre avec », « naissante contre ») pour que tu compares la
 performance selon l'âge de la tendance avant d'en faire éventuellement un filtre.
+
+## Ordres limites
+
+Par défaut, chaque alerte est un **ordre limite** posé au retest d'une zone, au lieu d'une entrée au marché. Pour les
+blocs d'ordre, l'entrée est à leur **extrémité proche** ; pour les **FVG**, à leur **milieu** (bloc d'ordre d'abord, FVG
+si aucun bloc d'ordre) :
+
+| Stratégie | Zone d'entrée | Validité |
+|---|---|---|
+| Trend Pullback | bord proche du bloc d'ordre M15 (sinon milieu du FVG M15) | 2 h |
+| Asian Breakout | bord de plage cassé (retest) | 3 h |
+| Sweep + CHoCH | bord proche du bloc d'ordre M5 (sinon milieu du FVG M5) | 1 h |
+| Mean Reversion | bande de Bollinger rejetée | 1 h 30 |
+
+Exemple (`compact`) :
+
+```
+🟢 BUY · XAUUSD · M15 · Trend Pullback · New York
+
+Entrée  BUY LIMIT 2650.10 (prix 2652.40)
+SL  2646.10
+TP1 2654.10 (1:1) · TP2 2658.10 (1:2) · TP3 2662.10 (1:3)
+```
+
+Le bot t'envoie ensuite : « Ordre limite touché » quand le prix atteint la zone, ou « Ordre annulé » (TP1 atteint sans
+fill, stop franchi, week-end) ou « Ordre expiré », pour que tu annules l'ordre chez ton courtier. `/bilan` affiche le taux de
+remplissage. Si la zone est du mauvais côté du prix ou sous le stop, ou si aucun bloc d'ordre n'existe, l'alerte reste au
+marché. Une zone à plus de 1,5 x ATR du prix écarte le signal.
+
+**Contrepartie** : on obtient un meilleur prix et un stop plus court, mais certains trades ne sont jamais remplis (souvent
+ceux qui partent sans retour, donc les meilleurs). Compare avec le backtest :
+`--sym all --split 0.6 --set gold.ENTRY_MODE=market,limit` (le rapport affiche le taux de remplissage et la
+performance par type de zone : colonne `poi`). Pour comparer l'extrémité et le milieu des blocs d'ordre :
+`--set strategies.LIMIT_OB_FRACTION=0,0.5`. Choisis par
+stratégie avec `ENTRY_MODES` (ex. `S3:market`) ou repasse tout au marché avec `ENTRY_MODE=market`.
+
+## Réalisme des résultats et fiabilité
+
+- **Spread** : le suivi en direct et le backtest retirent le spread de chaque trade (« spread inclus » dans le message
+  de résultat). Estimations par défaut ; remplace-les par ceux de ton courtier (`SPREAD_PCT`).
+- **Gaps** : si une bougie ouvre au-delà du stop, le trade est clôturé à l'ouverture (perte supérieure à 1 R possible).
+- **Week-end** : les trades or et forex encore ouverts le vendredi à 16h30 New York sont clôturés (message « Fermeture
+  avant le week-end ») et les ordres limites en attente annulés, et aucune alerte ne part le week-end pour ces actifs. Les cryptos ne sont pas concernées.
+- **Retard** : chaque alerte indique son âge (« signal il y a 3 min »). Un signal de plus de 20 minutes (`MAX_AGE_MIN`),
+  ou dont le prix a déjà trop fui, est écarté.
+- **Volatilité** : les signaux sont écartés quand l'ATR H1 tombe sous la moitié de sa médiane récente (marché mort où le
+  spread domine ; `VOL_MIN_RATIO` dans `strategies.py`).
+- **Calendrier économique** : si le flux reste indisponible plus de 6 h, tu reçois un message (les annonces ne bloquent
+  alors plus les alertes) ; un autre message prévient du retour.
+- **Bilan** (`/bilan`) : par stratégie, par actif, et réel vs simulé par stratégie pour les trades renseignés avec `/r`.
+- **Écart de prix avec ton courtier** : non mesurable ici. Compare le prix de quelques alertes à celui de ta plateforme
+  (spread inclus) et ajuste `SPREAD_PCT` en conséquence.
 
 ## Format des alertes (variable `ALERT_FORMAT`)
 

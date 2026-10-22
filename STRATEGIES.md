@@ -31,7 +31,20 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Déclenchement récent** : la bougie de déclenchement doit être l'une des 2 dernières clôturées (`FRESH`).
 - **Tendance dans l'alerte** : chaque alerte indique la tendance D1 et H4 avec son âge (règles de `trend.py`,
   voir plus bas), ✅ dans le sens du trade, ⚠️ à contre-sens. Information seulement, jamais un filtre.
-- **Entrée** : ordre **au marché**, au prix du scan. Si le prix a déjà fui de plus de 0,75 x ATR de la clôture
+- **Zones d'entrée de Trend Pullback et Sweep + CHoCH** : 1) le **bloc d'ordre** (dernière bougie de sens opposé entre
+  l'extrême du repli ou du sweep et la bougie de cassure) avec entrée à son **bord proche** (le haut pour un achat, le
+  bas pour une vente ; `LIMIT_OB_FRACTION = 0`, 1 = bord lointain) ; 2) à défaut, le **FVG** non comblé créé par le
+  déplacement (3 bougies, la bougie du milieu doit être un déplacement : corps >= 1,2 x le corps moyen) avec entrée
+  à son **milieu** (`LIMIT_FVG_FRACTION = 0.5`) ; 3) à défaut, l'ordre reste au marché. Le type de zone (OB, FVG ou
+  marché) est enregistré (`poi` dans le rapport du backtest).
+- **Ordres limites** (défaut, `ENTRY_MODE=auto`) : l'entrée est un ordre limite au retest d'une zone propre à chaque
+  stratégie, à condition que la zone soit entre le stop et le prix actuel, sinon l'ordre est au marché.
+  L'ordre est **annulé** si TP1 est atteint avant l'entrée, si une bougie clôture au-delà du stop, si le marché ferme pour
+  le week-end, ou après sa durée de validité (S1 2 h, S2 3 h, S3 1 h, S4 1 h 30 : `LIMIT_TTL`). Une zone à plus de
+  1,5 x ATR du prix écarte le signal (`LIMIT_MAX_ATR`). Les ordres limites améliorent le prix d'entrée mais manquent
+  les mouvements qui ne reviennent pas : compare les rendements **totaux** au backtest, pas seulement par trade.
+  Le suivi ne considère l'ordre posé qu'à partir de la bougie suivant l'alerte.
+- **Ordre au marché** (`ENTRY_MODE=market`, ou stratégie listée dans `ENTRY_MODES`) : au prix du scan. Si le prix a déjà fui de plus de 0,75 x ATR de la clôture
   de déclenchement (`CHASE_ATR`), le signal est écarté (« entrée tardive »).
 - **Stop** : au-delà de l'extrême de la structure, plus une marge de 0,15 x ATR (`BUF_ATR`). Risque minimal
   0,5 x ATR du timeframe d'entrée (`MIN_RISK_ATR`) : si le stop est plus proche, il est éloigné jusque-là.
@@ -40,6 +53,11 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Gestion** (`tracker.py`) : 50 % clôturés à TP1 et stop à l'entrée ; 25 % à TP2 et stop à TP1 ; 25 % vers
   TP3. Sortie avant TP1 si une bougie clôture au-delà du niveau d'invalidation, ou après 150 bougies sans TP1.
   Si stop et cible sont touchés dans la même bougie, le stop est supposé touché en premier.
+- **Signal tardif** : écarté si la clôture de la bougie de déclenchement date de plus de 20 minutes (`MAX_AGE_MIN`).
+- **Volatilité** : signal écarté si l'ATR H1 est sous 0,5 x sa médiane des ~240 dernières bougies H1 (`VOL_MIN_RATIO`).
+- **Week-end** (or et forex) : trades encore ouverts clôturés le vendredi à 16h30 New York ; pas d'alerte le week-end.
+- **Gap** : si une bougie ouvre au-delà du stop, la sortie se fait à l'ouverture (perte possible supérieure à 1 R).
+- **Spread** : retiré du résultat de chaque trade (en R), en direct comme au backtest.
 - **Fenêtres sans alerte** : rollover 16h55-17h15, vendredi dès 15h30, ouverture de dimanche 17h-18h, NFP,
   FOMC, annonces à fort impact de la devise de l'actif (USD pour l'or ; les deux devises pour une paire),
   15 min avant et 45 min après (90 min après une décision de taux).
@@ -76,7 +94,8 @@ jambe impulsive H1, quand le M15 confirme la reprise.
 - Une bougie M15 **clôture au-dessus** de ce niveau (sous le dernier creux pour une vente), avec un corps
   d'au moins 1,2 x le corps moyen (`DISP_MULT`).
 
-**Entrée** : au marché. **Stop** : sous l'extrême du repli (+ marge). **Plafond de risque** : 1,5 x ATR H1.
+**Entrée** : ordre **limite** sur la zone du déplacement (bloc d'ordre M15 en priorité, sinon FVG M15 ; règles de
+zone plus bas). **Stop** : sous l'extrême du repli (+ marge). **Plafond de risque** : 1,5 x ATR H1.
 **Invalidation** : clôture M15 sous l'extrême du repli.
 
 ---
@@ -97,7 +116,8 @@ cassure propre, dans le sens de l'EMA 50 du H4.
 - Filtre : achat seulement si le dernier H4 clôturé est au-dessus de son EMA 50, vente s'il est dessous
   (`S2_H4_FILTER`).
 
-**Entrée** : au marché. **Stop** : de l'autre côté de la plage (+ marge). **Plafond de risque** : 2 x ATR H1.
+**Entrée** : ordre **limite** sur le bord de plage cassé (retest). **Stop** : de l'autre côté de la plage (+ marge).
+**Plafond de risque** : 2 x ATR H1.
 Comme le stop est de l'autre côté de la plage, 1 R = la hauteur de la plage : TP1 projette 1 fois la plage,
 TP2 deux fois, TP3 trois fois. Pas de niveau d'invalidation séparé (le stop fait office).
 
@@ -128,7 +148,7 @@ entre contre le balayage.
 **4. Killzone** de la bougie de cassure : Londres 02h-05h, New York 07h-10h ou London Close 10h-12h
 (`S3_SESSIONS`). Hors de ces heures, pas de signal.
 
-**Entrée** : au marché. **Stop** : au-delà de l'extrême du sweep (+ marge, calculée sur l'ATR M15).
+**Entrée** : ordre **limite** sur la zone du CHoCH (bloc d'ordre M5 en priorité, sinon FVG M5 ; règles de zone plus bas). **Stop** : au-delà de l'extrême du sweep (+ marge, calculée sur l'ATR M15).
 **Plafond de risque** : 1,5 x ATR H1. **Invalidation** : clôture M5 au-delà de l'extrême du sweep.
 **Information affichée** : la liquidité opposée la plus proche à au moins 1 R, et si le trade est aligné ou
 contre l'EMA 50 du H4. Ce second point n'est pas un filtre : il est enregistré pour que le backtest compare
@@ -152,7 +172,8 @@ moyenne. C'est la stratégie la plus risquée si une tendance démarre : le rég
   est haussière, et le RSI(14) a été ≤ 30 sur cette bougie ou la précédente.
 - Vente : l'inverse (bande haute, bougie baissière, RSI ≥ 70).
 
-**Entrée** : au marché. **Stop** : au-delà de la mèche de rejet + 0,3 x ATR M15 (`S4_BUF_ATR`).
+**Entrée** : ordre **limite** sur la bande de Bollinger rejetée. **Stop** : au-delà de la mèche de rejet + 0,3 x ATR M15
+(`S4_BUF_ATR`).
 **Objectifs** : TP1 = moyenne mobile 20 de Bollinger, TP2 = bande opposée, **pas de TP3** (50 % à TP1, le reste
 à TP2). **Rejet du signal** si le ratio vers TP1 est < 0,8 ou vers TP2 < 1,5, ou si le risque dépasse 1 x ATR H1.
 **Invalidation** : clôture M15 au-delà de la mèche de rejet.
@@ -162,7 +183,7 @@ moyenne. C'est la stratégie la plus risquée si une tendance démarre : le rég
 ## Récapitulatif de tendance (information, hors stratégies)
 
 Message quotidien après 17h15 New York : tendance D1 / H4 / H1 de chaque actif, avec son âge (naissante 1 jambe,
-établie 2-3, mûre 4 et plus). Règles de `trend.py` : dernier sommet et dernier creux plus hauts (plus bas pour une
+établie 2-3, mûre 4 et plus). Règles de `trend.py` (fractales de 2 bougies, 1 en D1) : dernier sommet et dernier creux plus hauts (plus bas pour une
 baisse), structure intacte, sommet précédent cassé par une clôture. Il est indépendant des filtres de tendance de
 Trend Pullback (EMA 50/200 du H4) : les deux lectures peuvent différer.
 

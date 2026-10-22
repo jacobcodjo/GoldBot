@@ -29,6 +29,7 @@ CALENDAR_URLS = [u for u in (
 ) if u]
 CALENDAR_REFRESH = 6 * 3600     # le flux n'est interrogé qu'une fois toutes les 6 h
 CALENDAR_RETRY = 900            # nouvel essai après 15 min en cas d'échec
+CALENDAR_ALERT_AFTER = 6 * 3600  # alerte Telegram si le flux reste indisponible plus de 6 h
 CALENDAR_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"}
 NEWS_BEFORE_MIN = 15            # pas d'alerte 15 min avant un événement à fort impact
 NEWS_AFTER_MIN = 45             # ... ni 45 min après
@@ -43,11 +44,11 @@ FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée 
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
 FUNNEL_ORDER = ["data", "S1_tendance", "S1_repli", "S1_signal", "S2_range", "S2_signal", "S3_niveau", "S3_sweep",
-                "S3_signal", "S4_regime", "S4_signal", "signal", "stale", "blackout", "dedupe", "risk", "alert"]
+                "S3_signal", "S4_regime", "S4_signal", "signal", "vol", "stale", "blackout", "dedupe", "risk", "alert"]
 FUNNEL_LABEL = {"data": "données", "S1_tendance": "Trend Pullback : tendance H4", "S1_repli": "repli H1", "S1_signal": "signal Trend Pullback",
                 "S2_range": "Asian Breakout : plage", "S2_signal": "signal Asian Breakout", "S3_niveau": "Sweep + CHoCH : niveaux",
                 "S3_sweep": "sweep", "S3_signal": "signal Sweep + CHoCH", "S4_regime": "Mean Reversion : range H1", "S4_signal": "signal Mean Reversion",
-                "signal": "signaux valides", "stale": "écartés (entrée tardive)", "blackout": "bloqués (news/horaire)",
+                "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 
 
@@ -130,7 +131,7 @@ def _parse_calendar(data):
     return out
 
 
-def calendar_events(g, now, http_get=None):
+def calendar_events(g, now, http_get=None, notify=None):
     """Fenêtres sans alerte issues du calendrier automatique + des décisions FOMC intégrées.
     Le flux est rafraîchi toutes les 6 h ; en cas d'échec, les dernières données restent utilisées."""
     cal = g.setdefault("calendar", {"fetched": 0, "events": []})
@@ -152,10 +153,32 @@ def calendar_events(g, now, http_get=None):
         if ok:
             cal["events"], cal["fetched"] = events, int(now)
             print(f"Calendrier mis à jour : {len(events)} événement(s) à fort impact.")
+            if cal.get("alerted") and notify:
+                notify("✅ Calendrier économique de nouveau disponible : les annonces bloquent à nouveau les alertes.")
+            cal["fail_since"], cal["alerted"] = 0, False
         else:
             cal["fetched"] = int(now) - CALENDAR_REFRESH + CALENDAR_RETRY
+            cal["fail_since"] = cal.get("fail_since") or int(now)
+            if notify and not cal.get("alerted") and now - cal["fail_since"] >= CALENDAR_ALERT_AFTER:
+                cal["alerted"] = True
+                notify(f"⚠️ Calendrier économique indisponible depuis {(now - cal['fail_since']) / 3600:.0f} h : "
+                       "les annonces à venir ne bloquent plus les alertes (seules les décisions FOMC intégrées et "
+                       "news.json restent actives). Vérifie le flux ou ajoute les annonces dans news.json.")
     upcoming = [e for e in cal["events"] if e["end"] >= now - 3600]
     return upcoming + fomc_events()
+
+
+WEEKEND_EXIT_FROM = 16 * 60 + 30     # vendredi 16h30 New York : les trades forex/or encore ouverts sont clôturés
+
+
+def weekend_exit_due(sym, now):
+    """Vrai si un trade ouvert sur cet actif doit être clôturé avant (ou pendant) la fermeture du week-end.
+    Cryptos (24/7) : jamais. Désactivable avec WEEKEND_EXIT=0."""
+    if not sym.startswith("frx") or os.getenv("WEEKEND_EXIT", "1") == "0":
+        return False
+    dt = datetime.fromtimestamp(now, NY)
+    mins, wd = dt.hour * 60 + dt.minute, dt.weekday()
+    return (wd == 4 and mins >= WEEKEND_EXIT_FROM) or wd == 5 or (wd == 6 and mins < SUNDAY_OPEN[0])
 
 
 def blackout(sym, now, news=()):
@@ -169,6 +192,8 @@ def blackout(sym, now, news=()):
     mins, wd = dt.hour * 60 + dt.minute, dt.weekday()
     if ROLLOVER[0] <= mins < ROLLOVER[1]:
         return "rollover 17h NY"
+    if wd == 5 or (wd == 6 and mins < SUNDAY_OPEN[0]):
+        return "marché fermé (week-end)"
     if wd == 4 and mins >= FRIDAY_CLOSE_FROM:
         return "fermeture hebdomadaire proche"
     if wd == 6 and SUNDAY_OPEN[0] <= mins < SUNDAY_OPEN[1]:

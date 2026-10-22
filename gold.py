@@ -37,6 +37,57 @@ ALL_SYMBOLS = [GOLD] + FOREX_MAJORS + CRYPTOS
 SYMBOLS = [x.strip() for x in os.getenv("SYMBOLS", "").split(",") if x.strip()] or ALL_SYMBOLS
 DECIMALS = {"frxXAUUSD": 2, "frxUSDJPY": 3, "cryBTCUSD": 2, "cryETHUSD": 2}   # les autres majeures : 5 décimales
 BOT = "OR"
+SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05}   # % du prix (estimations ; variable SPREAD_PCT pour imposer)
+SPREAD_OTHER = 0.006                      # majeures
+MAX_AGE_MIN = float(os.getenv("MAX_AGE_MIN") or 20)   # signal plus vieux (clôture du déclencheur) : écarté
+
+
+def spread_pct(sym):
+    """Spread supposé, en % du prix : variable SPREAD_PCT si définie, sinon valeur par défaut de l'actif."""
+    try:
+        if os.getenv("SPREAD_PCT"):
+            return float(os.environ["SPREAD_PCT"])
+    except ValueError:
+        pass
+    return SPREAD_DEFAULT.get(sym, SPREAD_OTHER)
+
+
+def parse_sym_strats(text):
+    """'frxEURUSD:S1,S2;cryBTCUSD:S2,S4' -> {'frxEURUSD': ['S1','S2'], 'cryBTCUSD': ['S2','S4']}."""
+    out = {}
+    for part in (text or "").split(";"):
+        sym, _, lst = part.partition(":")
+        if sym.strip() and lst.strip():
+            out[sym.strip()] = [x.strip().upper() for x in lst.split(",") if x.strip()]
+    return out
+
+
+ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit"}   # défaut : ordres limites partout
+for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S3:market,S4:market"
+    _k, _, _v = _p.partition(":")
+    if _k.strip().upper() in ENTRY_MODES and _v.strip().lower() in ("limit", "market"):
+        ENTRY_MODES[_k.strip().upper()] = _v.strip().lower()
+ENTRY_MODE = (os.getenv("ENTRY_MODE") or "auto").strip().lower()   # auto : ENTRY_MODES ; market ou limit : force toutes les stratégies
+
+
+def entry_modes():
+    """Mode d'entrée de chaque stratégie, selon ENTRY_MODE (auto / market / limit) et ENTRY_MODES."""
+    return dict(ENTRY_MODES) if ENTRY_MODE == "auto" else {k: ENTRY_MODE for k in ENTRY_MODES} \
+        if ENTRY_MODE in ("market", "limit") else dict(ENTRY_MODES)
+
+
+STRATS_BY_SYMBOL = parse_sym_strats(os.getenv("SYMBOL_STRATEGIES"))   # actif absent : toutes les stratégies actives
+
+
+def apply_cost(t, spread=None):
+    """Retire le coût du spread (en R) du résultat d'un trade clôturé, une seule fois."""
+    if t.get("r") is None or t.get("cost_r") is not None:
+        return
+    risk = abs(t["entry"] - t["sl"])
+    if risk <= 0:
+        return
+    cost = (spread if spread is not None else spread_pct(t["sym"])) / 100 * t["entry"] / risk
+    t["cost_r"], t["r"] = round(cost, 3), round(t["r"] - cost, 3)
 
 
 def name_of(sym):
@@ -287,6 +338,24 @@ def alert_format():
     return fmt_name if fmt_name in ALERT_FORMATS else "complet"
 
 
+def age_txt(sig):
+    a = sig.get("age_min")
+    if a is None:
+        return None
+    return "à l'instant" if a < 1 else f"il y a {a:.0f} min"
+
+
+def is_limit(sig):
+    return sig.get("otype") not in (None, "BUY", "SELL")
+
+
+def entry_txt(sig, c):
+    """« 2652.40 (marché) » ou « BUY LIMIT 2650.10 (prix 2652.40) »."""
+    if is_limit(sig):
+        return f"{sig['otype']} {c(sig['entry'])} (prix {c(sig['price_now'])})"
+    return f"{c(sig['entry'])} (marché)"
+
+
 def rr_txt(d, entry, sl, tp):
     risk = abs(entry - sl)
     gain = ((tp - entry) if d == "BUY" else (entry - tp)) / risk if risk > 0 else 0
@@ -311,14 +380,17 @@ def message_complet(sig, tid):
     c = lambda v: code(v, dec)
     tps = [("TP1", sig["tp1"]), ("TP2", sig["tp2"]), ("TP3", sig["tp3"])]
     lines = [f"{'🟢' if d == 'BUY' else '🔴'} {d} · {sig['name']} · {sig['ltf']} · {sig['label']}",
-             f"Session : {sig['session']}", "",
-             "────────────────", f"Prix actuel  {c(sig['entry'])}", "────────────────", "",
-             f"Entrée  {c(sig['entry'])}  (au marché)", f"SL  {c(sig['sl'])}"]
+             f"Session : {sig['session']}" + (f" · signal {age_txt(sig)}" if age_txt(sig) else ""), "",
+             "────────────────", f"Prix actuel  {c(sig.get('price_now', sig['entry']))}", "────────────────", "",
+             (f"Ordre  {sig['otype']}  {c(sig['entry'])}  (valable {round(sig['ttl'] / 60)} min)" if is_limit(sig)
+              else f"Entrée  {c(sig['entry'])}  (au marché)"), f"SL  {c(sig['sl'])}"]
     lines += [f"{n}  {c(v)}{ratio_txt(d, sig['entry'], sig['sl'], v)}" for n, v in tps if v is not None]
-    lines += [""] + sig["details"] + sig.get("trend_lines", [])
+    lines += [""] + sig["details"] + ([f"📌 {sig['entry_note']}"] if sig.get("entry_note") else []) + sig.get("trend_lines", [])
     if sig.get("inval") is not None and T.STRUCT_EXIT:
         lines.append(f"Invalidation  {c(sig['inval'])}  (clôture au-delà = sortie)")
-    extra = [x for x in (G.lot_line(sig["sym"], sig["entry"], sig["sl"]), mgmt_line(sig)) if x]
+    cancel = ("Annule l'ordre si TP1 est atteint avant l'entrée, si une bougie clôture au-delà du stop, "
+              "ou après le délai." if is_limit(sig) else None)
+    extra = [x for x in (G.lot_line(sig["sym"], sig["entry"], sig["sl"]), cancel, mgmt_line(sig)) if x]
     if extra:
         lines += [""] + extra
     return "\n".join(lines) + (f"\n\nRéf. #{tid}" if tid else "")
@@ -327,11 +399,12 @@ def message_complet(sig, tid):
 def message_compact(sig, tid):
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
     lines = [f"{'🟢' if d == 'BUY' else '🔴'} {d} · {sig['name']} · {sig['ltf']} · {sig['label']} · {sig['session']}", "",
-             f"Entrée  {c(sig['entry'])} (marché)", f"SL  {c(sig['sl'])}", _tp_line(sig, c), "",
+             f"Entrée  {entry_txt(sig, c)}", f"SL  {c(sig['sl'])}", _tp_line(sig, c), "",
              f"✅ {sig['short']}"]
     if sig.get("trend_short"):
         lines.append(sig["trend_short"])
-    tail = " · ".join(x for x in (lot_short(sig), f"Réf. #{tid}" if tid else None) if x)
+    tail = " · ".join(x for x in (lot_short(sig), f"Réf. #{tid}" if tid else None,
+                                   f"signal {age_txt(sig)}" if age_txt(sig) else None) if x)
     return "\n".join(lines + ([""] + [tail] if tail else []))
 
 
@@ -340,14 +413,16 @@ def message_minimal(sig, tid):
     tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
     tail = " · ".join(x for x in (lot_short(sig), f"#{tid}" if tid else None) if x)
     return "\n".join([f"{'🟢' if d == 'BUY' else '🔴'} {d} {sig['name']} {sig['ltf']} · {sig['label']}",
-                      f"{c(sig['entry'])} · SL {c(sig['sl'])} · TP {tps}"] + ([tail] if tail else []))
+                      f"{sig['otype'] + ' ' if is_limit(sig) else ''}{c(sig['entry'])} · SL {c(sig['sl'])} · TP {tps}"]
+                     + ([tail] if tail else []))
 
 
 def message_contexte(sig, tid):
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
     risk = abs(sig["entry"] - sig["sl"])
     lines = [f"{'🟢' if d == 'BUY' else '🔴'} {d} · {sig['name']} · {sig['ltf']} · {sig['label']}",
-             f"{sig['session']} · Entrée {c(sig['entry'])} · SL {c(sig['sl'])} ({risk:.{sig['dec']}f})", "",
+             f"{sig['session']} · Entrée {entry_txt(sig, c)} · SL {c(sig['sl'])} ({risk:.{sig['dec']}f})"
+             + (f" · signal {age_txt(sig)}" if age_txt(sig) else ""), "",
              _tp_line(sig, c), "", f"Setup : {sig['short']}"] + sig.get("trend_lines", [])
     if sig.get("inval") is not None and T.STRUCT_EXIT:
         lines.append(f"Invalidation {c(sig['inval'])}")
@@ -365,9 +440,17 @@ def trade_event_message(t, e):
     c = lambda v: code(v, t["dec"])
     head = f"{t['name']} · {t['ltf']} · {t['cascade']}" + (f" #{t['id']}" if t.get("id") else "")
     closed = t["status"] == "closed" and t.get("r") is not None
-    res = f"\nRésultat  {t['r']:+.1f} R" if closed else ""
+    res = f"\nRésultat  {t['r']:+.1f} R" + (" (spread inclus)" if t.get("cost_r") is not None else "") if closed else ""
     if e == "filled":
-        return f"▶️ Ordre touché · {t['otype']} · {head}\nEntrée  {c(t['entry'])}"
+        return f"▶️ Ordre limite touché · {t['otype']} · {head}\nEntrée  {c(t['entry'])}  (SL {c(t['sl'])})"
+    if e == "cancel_tp":
+        return f"🚫 Ordre annulé · {head}\nLe prix a atteint TP1 sans toucher l'entrée : annule l'ordre limite."
+    if e == "cancel_sl":
+        return (f"🚫 Ordre annulé · {head}\nUne bougie a clôturé au-delà du stop avant l'entrée : annule l'ordre limite.")
+    if e == "cancel_weekend":
+        return f"🚫 Ordre annulé avant le week-end · {head}\nLe marché ferme bientôt : annule l'ordre limite."
+    if e == "expired":
+        return f"⌛ Ordre expiré · {head}\nNon touché dans le délai prévu : annule l'ordre limite."
     if e == "tp1":
         sl_txt = f"SL à l'entrée {c(t['entry'])}" if T.BE_AT_TP1 else "SL inchangé"
         return (f"🎯 TP1 atteint · {head}\nClôture de {int(T.PARTIAL_AT_TP1 * 100)} %, {sl_txt}\n"
@@ -389,6 +472,9 @@ def trade_event_message(t, e):
     if e == "struct":
         return (f"🔻 Structure cassée · {head}\nUne bougie a clôturé au-delà de {c(t['inval'])}. "
                 f"Ferme la position.{res}")
+    if e == "weekend":
+        return (f"🕓 Fermeture avant le week-end · {head}\nLe marché ferme bientôt : ferme la position "
+                f"(les gaps d'ouverture ne sont pas maîtrisables).{res}")
     if e == "time":
         return (f"⏱ Sortie au temps · {head}\nTP1 non atteint en {T.TIME_STOP_BARS} bougies. "
                 f"Ferme la position.{res}")
@@ -398,7 +484,7 @@ def trade_event_message(t, e):
 # --------------------------------------------------------------------------
 # Suivi des trades, alertes, commandes Telegram
 # --------------------------------------------------------------------------
-def track_trades(api, tr, now):
+def track_trades(api, tr, now, g=None):
     """Met à jour les trades : TP1 à TP3, stop, sorties de structure, sortie au temps."""
     for key, t in list(tr["active"].items()):
         if t["bot"] != BOT:
@@ -412,7 +498,19 @@ def track_trades(api, tr, now):
             continue
         if not cs:
             continue
-        for e in T.advance(t, cs, now):
+        events = T.advance(t, cs, now)
+        if t["status"] == "pending" and G.weekend_exit_due(t["sym"], now):
+            events.append(T.cancel_pending(t, "weekend", now))
+        if t["status"] == "open" and G.weekend_exit_due(t["sym"], now) and T.force_close(t, cs[-1]["close"], "weekend", now):
+            events.append("weekend")
+        if t["status"] == "closed":
+            apply_cost(t)
+        if g is not None:
+            lim = g.setdefault("limits", {"placed": 0, "filled": 0, "cancelled": 0, "expired": 0})
+            lim["filled"] += events.count("filled")
+            lim["cancelled"] += sum(e in ("cancel_tp", "cancel_sl", "cancel_weekend") for e in events)
+            lim["expired"] += events.count("expired")
+        for e in events:
             notify(trade_event_message(t, e), html=True)
         if t["status"] not in T.ACTIVE:
             T.archive(tr, key)
@@ -441,6 +539,8 @@ def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
                 notify(f"⏸ Alertes en pause : {why}. Reprise à la prochaine journée de trading (17h New York).")
         return False
     funnel["alert"] += 1
+    if is_limit(sig):
+        g.setdefault("limits", {"placed": 0, "filled": 0, "cancelled": 0, "expired": 0})["placed"] += 1
     tid = g["next_id"] = g.get("next_id", 0) + 1
     text = gold_message(sig, tid)
     buttons = [[{"text": "✅ Pris", "callback_data": f"take:{tid}"},
@@ -468,7 +568,8 @@ def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
     extra = dict(sig["extra"], session=sig["session"], id=tid)
     tr["active"][sig["key"]] = T.new_trade(
         BOT, sig["key"], sig["sym"], sig["name"], sig["dir"], sig["otype"], sig["entry"], sig["sl"],
-        sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], sig["gran"], sig["dec"], sig["label"], now, TRADE_TTL,
+        sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], sig["gran"], sig["dec"], sig["label"], now,
+        sig["ttl"] or TRADE_TTL,
         extra=extra, inval=sig["inval"], bar_secs=sig["gran"])
     return True
 
@@ -526,11 +627,40 @@ def handle_update(u, g, tr, now):
         else:
             notify("Trade introuvable (trop ancien ?).")
     elif cmd == "/bilan":
-        notify(T.stats_text(tr, now, days=30, groups=("cascade",)))
+        notify("\n".join(x for x in (bilan_text(tr, now), limits_text(g)) if x))
     elif cmd == "/tendance":
         g["recap_request"] = True      # envoyé pendant ce scan
     else:
         notify(HELP)
+
+
+def bilan_text(tr, now, days=30):
+    """Bilan : par stratégie (tracker), par actif, et réel vs simulé par stratégie pour les trades renseignés (/r)."""
+    lines = [T.stats_text(tr, now, days=days, groups=("cascade",))]
+    ts = [t for t in tr["closed"] if t.get("t_close", 0) >= now - days * 86400 and t.get("r") is not None]
+    if ts:
+        lines.append("Par actif :")
+        for name in sorted({t["name"] for t in ts}):
+            lines.append(T.fmt_summary(f"· {name}", T.summarize([t for t in ts if t["name"] == name])))
+        own = [t for t in ts if t.get("own_r") is not None]
+        if own:
+            lines.append("Réel vs simulé (trades renseignés avec /r) :")
+            for c in sorted({t["cascade"] for t in own}):
+                sub = [t for t in own if t["cascade"] == c]
+                real, sim = sum(t["own_r"] for t in sub), sum(t["r"] for t in sub)
+                lines.append(f"· {c} : {len(sub)} trades · réel {real:+.1f} R · simulé {sim:+.1f} R (écart {real - sim:+.1f} R)")
+    return "\n".join(lines)
+
+
+def limits_text(g):
+    """Ordres limites depuis le début : placés, touchés, annulés, expirés (taux de remplissage)."""
+    lim = (g or {}).get("limits")
+    if not lim or not lim.get("placed"):
+        return None
+    done = lim["filled"] + lim["cancelled"] + lim["expired"]
+    pending = max(0, lim["placed"] - done)
+    return (f"Ordres limites : {lim['placed']} placés · {lim['filled']} touchés ({100 * lim['filled'] / lim['placed']:.0f} %) · "
+            f"{lim['cancelled']} annulés (TP1 ou stop avant l'entrée, week-end) · {lim['expired']} expirés · {pending} en attente")
 
 
 def poll_telegram(g, tr, now):
@@ -570,7 +700,7 @@ def build_recap(api, cache, now):
             if not h1 or now - h1[-1]["epoch"] > RECAP_STALE:
                 closed.append(name_of(sym))
                 continue
-            infos = {tf: TR.trend_info(tf_candles(api, cache, sym, tf) or []) for tf in TR.TIMEFRAMES}
+            infos = {tf: TR.trend_info(tf_candles(api, cache, sym, tf) or [], tf) for tf in TR.TIMEFRAMES}
             blocks.append(TR.symbol_block(name_of(sym), infos, now, dec_of(sym)))
         except Exception as ex:
             print(f"Récap {name_of(sym)} ignoré : {str(ex)[:80]}")
@@ -621,11 +751,27 @@ def scan(sym, provide, now, sent, funnel, news=()):
     funnel["data"] += 1
     out = []
     dec = dec_of(sym)
-    for sig in S.scan_all(provide, now, funnel, only=ENABLED, dec=dec, kz=not is_247(sym)):
+    only = [x for x in ENABLED if x in STRATS_BY_SYMBOL.get(sym, ENABLED)]
+    if not only:
+        return []                      # aucune stratégie active pour cet actif (SYMBOL_STRATEGIES)
+    vol = None
+    for sig in S.scan_all(provide, now, funnel, only=only, dec=dec, kz=not is_247(sym), modes=entry_modes()):
         sig.update(sym=sym, name=name_of(sym), dec=dec, key=f"{sym}|{sig['key']}")
         if sig["key"] in sent:
             continue
-        infos = {tf: TR.trend_info(provide(tf) or []) for tf in TR.ALERT_TFS}
+        sig["age_min"] = max(0.0, (now - sig["trig_close"]) / 60) if sig.get("trig_close") else None
+        if sig["age_min"] is not None and sig["age_min"] > MAX_AGE_MIN:
+            funnel["stale"] += 1       # alerte trop tardive (retard du cron ou du workflow)
+            sent[sig["key"]] = int(now)
+            continue
+        if S.VOL_MIN_RATIO:
+            if vol is None:
+                vol = S.vol_ratio((provide("H1") or [])[:-1])
+            if vol < S.VOL_MIN_RATIO:
+                funnel["vol"] += 1
+                sent[sig["key"]] = int(now)
+                continue
+        infos = {tf: TR.trend_info(provide(tf) or [], tf) for tf in TR.ALERT_TFS}
         tl, te = TR.alert_lines(sig["dir"], infos, now)
         sig.update(trend_lines=tl, trend_short=TR.alert_short(sig["dir"], infos, now))
         sig["extra"] = dict(sig["extra"], **te)
@@ -642,14 +788,15 @@ def scan(sym, provide, now, sent, funnel, news=()):
 def main():
     if "--stats" in sys.argv:
         tr, g = T.load_trades(), G.load_guard()
-        print(T.stats_text(tr, time.time(), days=30, groups=("cascade",)))
+        print(bilan_text(tr, time.time()))
+        print(limits_text(g) or "Aucun ordre limite placé.")
         for bot, counts in sorted(g["funnel"].items()):
             print(f"Entonnoir {bot} : {G.funnel_text(counts)}")
         return
     now = time.time()
     cache, state = load(CACHE_FILE), load(STATE_FILE)
     tr, g = T.load_trades(), G.load_guard()
-    news = G.load_news() + G.calendar_events(g, now)
+    news = G.load_news() + G.calendar_events(g, now, notify=notify)
     api, funnel = Deriv(), Counter()
     if not (TG_TOKEN and TG_CHAT):
         print("ATTENTION : secret Telegram manquant ou vide (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID)")
@@ -658,7 +805,7 @@ def main():
         G.fomc_check(g, now, notify)
         poll_telegram(g, tr, now)
         check_symbols(api)
-        track_trades(api, tr, now)
+        track_trades(api, tr, now, g)
         manual = g.pop("recap_request", False)
         if manual or recap_due(g, now):
             try:

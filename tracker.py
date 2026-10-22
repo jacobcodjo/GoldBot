@@ -85,16 +85,31 @@ def r_of(t, price):
 
 
 def _start_epoch(t):
-    """Première bougie à analyser : celle de la création pour un ordre en attente (le prix n'a pas
-    pu toucher l'entrée avant l'alerte), la suivante pour un ordre au marché."""
+    """Première bougie à analyser : la suivante après l'alerte, pour un ordre au marché comme pour un ordre
+    limite (le prix de la bougie en cours a pu toucher la zone avant l'alerte : l'ordre n'était pas encore posé)."""
     g, t0 = t["gran"], t["t0"]
-    if t["otype"] in ("BUY", "SELL"):
-        return -(-t0 // g) * g
-    return t0 // g * g
+    return -(-t0 // g) * g
 
 
 def _close(t, r, result, now):
     t["status"], t["r"], t["result"], t["t_close"] = "closed", round(r, 3), result, int(now)
+
+
+def cancel_pending(t, result, now):
+    """Annule un ordre en attente (ex. avant le week-end). Retourne l'événement 'cancel_<result>' ou None."""
+    if t["status"] != "pending":
+        return None
+    t["status"], t["result"], t["t_close"] = "cancelled", result, int(now)
+    return f"cancel_{result}"
+
+
+def force_close(t, price, result, now):
+    """Clôture théorique d'une position ouverte au prix donné (ex. avant la fermeture du week-end).
+    Retourne le nom de l'événement (= result) ou None si le trade n'est pas ouvert."""
+    if t["status"] != "open":
+        return None
+    _close(t, t["r_acc"] + t["rem"] * r_of(t, price), result, now)
+    return result
 
 
 def advance(t, candles, now):
@@ -132,7 +147,10 @@ def advance(t, candles, now):
         # position ouverte : un stop remonté ne s'applique qu'aux bougies suivant l'événement qui l'a remonté
         stop_active = not (t["stage"] > 0 and c["epoch"] <= t.get("be_from", 0))
         if stop_active and down(c, t["sl_now"]):
-            _close(t, t["r_acc"] + t["rem"] * r_of(t, t["sl_now"]),
+            px = t["sl_now"]
+            if (buy and c["open"] < px) or (not buy and c["open"] > px):
+                px = c["open"]            # gap : exécution à l'ouverture, au-delà du stop (pire que le stop)
+            _close(t, t["r_acc"] + t["rem"] * r_of(t, px),
                    ("SL", "TP1+BE", "TP2+stop")[t["stage"]], now)
             ev.append(("sl", "be", "lock")[t["stage"]])
             break

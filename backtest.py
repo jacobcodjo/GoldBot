@@ -21,6 +21,10 @@ Exemples :
   python backtest.py --source csv --file xauusd_m5.csv
   python backtest.py --source sim --days 60          (marche aléatoire : contrôle de bon sens)
 Un CSV contient les colonnes epoch,open,high,low,close (bougies M5, epoch en secondes, ordre croissant).
+Entrées : ordres limites au retest d'une zone (ENTRY_MODE=auto) ou au marché (market). Pour comparer :
+  python backtest.py --sym all --split 0.6 --set gold.ENTRY_MODE=market,limit
+Réalisme : spread retiré de chaque trade, stop exécuté à l'ouverture en cas de gap, trades forex/or clôturés le
+vendredi à 16h30 New York, signaux trop vieux (MAX_AGE_MIN) et marchés trop calmes (VOL_MIN_RATIO) écartés.
 Limites : spread constant (défaut par actif : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 %), pas de glissement, calendrier
 économique non appliqué (rollover, vendredi soir et NFP le sont), un fichier CSV = un actif.
 """
@@ -34,8 +38,6 @@ import strategies as S
 import tracker as T
 
 M5 = 300
-SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05}   # % du prix (estimations)
-SPREAD_OTHER = 0.006                          # majeures
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +158,13 @@ def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
             tk["gran"] = M5
             for e in T.advance(tk, [m5[t]], now):
                 stats[e] += 1
+            if tk["status"] == "pending" and G.weekend_exit_due(sym, now):
+                stats[T.cancel_pending(tk, "weekend", now)] += 1
+            if tk["status"] == "open" and G.weekend_exit_due(sym, now):     # clôture avant la fermeture du week-end
+                T.force_close(tk, m5[t]["close"], "weekend", now)
+                stats["weekend"] += 1
+            if tk["status"] == "closed":
+                gold.apply_cost(tk, spread_pct)                                # spread, en R
             if tk["status"] not in T.ACTIVE:
                 T.archive(tr, key)
         # 2) cherche de nouveaux setups
@@ -167,18 +176,17 @@ def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
                 funnel["dedupe" if why == "dedupe" else "risk"] += 1
                 continue
             funnel["alert"] += 1
-            risk = abs(sig["entry"] - sig["sl"])
-            extra = dict(sig["extra"], session=sig["session"],
-                         cost_r=(spread_pct / 100 * sig["entry"]) / risk if risk else 0.0)
+            if gold.is_limit(sig):
+                stats["placed"] += 1
+            extra = dict(sig["extra"], session=sig["session"])
             tr["active"][sig["key"]] = T.new_trade(
                 gold.BOT, sig["key"], sym, sig["name"], sig["dir"], sig["otype"], sig["entry"], sig["sl"],
                 sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], M5, sig["dec"], sig["label"], now,
-                gold.TRADE_TTL, extra=extra, inval=sig["inval"], bar_secs=sig["gran"])
+                sig["ttl"] or gold.TRADE_TTL, extra=extra, inval=sig["inval"], bar_secs=sig["gran"])
         if progress and (t - warm) % 5000 == 0:
             print(f"  {gold.name_of(sym)} · pas {t - warm}/{len(m5) - warm - 1} · {funnel['alert']} alertes · "
                   f"{time.time() - t_start:.0f}s", flush=True)
     for tk in tr["closed"]:
-        tk["r"] = round(tk["r"] - tk.get("cost_r", 0.0), 3)      # coût du spread, en R
         if boundary:
             tk["period"] = "1" if tk["t0"] < boundary else "2"
     return tr, funnel, stats
@@ -216,7 +224,7 @@ def run_all(datasets, spread_pct, warmup_days, split, progress=True):
     """datasets : [(sym, m5)]. Retourne [(sym, tr, funnel, stats)]. spread_pct None : défaut par actif."""
     res = []
     for sym, m5 in datasets:
-        sp = spread_pct if spread_pct is not None else SPREAD_DEFAULT.get(sym, SPREAD_OTHER)
+        sp = spread_pct if spread_pct is not None else gold.spread_pct(sym)
         tr, funnel, stats = run(m5, sym, sp, warmup_days, progress, split)
         res.append((sym, tr, funnel, stats))
     return res
@@ -234,8 +242,14 @@ def report(results, days, spread_pct, split=None):
     L = [f"BACKTEST · {', '.join(gold.name_of(r[0]) for r in results)} · {days:g} jours · spread {sp} · "
          f"stratégies {', '.join(gold.ENABLED)}",
          "Entonnoir : " + G.funnel_text(funnel),
-         f"{funnel['alert']} alertes (ordres au marché) ; {pending} trade(s) encore ouvert(s). "
-         "L'entonnoir compte des passages de scan, pas des setups distincts."]
+         f"{funnel['alert']} alertes ; {pending} trade(s) encore ouvert(s). "
+         "L'entonnoir compte des passages de scan, pas des setups distincts.",
+         f"Entrées : {gold.ENTRY_MODE if gold.ENTRY_MODE in ('market', 'limit') else 'auto ' + str(gold.entry_modes())}"]
+    if stats["placed"]:
+        p = stats["placed"]
+        L.append(f"Ordres limites : {p} placés · {stats['filled']} touchés ({100 * stats['filled'] / p:.0f} %) · "
+                 f"{stats['cancel_tp']} annulés (TP1 atteint avant l'entrée) · {stats['cancel_sl']} annulés (stop) · "
+                 f"{stats['cancel_weekend']} annulés (week-end) · {stats['expired']} expirés")
     s = T.summarize(ts)
     if not s:
         return L + ["Aucun trade clôturé : pas assez de signaux sur cette période."]
@@ -248,7 +262,7 @@ def report(results, days, spread_pct, split=None):
             L.append(T.fmt_summary(f"  {gold.name_of(sym)}", sub) if sub else f"  {gold.name_of(sym)} : aucun trade")
     L.append("Par stratégie :")
     L += breakdown(ts, "cascade")
-    for key in ["dir", "session", "liq", "h4", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
+    for key in ["dir", "session", "liq", "h4", "poi", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
         L += breakdown(ts, key)
     if split:
         p1, p2 = [t["r"] for t in ts if t.get("period") == "1"], [t["r"] for t in ts if t.get("period") == "2"]
@@ -351,12 +365,15 @@ def main():
     ap.add_argument("--warmup-days", type=float, default=25)
     ap.add_argument("--split", type=float, default=None, help="fraction de la période pour la période 1 (ex. 0.6)")
     ap.add_argument("--set", action="append", help="grille : module.NOM=v1,v2 (répétable)")
+    ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S4\" (défaut : toutes)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--vol", type=float, default=0.0006, help="volatilité M5 de la marche aléatoire (sim)")
     ap.add_argument("--telegram", action="store_true", help="envoie aussi le rapport sur Telegram")
     a = ap.parse_args()
     if a.split is not None and not 0.2 <= a.split <= 0.8:
         sys.exit("--split doit être compris entre 0.2 et 0.8")
+    if a.sym_strats:
+        gold.STRATS_BY_SYMBOL = gold.parse_sym_strats(a.sym_strats)
     if a.only:
         gold.ENABLED = [x.strip().upper() for x in a.only.split(",") if x.strip()]
     syms = gold.ALL_SYMBOLS if a.sym.strip().lower() == "all" else \
