@@ -55,6 +55,10 @@ jobs:
           SYMBOLS: ${{ vars.SYMBOLS }}
           SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
           ALERT_FORMAT: ${{ vars.ALERT_FORMAT }}
+          CHARTS: ${{ vars.CHARTS }}
+          ALERT_FUSEAU: ${{ vars.ALERT_FUSEAU }}
+          RECAP_HEURE: ${{ vars.RECAP_HEURE }}
+          RECAP_FUSEAU: ${{ vars.RECAP_FUSEAU }}
           ENTRY_MODE: ${{ vars.ENTRY_MODE }}
           ENTRY_MODES: ${{ vars.ENTRY_MODES }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
