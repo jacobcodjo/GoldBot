@@ -11,13 +11,14 @@ paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --se
 
 ## Actifs
 
-L'or (`frxXAUUSD`), les 7 majeures (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD, NZDUSD) et deux cryptos
+L'or (`frxXAUUSD`), les 7 majeures contre USD (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD, NZDUSD), les 8 autres
+paires classées « Forex majeures » par Deriv (AUDJPY, EURAUD, EURCAD, EURCHF, EURGBP, EURJPY, GBPAUD, GBPJPY) et deux cryptos
 (`cryBTCUSD`, `cryETHUSD`). Les règles sont
 identiques pour tous : seuils en ATR, heures de New York, D1/H4 à 17h. Les stratégies ont été conçues pour l'or ;
 leur comportement sur chaque paire est à vérifier au backtest (`--sym all`), actif par actif. Les cryptos ont une volatilité et des spreads très différents de l'or : ne
-les juge pas sur les résultats des autres actifs. Exposition : l'or
-compte comme une position sur l'USD (acheter l'or = vendre l'USD), 2 trades au plus dans le même sens USD ;
-BTC et ETH forment un groupe : 2 trades au plus dans le même sens.
+les juge pas sur les résultats des autres actifs. Exposition **par devise** : un trade est long ou short
+sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; l'or acheté = short USD), 2 trades au plus dans le
+même sens sur une même devise ; BTC et ETH forment un groupe : 2 trades au plus dans le même sens.
 
 **Cryptos** : marché 24h/24, 7j/7. Les heures de session (killzones de Sweep + CHoCH, heures favorables de
 Mean Reversion) ne s'appliquent pas à elles, et les fenêtres de rollover, vendredi soir, dimanche et NFP non plus.
@@ -30,7 +31,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
   sert qu'à connaître le prix actuel.
 - **Déclenchement récent** : la bougie de déclenchement doit être l'une des 2 dernières clôturées (`FRESH`).
 - **Tendance dans l'alerte** : chaque alerte indique la tendance D1 et H4 avec son âge (règles de `trend.py`,
-  voir plus bas), ✅ dans le sens du trade, ⚠️ à contre-sens. Information seulement, jamais un filtre.
+  voir plus bas), ✅ dans le sens du trade, ⚠️ à contre-sens. Information seulement, jamais un filtre (seule exception : le biais de structure de Sweep + CHoCH, voir S3).
 - **Zones d'entrée de Trend Pullback et Sweep + CHoCH** : 1) le **bloc d'ordre** (dernière bougie de sens opposé entre
   l'extrême du repli ou du sweep et la bougie de cassure) avec entrée à son **bord proche** (le haut pour un achat, le
   bas pour une vente ; `LIMIT_OB_FRACTION = 0`, 1 = bord lointain) ; 2) à défaut, le **FVG** non comblé créé par le
@@ -49,7 +50,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Stop** : au-delà de l'extrême de la structure, plus une marge de 0,15 x ATR (`BUF_ATR`). Risque minimal
   0,5 x ATR du timeframe d'entrée (`MIN_RISK_ATR`) : si le stop est plus proche, il est éloigné jusque-là.
   Risque maximal : un plafond en ATR H1 propre à chaque stratégie, sinon le signal est rejeté.
-- **Objectifs** (S1, S2, S3) : TP1 = 1 R, TP2 = 2 R, TP3 = 3 R (R = distance entrée-stop).
+- **Objectifs** (S1, S2) : TP1 = 1 R, TP2 = 2 R, TP3 = 3 R (R = distance entrée-stop). S3 : TP1 = 1 R, TP2 et TP3 sur la liquidité opposée (voir S3).
 - **Gestion** (`tracker.py`) : 50 % clôturés à TP1 et stop à l'entrée ; 25 % à TP2 et stop à TP1 ; 25 % vers
   TP3. Sortie avant TP1 si une bougie clôture au-delà du niveau d'invalidation, ou après 150 bougies sans TP1.
   Si stop et cible sont touchés dans la même bougie, le stop est supposé touché en premier.
@@ -61,7 +62,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Fenêtres sans alerte** : rollover 16h55-17h15, vendredi dès 15h30, ouverture de dimanche 17h-18h, NFP,
   FOMC, annonces à fort impact de la devise de l'actif (USD pour l'or ; les deux devises pour une paire),
   15 min avant et 45 min après (90 min après une décision de taux).
-- **Risque** : 6 trades ouverts au plus, exposition USD nette de 2 trades au plus dans le même sens, une seule
+- **Risque** : 6 trades ouverts au plus, exposition nette de 2 trades au plus dans le même sens sur une même devise (USD, EUR, JPY…), une seule
   position par actif, stratégie et sens. Aucun blocage après une série de pertes : le bot n'arrête pas les alertes
   selon les résultats de la journée ou de la semaine.
 
@@ -124,38 +125,58 @@ TP2 deux fois, TP3 trois fois. Pas de niveau d'invalidation séparé (le stop fa
 
 ---
 
-## Sweep + CHoCH (code S3) · M15 > M5
+## Sweep + CHoCH (code S3) · H4/H1 > M15 > M5
 
-**Idée** : le prix balaie un niveau où s'accumulent des stops, puis casse sa structure en sens inverse. On
-entre contre le balayage.
+**Idée** (Smart Money Concepts) : dans le sens de la structure H4/H1, le prix balaie un niveau où s'accumulent des stops
+**en entrant dans une zone d'intérêt H1/H4**, puis casse sa structure M5 en sens inverse. On entre contre le balayage.
 
-**1. Niveaux de liquidité**
-- PDH / PDL : plus haut / plus bas de la veille (journée 17h-17h New York).
-- Asie H / Asie B : extrêmes de la plage asiatique (dès 02h00).
+**1. Biais de structure** (`s3_bias`, règles de `trend.py`, `S3_BIAS_FILTER`)
+- Biais H4 : sommet et creux plus hauts (plus bas) avec cassure par clôture du sommet (creux) précédent. Si le H4 n'a pas
+  de tendance claire, on lit le H1. Aucun biais clair : pas de signal.
+- On ne trade que dans le sens du biais (un achat exige un biais haussier). Un repli H1 contre un H4 haussier ne change pas le biais.
+
+**2. Niveaux de liquidité** (chacun a une date de naissance t0)
+- PDH / PDL : plus haut / plus bas de la veille (journée 17h-17h New York), valables dès l'ouverture du jour.
+- Asie H / Asie B : extrêmes de la plage asiatique, valables dès 02h00.
 - EQH / EQL : deux swings H1 (fractale de 2) à moins de 0,15 x ATR H1 l'un de l'autre, parmi les 8 derniers
-  (`S3_EQ_TOL_ATR`).
+  (`S3_EQ_TOL_ATR`), valables dès la bougie du second swing.
+- **Un niveau n'est de la liquidité qu'une fois** (`S3_FRESH_LEVELS`) : si une mèche M15 l'a déjà dépassé depuis t0,
+  les stops ont déjà été pris et il est ignoré (y compris pour un second sweep du même niveau).
 
-**2. Sweep M15** (dans les 8 dernières bougies M15, `S3_SWEEP_BARS`)
-- Une bougie dont la mèche dépasse le niveau mais qui **clôture de l'autre côté** (au-dessus du niveau pour un
-  balayage de plus bas, donc achat). Si une bougie M15 ultérieure clôture au-delà du niveau, c'est une vraie
-  cassure : le setup est annulé.
+**3. Sweep M15** (dans les 8 dernières bougies M15, `S3_SWEEP_BARS`)
+- Une bougie dont la mèche dépasse le niveau mais qui **clôture de l'autre côté**. Si une bougie M15 ultérieure
+  clôture au-delà du niveau, c'est une vraie cassure : le setup est annulé.
 
-**3. CHoCH M5**
+**4. Zone d'intérêt H4/H1** (`htf_zones`, `S3_HTF_ZONE`)
+- Zone de demande (achat) ou d'offre (vente) née d'un **déplacement** (corps >= 1,2 x le corps moyen) qui casse les
+  5 bougies précédentes : le **bloc d'ordre** (dernière bougie de sens opposé avant le déplacement) ou le **FVG** de 3 bougies.
+  Recherche sur les 40 dernières bougies H4, puis les 72 dernières H1, entièrement clôturées avant le sweep.
+- La zone doit être **non retestée** (`S3_HTF_UNTOUCHED` : aucune mèche n'y est revenue ; sinon, seulement non invalidée par une clôture).
+- Le sweep la touche si l'étendue [niveau pris, mèche extrême] recoupe la zone élargie de 0,25 x ATR H1 (`S3_HTF_TOL_ATR`).
+  Le H4 prime sur le H1, le bloc d'ordre sur le FVG, puis la zone la plus récente.
+
+**5. CHoCH M5**
 - Extrême du sweep : plus haut (vente) ou plus bas (achat) atteint en M5 depuis la bougie de sweep.
 - Pivot : dernier creux (sommet) M5 (fractale de 2) formé juste avant cet extrême, à 36 bougies M5 au plus.
 - Une bougie M5 **clôture sous** le pivot (au-dessus pour un achat), avec un corps d'au moins 1,2 x le corps
   moyen, et c'est l'une des 2 dernières clôturées.
 
-**4. Killzone** de la bougie de cassure : Londres 02h-05h, New York 07h-10h ou London Close 10h-12h
+**6. Killzone** de la bougie de cassure : Londres 02h-05h, New York 07h-10h ou London Close 10h-12h
 (`S3_SESSIONS`). Hors de ces heures, pas de signal.
 
 **Entrée** : ordre **limite** sur la zone du CHoCH (bloc d'ordre M5 en priorité, sinon FVG M5 ; règles de zone plus bas). **Stop** : au-delà de l'extrême du sweep (+ marge, calculée sur l'ATR M15).
 **Plafond de risque** : 1,5 x ATR H1. **Invalidation** : clôture M5 au-delà de l'extrême du sweep.
-**Information affichée** : la liquidité opposée la plus proche à au moins 1 R, et si le trade est aligné ou
-contre l'EMA 50 du H4. Ce second point n'est pas un filtre : il est enregistré pour que le backtest compare
-les deux cas (`h4 aligné` / `h4 contre`).
 
----
+**Objectifs** (`S3_LIQ_TARGETS`) : TP1 = 1 R (50 % clôturés, stop à l'entrée). **TP2 = première liquidité opposée intacte**
+située entre 2 R et 6 R (`S3_TP_MIN_R`, `S3_TP_MAX_R`), **TP3 = la suivante** (au moins 3 R et au-delà de TP2). Chaque
+objectif est placé 0,1 x ATR M15 avant le niveau (`S3_TP_BUF_ATR`). Sans liquidité opposée dans cette fourchette :
+TP2 = 2 R, TP3 = 3 R (TP2 + 1 R si TP2 est plus loin que 2 R). Une liquidité opposée déjà prise n'est plus un objectif.
+
+**Réglages et comparaison au backtest** : chaque correction se coupe seule pour mesurer son effet, par exemple
+`python backtest.py --only S3 --split 0.6 --set strategies.S3_BIAS_FILTER=true,false` (idem `S3_HTF_ZONE`,
+`S3_HTF_UNTOUCHED`, `S3_FRESH_LEVELS`, `S3_LIQ_TARGETS`). Le rapport enregistre `biais` (H4/H1/contre/aucun), `zone`
+(ex. `H1 OB`) et `tp` (`liquidité`/`fixe`) de chaque trade. Les filtres cumulés rendent S3 beaucoup plus sélective :
+vérifie sur plusieurs mois que le nombre de trades reste exploitable avant de les garder tous.
 
 ## Mean Reversion (code S4) · H1 > M15
 

@@ -330,6 +330,219 @@ class Strategies(unittest.TestCase):
             self.assertIn(t["period"], ("1", "2"))
 
 
+def s3_scenario(stale, pad=10):
+    """M5 artificiels : oscillations, deux sommets égaux (EQH), puis un sweep M15 et une chute (CHoCH M5).
+    stale=True : le niveau balayé avait déjà été dépassé pendant des heures avant le sweep."""
+    def build(wp, start):
+        out, t, px = [], start, wp[0][1]
+        for dur, tgt in wp[1:]:
+            n = max(1, dur // 5)
+            for i in range(n):
+                o, c, k = px, px + (tgt - px) / (n - i), len(out)
+                out.append({"epoch": t, "open": o, "high": max(o, c) + 0.15 + 0.05 * ((k * 7) % 11) / 11,
+                            "low": min(o, c) - 0.15 - 0.05 * ((k * 5 + 3) % 13) / 13, "close": c})
+                px, t = c, t + 300
+        return out
+    wp = [(0, 1998)]
+    for _ in range(18):
+        wp += [(120, 2003), (120, 1996)]
+    wp += [(120, 2005.0), (120, 1999), (120, 2005.1), (120, 1998)]
+    wp += [(120, 2020), (240, 2021), (180, 2002)] if stale else [(300, 2002)]
+    wp += [(pad, 2002), (30, 2004.0), (15, 2003.2), (15, 2005.9), (15, 2002.4), (20, 2001.0)]
+    return build(wp, int(datetime(2026, 10, 12, 0, 0, tzinfo=NY).timestamp()))
+
+
+def s3_first_signal(m5, **patches):
+    from unittest import mock
+    rp = B.Replay(m5)
+    with mock.patch.multiple(S, **patches):
+        for t in range(len(m5) - 40, len(m5)):
+            provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
+            sig = S.scan_s3(provide, m5[t]["epoch"] + 300, Counter(), 2, kz=False, mode="limit")
+            if sig:
+                return sig
+    return None
+
+
+class ListeDesActifs(unittest.TestCase):
+    DERIV_MAJEURES = {"frxAUDJPY", "frxAUDUSD", "frxEURAUD", "frxEURCAD", "frxEURCHF", "frxEURGBP", "frxEURJPY",
+                      "frxEURUSD", "frxGBPAUD", "frxGBPJPY", "frxGBPUSD", "frxUSDCAD", "frxUSDCHF", "frxUSDJPY"}
+
+    def setUp(self):
+        for k in ("WEEKEND_EXIT", "ACCOUNT_BALANCE", "RISK_PCT", "SPREAD_PCT"):
+            os.environ.pop(k, None)
+        G.RATES.clear()
+
+    def test_toutes_les_majeures_deriv_sont_suivies(self):
+        self.assertTrue(self.DERIV_MAJEURES <= set(gold.ALL_SYMBOLS))
+        self.assertIn("frxNZDUSD", gold.ALL_SYMBOLS)                      # déjà suivie : conservée
+        self.assertIn("frxXAUUSD", gold.ALL_SYMBOLS)
+        self.assertEqual(len(gold.ALL_SYMBOLS), len(set(gold.ALL_SYMBOLS)))   # aucun doublon
+        self.assertEqual(len(gold.ALL_SYMBOLS), 1 + 7 + 8 + 2)
+
+    def test_decimales_et_spreads(self):
+        for sym in ("frxAUDJPY", "frxEURJPY", "frxGBPJPY", "frxUSDJPY"):
+            self.assertEqual(gold.dec_of(sym), 3)
+        for sym in ("frxEURGBP", "frxEURAUD", "frxEURUSD"):
+            self.assertEqual(gold.dec_of(sym), 5)
+        self.assertEqual(gold.dec_of("frxXAUUSD"), 2)
+        for sym in gold.FOREX_CROSSES:
+            self.assertGreater(gold.spread_pct(sym), gold.SPREAD_OTHER)  # croisements : plus larges que les majeures USD
+        self.assertEqual(gold.name_of("frxGBPJPY"), "GBPJPY")
+
+    def test_exposition_par_devise(self):
+        self.assertEqual(G.ccy_signs("frxEURJPY", "BUY"), {"EUR": 1, "JPY": -1})
+        self.assertEqual(G.ccy_signs("frxEURJPY", "SELL"), {"EUR": -1, "JPY": 1})
+        self.assertEqual(G.ccy_signs("frxXAUUSD", "BUY"), {"USD": -1})        # l'or n'est pas une devise suivie
+        self.assertEqual(G.ccy_signs("cryBTCUSD", "BUY"), {})
+        self.assertEqual(G.usd_sign("frxEURJPY", "BUY"), 0)                   # un croisement n'expose pas à l'USD
+
+    def test_limite_par_devise_sur_les_croisements(self):
+        tr = {"active": {}, "closed": []}
+
+        def add(sym, d, strat):
+            k = f"{sym}{d}{strat}"
+            tr["active"][k] = T.new_trade("OR", k, sym, sym[3:], d, d, 1, .9, 1.1, 1.2, 1.3, "M15", 900, 2, strat, 1e9, 3600)
+        add("frxEURJPY", "BUY", "A")                                           # long EUR, short JPY
+        add("frxEURGBP", "BUY", "A")                                           # long EUR, short GBP
+        ok, why = G.risk_check(tr, "frxEURCAD", "BUY", 1e9, "B")
+        self.assertFalse(ok)
+        self.assertIn("EUR", why)                                              # 3e position longue EUR
+        self.assertTrue(G.risk_check(tr, "frxEURCAD", "SELL", 1e9, "B")[0])    # sens opposé : autorisé
+        self.assertTrue(G.risk_check(tr, "frxGBPAUD", "BUY", 1e9, "B")[0])     # long GBP (déjà short GBP) : autorisé
+        ok, why = G.risk_check(tr, "frxAUDJPY", "SELL", 1e9, "B")              # long JPY : une seule position short JPY ouverte
+        self.assertTrue(ok)
+        add("frxGBPJPY", "BUY", "A")                                           # 2e short JPY
+        ok, why = G.risk_check(tr, "frxAUDJPY", "BUY", 1e9, "B")               # 3e short JPY
+        self.assertFalse(ok)
+        self.assertIn("JPY", why)
+
+    def test_lot_des_croisements(self):
+        os.environ["ACCOUNT_BALANCE"], os.environ["RISK_PCT"] = "10000", "1"
+        rates = {"frxUSDJPY": 150.0, "frxGBPUSD": 1.30, "frxAUDUSD": 0.65}
+        # EURJPY : stop de 0,30 yen -> perte par lot = 0,30 x 100 000 / 150 = 200 USD -> 100 USD / 200 = 0,50 lot
+        self.assertEqual(G.lot_size("frxEURJPY", 165.0, 164.7, rates=rates), 0.5)
+        # EURGBP : stop de 0,0020 livre -> 0,0020 x 100 000 x 1,30 = 260 USD -> 0,38 lot
+        self.assertEqual(G.lot_size("frxEURGBP", 0.85, 0.848, rates=rates), 0.38)
+        # GBPAUD : stop de 0,0030 dollar australien -> 0,0030 x 100 000 x 0,65 = 195 USD -> 0,51 lot
+        self.assertEqual(G.lot_size("frxGBPAUD", 1.95, 1.947, rates=rates), 0.51)
+        # paire de conversion non suivie : pas de lot plutôt qu'un lot faux
+        self.assertIsNone(G.lot_size("frxEURCAD", 1.45, 1.448, rates=rates))
+        self.assertIsNone(G.lot_size("frxEURCHF", 0.95, 0.948, rates={}))
+        # les paires déjà gérées ne changent pas
+        self.assertEqual(G.lot_size("frxUSDJPY", 150.0, 149.7), 0.5)
+        self.assertEqual(G.lot_size("frxEURUSD", 1.0850, 1.0820), 0.33)
+
+    def test_scan_enregistre_les_prix_de_conversion(self):
+        data = B.gen_sim(20, 4)
+        rp, sent, funnel = B.Replay(data), {}, Counter()
+        t = 5000
+        provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
+        gold.scan("frxUSDJPY", provide, data[t]["epoch"] + 300, sent, funnel, ())
+        self.assertAlmostEqual(G.RATES["frxUSDJPY"], data[t]["close"])
+
+
+class SweepCHoCH(unittest.TestCase):
+    OFF = dict(S3_BIAS_FILTER=False, S3_HTF_ZONE=False, S3_LIQ_TARGETS=False)
+
+    def first_pad(self, stale, **patches):
+        for pad in range(0, 60, 5):
+            sig = s3_first_signal(s3_scenario(stale, pad), **patches)
+            if sig:
+                return sig
+        return None
+
+    def test_niveau_intact_donne_un_signal(self):
+        sig = self.first_pad(False, **self.OFF)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig["dir"], "SELL")
+
+    def test_niveau_deja_pris_ecarte(self):
+        # ancien comportement : signal sur un niveau déjà dépassé de 15 points pendant des heures
+        self.assertIsNotNone(self.first_pad(True, S3_FRESH_LEVELS=False, **self.OFF))
+        # corrigé : ce niveau n'est plus de la liquidité
+        self.assertIsNone(self.first_pad(True, S3_FRESH_LEVELS=True, **self.OFF))
+
+    def test_niveau_pris_une_seule_fois(self):
+        m15 = [candle(1000 + 900 * i, 100, 100.5, 99.5, 100) for i in range(10)]
+        m15[3] = candle(1000 + 900 * 3, 100, 101.2, 99.8, 100.2)       # mèche au-dessus de 101 : liquidité prise
+        self.assertTrue(S.level_taken(m15, 101.0, "high", 1000))
+        self.assertFalse(S.level_taken(m15, 101.0, "high", 1000, upto=3))   # avant cette bougie : intact
+        self.assertFalse(S.level_taken(m15, 101.0, "high", 1000 + 900 * 4))  # niveau né après la mèche
+
+    def test_biais_h4_puis_h1(self):
+        up, dn, flat = zigzag(3), zigzag(3, up=False), [candle(1_700_000_000 + 3600 * i, 100, 100.5, 99.5, 100) for i in range(60)]
+        self.assertEqual(S.s3_bias(up, dn), ("BUY", "H4"))           # le H4 prime sur le H1
+        self.assertEqual(S.s3_bias(flat, dn), ("SELL", "H1"))        # H4 sans tendance : on lit le H1
+        self.assertEqual(S.s3_bias(flat, flat), (None, None))
+
+    def test_filtre_de_biais(self):
+        from unittest import mock
+        patches = dict(S3_HTF_ZONE=False, S3_LIQ_TARGETS=False, S3_BIAS_FILTER=True)
+        with mock.patch.object(S, "s3_bias", return_value=("SELL", "H4")):
+            self.assertIsNotNone(self.first_pad(False, **patches))
+        with mock.patch.object(S, "s3_bias", return_value=("BUY", "H4")):
+            self.assertIsNone(self.first_pad(False, **patches))      # SELL contre un biais haussier
+        with mock.patch.object(S, "s3_bias", return_value=(None, None)):
+            self.assertIsNone(self.first_pad(False, **patches))      # aucun biais clair
+
+    def test_zones_h1_h4(self):
+        t0 = 1_700_000_000
+        cs = [candle(t0 + 3600 * i, 100, 100.6, 99.4, 100 + (0.1 if i % 2 else -0.1)) for i in range(30)]
+        cs[26] = candle(t0 + 3600 * 26, 100.1, 100.3, 99.5, 99.7)    # bougie baissière : bloc d'ordre
+        cs[27] = candle(t0 + 3600 * 27, 99.7, 102.6, 99.6, 102.5)    # déplacement haussier qui casse la structure
+        cs[28] = candle(t0 + 3600 * 28, 102.5, 103.4, 102.1, 103.0)
+        cs[29] = candle(t0 + 3600 * 29, 103.0, 103.6, 102.8, 103.2)
+        before = t0 + 3600 * 40
+        zs = S.htf_zones(cs, "BUY", "H1", before)
+        kinds = {z["kind"] for z in zs}
+        self.assertIn("OB", kinds)
+        self.assertIn("FVG", kinds)                                  # trou entre la bougie 26 et la bougie 28
+        self.assertTrue(all(z["lo"] < z["hi"] for z in zs))
+        self.assertEqual(S.htf_zones(cs, "SELL", "H1", before), [])   # aucune zone d'offre dans ce marché
+        cs2 = cs + [candle(t0 + 3600 * 30, 103.2, 103.3, 100.0, 100.2)]   # retour dans les zones
+        self.assertEqual([z for z in S.htf_zones(cs2, "BUY", "H1", before) if z["kind"] == "OB"], [])   # retestée
+        self.assertEqual(S.htf_zones(cs, "BUY", "H1", t0 + 3600 * 27), [])   # le déplacement n'est pas encore clôturé
+
+    def test_signal_exige_une_zone_htf(self):
+        from unittest import mock
+        patches = dict(S3_BIAS_FILTER=False, S3_LIQ_TARGETS=False, S3_HTF_ZONE=True)
+        with mock.patch.object(S, "htf_zone_hit", return_value=None):
+            self.assertIsNone(self.first_pad(False, **patches))
+        fake = {"kind": "OB", "tf": "H1", "lo": 2004.0, "hi": 2005.0, "epoch": 0}
+        with mock.patch.object(S, "htf_zone_hit", return_value=fake):
+            sig = self.first_pad(False, **patches)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig["extra"]["zone"], "H1 OB")
+        self.assertTrue(any("bloc d'ordre H1" in x for x in sig["details"]))
+        self.assertEqual(sig["zones"][0]["kind"], "ob")
+
+    def test_objectifs_sur_la_liquidite(self):
+        m15 = [candle(1000 + 900 * i, 100, 100.4, 99.6, 100) for i in range(20)]
+        levels = [("PDL", 96.0, "low", 1000), ("Asie B", 94.0, "low", 1000), ("EQL", 99.0, "low", 1000),
+                  ("PDH", 104.0, "high", 1000), ("EQL", 90.0, "low", 1000 + 900 * 30)]
+        tg = S.liquidity_targets(levels, m15, "SELL", 100.0, 1.0, a_m15=1.0)
+        self.assertEqual([t[0] for t in tg], ["PDL", "Asie B"])      # 99 trop proche (1 R), 104 du mauvais côté, 90 pas encore né
+        tps, t2, t3 = S.s3_tps("SELL", 100.0, 1.0, tg)
+        self.assertAlmostEqual(tps[0], 99.0)
+        self.assertAlmostEqual(tps[1], 96.1)                          # 0,1 ATR avant PDL
+        self.assertAlmostEqual(tps[2], 94.1)
+        self.assertTrue(tps[0] > tps[1] > tps[2])
+        # niveau déjà pris : plus un objectif
+        m15[5] = candle(1000 + 900 * 5, 100, 100.2, 95.5, 99.9)
+        self.assertEqual([t[0] for t in S.liquidity_targets(levels, m15, "SELL", 100.0, 1.0, 1.0)], ["Asie B"])
+        # sans liquidité : 2 R / 3 R, TP3 toujours au-delà de TP2
+        self.assertEqual([round(x, 2) for x in S.s3_tps("BUY", 100.0, 1.0, [])[0]], [101.0, 102.0, 103.0])
+        tps = S.s3_tps("BUY", 100.0, 1.0, [("PDH", 104.9, 4.9)])[0]
+        self.assertTrue(tps[0] < tps[1] < tps[2])
+
+    def test_signal_complet_avec_objectifs(self):
+        sig = self.first_pad(False, S3_BIAS_FILTER=False, S3_HTF_ZONE=False, S3_LIQ_TARGETS=True)
+        self.assertIsNotNone(sig)
+        self.assertTrue(sig["tp3"] < sig["tp2"] < sig["tp1"] < sig["entry"] < sig["sl"])
+        self.assertIn(sig["extra"]["tp"], ("fixe", "liquidité"))
+
+
 class OrdresLimites(unittest.TestCase):
     def test_choix_de_l_ordre(self):
         self.assertEqual(S.pick_entry("BUY", 105, 102, 99, "limit"), ("BUY LIMIT", 102))

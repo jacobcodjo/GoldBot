@@ -1,6 +1,6 @@
-# Bot or (XAUUSD) + paires majeures + BTC/ETH
+# Bot or (XAUUSD) + paires forex majeures + BTC/ETH
 
-Bot d'alertes Telegram pour l'or, les 7 paires forex majeures, le BTC et l'ETH, avec quatre stratégies (détail précis dans
+Bot d'alertes Telegram pour l'or, les paires forex majeures (7 contre USD et 8 croisements majeurs de Deriv), le BTC et l'ETH, avec quatre stratégies (détail précis dans
 [STRATEGIES.md](STRATEGIES.md)). Il reprend l'architecture du bot CRT/Impulsion (client Deriv robuste, suivi
 des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune de ses stratégies**.
 
@@ -8,7 +8,7 @@ des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune d
 |---|---|---|
 | S1 | Trend Pullback | H4 > H1 > M15 |
 | S2 | Asian Breakout | M15 |
-| S3 | Sweep + CHoCH | M15 > M5 |
+| S3 | Sweep + CHoCH (SMC) | H4/H1 > M15 > M5 |
 | S4 | Mean Reversion | H1 > M15 |
 
 Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à TP3 avec ratio, lot suggéré,
@@ -20,15 +20,23 @@ départ à valider par backtest.
 | Actif | Symbole Deriv |
 |---|---|
 | Or | `frxXAUUSD` |
-| Majeures | `frxEURUSD`, `frxGBPUSD`, `frxUSDJPY`, `frxUSDCHF`, `frxAUDUSD`, `frxUSDCAD`, `frxNZDUSD` |
+| Majeures contre USD | `frxEURUSD`, `frxGBPUSD`, `frxUSDJPY`, `frxUSDCHF`, `frxAUDUSD`, `frxUSDCAD`, `frxNZDUSD` |
+| Croisements majeurs Deriv | `frxAUDJPY`, `frxEURAUD`, `frxEURCAD`, `frxEURCHF`, `frxEURGBP`, `frxEURJPY`, `frxGBPAUD`, `frxGBPJPY` |
 | Cryptos | `cryBTCUSD`, `cryETHUSD` |
 
 Les quatre stratégies s'appliquent à chaque actif avec les mêmes règles (toutes les distances sont exprimées en ATR,
 donc elles s'adaptent à la volatilité de chaque paire). Elles ont été pensées pour l'or : **rien ne dit qu'elles
 fonctionnent aussi bien sur les majeures**. Compare actif par actif au backtest et retire ceux qui ne tiennent pas
-(variable `SYMBOLS`). Le suivi de l'exposition traite l'or comme une position sur l'USD : acheter l'or compte
-comme vendre l'USD, et 2 trades au plus dans le même sens USD sont ouverts à la fois. BTC et ETH forment un
-groupe corrélé : 2 trades au plus dans le même sens.
+(variable `SYMBOLS`). La liste forex reprend les 14 paires que Deriv classe en « Forex majeures » (NZDUSD, rangée en
+mineures par Deriv, reste suivie). Le suivi de l'exposition est **par devise** : un trade compte comme long ou short
+sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; l'or acheté = short USD), et 2 trades au plus
+dans le même sens sur une même devise sont ouverts à la fois. BTC et ETH forment un groupe corrélé : 2 trades au plus
+dans le même sens.
+
+**Croisements (sans USD)** : lot suggéré converti en USD avec le dernier prix de la paire de conversion (USDJPY, GBPUSD,
+AUDUSD, USDCAD, USDCHF), qui doit être dans `SYMBOLS` ; sinon l'alerte indique « lot à calculer » plutôt qu'un lot faux.
+Spreads par défaut (estimations, `SPREAD_PCT` pour imposer) : 0,007 à 0,014 % selon la paire, plus larges que les
+majeures USD (0,006 %). Les paires en yen s'affichent avec 3 décimales.
 
 **Cryptos (marché 24h/24, 7j/7)** : pas de rollover ni de fermeture hebdomadaire, donc aucune fenêtre sans alerte
 liée au week-end (seules les annonces USD à fort impact bloquent les alertes) ; les stratégies Sweep + CHoCH et
@@ -45,7 +53,7 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limites de risque, lot, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 38 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `tests.py` | 53 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 4 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
@@ -67,10 +75,10 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
    - `MAX_AGE_MIN` : âge maximal d'un signal en minutes (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi.
    - `ALERT_FUSEAU` : fuseau d'affichage de l'heure (défaut `Africa/Porto-Novo`, soit l'heure du Bénin ; `none` pour désactiver).
    - `ALERT_FORMAT` : `complet`, `compact`, `contexte` ou `minimal` (voir plus bas).
-   - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures, BTC et ETH).
+   - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures USD, les 8 croisements majeurs, BTC et ETH).
 4. Le workflow n'a pas de `schedule` : déclenche-le toutes les 5 minutes avec ton cron externe
-   (`workflow_dispatch`), comme pour l'ancien bot. Un scan télécharge M5 et M15 pour chaque actif (10 actifs : une
-   quinzaine de secondes avec la temporisation anti-limite de requêtes).
+   (`workflow_dispatch`), comme pour l'ancien bot. Un scan télécharge M5 et M15 pour chaque actif (18 actifs : une
+   trentaine de secondes avec la temporisation anti-limite de requêtes).
 5. Lance une fois le workflow avec `test = true` : tu reçois un message de contrôle avec l'entonnoir.
 
 **Sauvegarde de l'état.** Les trades suivis, les garde-fous et les alertes déjà envoyées (`trades.json`, `guard.json`,
@@ -115,7 +123,7 @@ le récapitulatif), marquées ✅ si elle va dans le sens du trade et ⚠️ si 
 ⚠️ Tendance H4 baissière · mûre (4 jambes, 6 j) : contre le trade
 ```
 
-Ce n'est **pas un filtre** : l'alerte part quelle que soit la tendance. Le backtest enregistre ces deux informations
+Ce n'est **pas un filtre** : l'alerte part quelle que soit la tendance (seule exception : Sweep + CHoCH, qui ne trade que dans le sens du biais de structure H4/H1, voir `STRATEGIES.md`). Le backtest enregistre ces deux informations
 (colonnes `tend_d1` et `tend_h4` du rapport, ex. « mûre avec », « naissante contre ») pour que tu compares la
 performance selon l'âge de la tendance avant d'en faire éventuellement un filtre.
 
@@ -237,7 +245,7 @@ scan (réponse sous 5 minutes).
 Workflow **Backtest Or** (ou en local : `python backtest.py --days 120 --split 0.6`).
 
 - Rejoue les mêmes fonctions que le bot en direct, sans regarder le futur, avec un spread (défaut : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 % ; `--spread-pct` pour imposer le tien).
-- `--sym frxXAUUSD,frxEURUSD` pour choisir les actifs, `--sym all` pour les 10 actifs.
+- `--sym frxXAUUSD,frxEURUSD` pour choisir les actifs, `--sym all` pour les 18 actifs.
 - Rapport par actif, par stratégie, sens, session, alignement H4, résultat, et stabilité entre deux périodes.
 - `--only S2,S3` pour une stratégie ; `--set strategies.S1_ADX_MIN=15,18,22` pour une grille ; `--source csv`
   pour tes propres données (un seul actif) ; `--source sim` pour un contrôle de bon sens sur marche aléatoire.

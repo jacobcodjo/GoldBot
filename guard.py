@@ -13,7 +13,7 @@ NEWS_FILE = "news.json"
 
 # --- Limites de risque ---
 MAX_OPEN_TRADES = 8        # positions ouvertes en même temps (tous actifs et stratégies confondus)
-GROUP_LIMIT = 2            # exposition nette maximale par groupe corrélé (USD, cryptos), même sens
+GROUP_LIMIT = 2            # exposition nette maximale par devise (USD, EUR, JPY…) et par groupe crypto, même sens
 # --- Fenêtres sans alerte (forex et or) ---
 ROLLOVER = (16 * 60 + 55, 17 * 60 + 15)     # minutes NY : élargissement des spreads
 FRIDAY_CLOSE_FROM = 15 * 60 + 30            # vendredi : trop proche de la fermeture hebdomadaire
@@ -42,10 +42,10 @@ FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée 
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
 FUNNEL_ORDER = ["data", "S1_tendance", "S1_repli", "S1_signal", "S2_range", "S2_signal", "S3_niveau", "S3_sweep",
-                "S3_signal", "S4_regime", "S4_signal", "signal", "vol", "stale", "blackout", "dedupe", "risk", "alert"]
+                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "signal", "vol", "stale", "blackout", "dedupe", "risk", "alert"]
 FUNNEL_LABEL = {"data": "données", "S1_tendance": "Trend Pullback : tendance H4", "S1_repli": "repli H1", "S1_signal": "signal Trend Pullback",
                 "S2_range": "Asian Breakout : plage", "S2_signal": "signal Asian Breakout", "S3_niveau": "Sweep + CHoCH : niveaux",
-                "S3_sweep": "sweep", "S3_signal": "signal Sweep + CHoCH", "S4_regime": "Mean Reversion : range H1", "S4_signal": "signal Mean Reversion",
+                "S3_sweep": "sweep (niveau intact)", "S3_biais": "sens du biais H4/H1", "S3_zone": "sur zone H1/H4", "S3_signal": "signal Sweep + CHoCH", "S4_regime": "Mean Reversion : range H1", "S4_signal": "signal Mean Reversion",
                 "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 
@@ -203,19 +203,28 @@ def blackout(sym, now, news=()):
 # --------------------------------------------------------------------------
 # Doublons et exposition corrélée
 # --------------------------------------------------------------------------
-def usd_sign(sym, d):
-    """+1 si le trade équivaut à être long USD, -1 s'il équivaut à être short USD, 0 sinon.
-    L'or (XAUUSD) est coté en USD : acheter l'or revient à vendre l'USD."""
+FIAT = ("USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD")
+
+
+def ccy_signs(sym, d):
+    """{devise: +1 (long) | -1 (short)} d'un trade forex ou or. EURJPY acheté = long EUR, short JPY ; l'or (XAUUSD)
+    est coté en USD : acheter l'or revient à vendre l'USD (l'or lui-même n'est pas une devise suivie)."""
     s = sym.upper()
     if not (s.startswith("FRX") and len(s) >= 9):
-        return 0
+        return {}
     base, quote = s[3:6], s[6:9]
     buy = 1 if d == "BUY" else -1
-    if quote == "USD":
-        return -buy
-    if base == "USD":
-        return buy
-    return 0
+    out = {}
+    if base in FIAT:
+        out[base] = buy
+    if quote in FIAT:
+        out[quote] = -buy
+    return out
+
+
+def usd_sign(sym, d):
+    """+1 si le trade équivaut à être long USD, -1 s'il équivaut à être short USD, 0 sinon."""
+    return ccy_signs(sym, d).get("USD", 0)
 
 
 def crypto_sign(sym, d):
@@ -231,10 +240,11 @@ def risk_check(tr, sym, d, now, strat=None):
         return False, "dedupe"
     if len(act) >= MAX_OPEN_TRADES:
         return False, f"{MAX_OPEN_TRADES} trades déjà actifs"
-    sign = usd_sign(sym, d)
-    net = sum(usd_sign(t["sym"], t["dir"]) for t in act)
-    if sign and net * sign >= GROUP_LIMIT:
-        return False, "exposition USD (même sens) au maximum"
+    signs = ccy_signs(sym, d)
+    for ccy in sorted(signs, key=lambda c: c != "USD"):          # l'USD d'abord, puis les autres devises du trade
+        net = sum(ccy_signs(t["sym"], t["dir"]).get(ccy, 0) for t in act)
+        if net * signs[ccy] >= GROUP_LIMIT:
+            return False, f"exposition {ccy} (même sens) au maximum"
     csign = crypto_sign(sym, d)
     cnet = sum(crypto_sign(t["sym"], t["dir"]) for t in act)
     if csign and cnet * csign >= GROUP_LIMIT:
@@ -261,9 +271,29 @@ def contract_units(sym):
     return 100000.0 if sym.startswith("frx") else None
 
 
-def lot_size(sym, entry, sl, balance=None, risk_pct=None):
-    """Lot pour risquer risk_pct % du solde, ou None si inconnu. Le résultat est arrondi vers le bas
-    au 0,01 ; il reste une estimation à vérifier sur ta plateforme."""
+RATES = {}   # dernier prix de chaque actif scanné (rempli par gold.scan) : convertit en USD le risque des croisements
+
+
+def quote_to_usd(sym, entry, rates=None):
+    """Valeur d'une unité de la devise de cotation en USD, ou None si la paire de conversion n'est pas connue.
+    USDJPY, USDCHF, USDCAD : la cotation elle-même (1 / entry). Croisements (EURJPY, GBPAUD…) : prix de la paire
+    contre USD de la devise de cotation, suivie par le bot (frxUSDJPY, frxGBPUSD…)."""
+    quote = sym[6:9].upper()
+    if quote == "USD":
+        return 1.0
+    if sym[3:6].upper() == "USD":
+        return 1.0 / entry
+    rates = RATES if rates is None else rates
+    if rates.get("frx" + quote + "USD"):
+        return rates["frx" + quote + "USD"]
+    if rates.get("frxUSD" + quote):
+        return 1.0 / rates["frxUSD" + quote]
+    return None
+
+
+def lot_size(sym, entry, sl, balance=None, risk_pct=None, rates=None):
+    """Lot pour risquer risk_pct % du solde, ou None si inconnu (contrat, ou paire de conversion en USD non suivie).
+    Le résultat est arrondi vers le bas au 0,01 ; il reste une estimation à vérifier sur ta plateforme."""
     try:
         balance = float(balance or os.getenv("ACCOUNT_BALANCE") or 0)
         risk_pct = float(risk_pct or os.getenv("RISK_PCT") or 1)
@@ -274,8 +304,11 @@ def lot_size(sym, entry, sl, balance=None, risk_pct=None):
     if balance <= 0 or not units or dist <= 0:
         return None
     loss_per_lot = dist * units
-    if sym.startswith("frx") and sym[6:9] != "USD":
-        loss_per_lot /= entry          # perte exprimée en devise de cotation -> USD
+    if sym.startswith("frx"):
+        k = quote_to_usd(sym, entry, rates)    # perte exprimée en devise de cotation -> USD
+        if k is None:
+            return None
+        loss_per_lot *= k
     lot = math.floor(balance * risk_pct / 100 / loss_per_lot * 100 + 1e-9) / 100
     return lot
 
@@ -287,7 +320,7 @@ def lot_line(sym, entry, sl):
     lot = lot_size(sym, entry, sl)
     pct = os.getenv("RISK_PCT") or "1"
     if lot is None:
-        return f"Lot  à calculer (contrat inconnu) · risque {pct} %"
+        return f"Lot  à calculer (contrat ou conversion USD inconnus) · risque {pct} %"
     return f"Lot  {lot:.2f}  (risque {pct} % de {bal})" if lot >= 0.01 else "Lot  < 0,01 : stop trop large pour ce risque"
 
 

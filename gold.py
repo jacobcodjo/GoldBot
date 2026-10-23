@@ -1,4 +1,4 @@
-"""Bot or (XAUUSD) + 7 paires forex majeures + BTC et ETH : 4 stratégies, données Deriv, alertes Telegram, suivi des trades.
+"""Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH : 4 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
 Stratégies (détail dans STRATEGIES.md) :
   Trend Pullback · S2 Cassure de la plage asiatique · Sweep + CHoCH · Mean Reversion
@@ -30,15 +30,19 @@ TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 
 GOLD = "frxXAUUSD"
-FOREX_MAJORS = ["frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxUSDCHF", "frxAUDUSD", "frxUSDCAD", "frxNZDUSD"]
+FOREX_MAJORS = ["frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxUSDCHF", "frxAUDUSD", "frxUSDCAD", "frxNZDUSD"]   # les 7 paires contre USD
+# Autres paires classées « Forex majeures » par Deriv (catégorie major pairs : 14 paires, dont 6 des 7 ci-dessus ; NZDUSD, rangée en mineures par Deriv, reste suivie)
+FOREX_CROSSES = ["frxAUDJPY", "frxEURAUD", "frxEURCAD", "frxEURCHF", "frxEURGBP", "frxEURJPY", "frxGBPAUD", "frxGBPJPY"]
 CRYPTOS = ["cryBTCUSD", "cryETHUSD"]
-ALL_SYMBOLS = [GOLD] + FOREX_MAJORS + CRYPTOS
-# Liste suivie : or + 7 majeures + BTC + ETH. SYMBOLS="frxXAUUSD,cryBTCUSD" (variable d'environnement) pour la restreindre.
+ALL_SYMBOLS = [GOLD] + FOREX_MAJORS + FOREX_CROSSES + CRYPTOS
+# Liste suivie : or + 7 majeures USD + 8 croisements majeurs Deriv + BTC + ETH. SYMBOLS="frxXAUUSD,cryBTCUSD" (variable d'environnement) pour la restreindre.
 SYMBOLS = [x.strip() for x in os.getenv("SYMBOLS", "").split(",") if x.strip()] or ALL_SYMBOLS
-DECIMALS = {"frxXAUUSD": 2, "frxUSDJPY": 3, "cryBTCUSD": 2, "cryETHUSD": 2}   # les autres majeures : 5 décimales
+DECIMALS = {"frxXAUUSD": 2, "cryBTCUSD": 2, "cryETHUSD": 2}   # paires en yen : 3 décimales ; les autres paires forex : 5
 BOT = "OR"
-SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05}   # % du prix (estimations ; variable SPREAD_PCT pour imposer)
-SPREAD_OTHER = 0.006                      # majeures
+SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05,   # % du prix (estimations ; variable SPREAD_PCT pour imposer)
+                  "frxEURGBP": 0.007, "frxEURJPY": 0.008, "frxEURCHF": 0.009, "frxAUDJPY": 0.009,   # croisements : plus larges que les majeures USD
+                  "frxEURCAD": 0.010, "frxEURAUD": 0.010, "frxGBPJPY": 0.012, "frxGBPAUD": 0.014}
+SPREAD_OTHER = 0.006                      # majeures contre USD
 MAX_AGE_MIN = float(os.getenv("MAX_AGE_MIN") or 20)   # signal plus vieux (clôture du déclencheur) : écarté
 
 
@@ -95,7 +99,7 @@ def name_of(sym):
 
 
 def dec_of(sym):
-    return DECIMALS.get(sym, 5)
+    return DECIMALS.get(sym, 3 if sym.upper().endswith("JPY") else 5)
 
 
 def is_247(sym):
@@ -810,6 +814,7 @@ def scan(sym, provide, now, sent, funnel, news=()):
     if not m5 or now - m5[-1]["epoch"] > STALE_DATA:
         return []                      # données absentes ou marché fermé
     funnel["data"] += 1
+    G.RATES[sym] = m5[-1]["close"]     # dernier prix : sert à convertir en USD le risque des croisements (lot)
     out = []
     dec = dec_of(sym)
     only = [x for x in ENABLED if x in STRATS_BY_SYMBOL.get(sym, ENABLED)]
