@@ -163,6 +163,13 @@ class Garde(unittest.TestCase):
         add("cryETHUSD", "BUY", "A")
         self.assertFalse(G.risk_check(tr, "cryBTCUSD", "BUY", 1e9, "B")[0])         # groupe crypto plein
 
+    def test_aucun_blocage_apres_des_pertes(self):
+        now = ts(2026, 10, 21, 10)
+        tr = {"active": {}, "closed": [dict(sym="frxXAUUSD", dir="BUY", cascade="A", r=-1.0, t_close=now - 60 * k)
+                                         for k in range(1, 8)]}                  # 7 stops dans la journée
+        self.assertEqual(G.risk_check(tr, "frxEURUSD", "SELL", now, "B"), (True, ""))
+        self.assertFalse(hasattr(G, "MAX_DAILY_LOSS_R"))
+
     def test_fenetres(self):
         self.assertIn("week-end", G.blackout("frxEURUSD", ts(2026, 10, 24, 12)))      # samedi
         self.assertIn("fermeture", G.blackout("frxXAUUSD", ts(2026, 10, 23, 16)))     # vendredi 16h

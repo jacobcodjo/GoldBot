@@ -62,7 +62,8 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
   FOMC, annonces à fort impact de la devise de l'actif (USD pour l'or ; les deux devises pour une paire),
   15 min avant et 45 min après (90 min après une décision de taux).
 - **Risque** : 6 trades ouverts au plus, exposition USD nette de 2 trades au plus dans le même sens, une seule
-  position par actif, stratégie et sens, plus d'alertes après -3 R sur la journée (17h NY à 17h NY).
+  position par actif, stratégie et sens. Aucun blocage après une série de pertes : le bot n'arrête pas les alertes
+  selon les résultats de la journée ou de la semaine.
 
 ---
 

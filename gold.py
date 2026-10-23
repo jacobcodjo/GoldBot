@@ -568,10 +568,6 @@ def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
         else:
             funnel["risk"] += 1
             print(f"Alerte bloquée {sig['label']} {sig['dir']} : {why}")
-            ds = T.day_start(now)
-            if why.startswith("perte journalière") and g.get("paused_since") != ds:
-                g["paused_since"] = ds
-                notify(f"⏸ Alertes en pause : {why}. Reprise à la prochaine journée de trading (17h New York).")
         return False
     funnel["alert"] += 1
     if is_limit(sig):

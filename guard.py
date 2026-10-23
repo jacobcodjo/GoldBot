@@ -1,6 +1,5 @@
 """Garde-fous du bot (or, paires majeures, BTC et ETH) : fenêtres sans alerte (news, rollover, week-end),
-un seul trade actif par actif, stratégie et sens, exposition USD corrélée, plafond de pertes
-journalier, calcul du lot, surveillance du bot, entonnoir de filtres et bilan hebdomadaire.
+un seul trade actif par actif, stratégie et sens, exposition USD corrélée, calcul du lot, surveillance du bot, entonnoir de filtres et bilan hebdomadaire.
 Autonome : aucun import de bot.py (les fonctions d'envoi sont passées en argument)."""
 import json, math, os, re
 from datetime import datetime
@@ -15,7 +14,6 @@ NEWS_FILE = "news.json"
 # --- Limites de risque ---
 MAX_OPEN_TRADES = 8        # positions ouvertes en même temps (tous actifs et stratégies confondus)
 GROUP_LIMIT = 2            # exposition nette maximale par groupe corrélé (USD, cryptos), même sens
-MAX_DAILY_LOSS_R = 3.0     # plus de nouvelles alertes si la perte du jour atteint 3 R (jour = 17h NY)
 # --- Fenêtres sans alerte (forex et or) ---
 ROLLOVER = (16 * 60 + 55, 17 * 60 + 15)     # minutes NY : élargissement des spreads
 FRIDAY_CLOSE_FROM = 15 * 60 + 30            # vendredi : trop proche de la fermeture hebdomadaire
@@ -61,7 +59,6 @@ def load_guard(path=GUARD_FILE):
     g.setdefault("health", {})
     g.setdefault("funnel", {})
     g.setdefault("last_report", 0)
-    g.setdefault("paused_since", 0)
     return g
 
 
@@ -204,7 +201,7 @@ def blackout(sym, now, news=()):
 
 
 # --------------------------------------------------------------------------
-# Doublons, exposition corrélée, plafond de pertes
+# Doublons et exposition corrélée
 # --------------------------------------------------------------------------
 def usd_sign(sym, d):
     """+1 si le trade équivaut à être long USD, -1 s'il équivaut à être short USD, 0 sinon.
@@ -228,7 +225,7 @@ def crypto_sign(sym, d):
 
 def risk_check(tr, sym, d, now, strat=None):
     """Retourne (ok, motif). Contrôle : doublon (même actif, stratégie et sens), nombre de trades ouverts,
-    exposition USD nette, plafond de perte journalier."""
+    exposition USD nette et groupe crypto. Aucun blocage lié aux pertes de la journée ou de la semaine."""
     act = T.active_list(tr)
     if any(t["sym"] == sym and t["dir"] == d and t.get("cascade") == strat for t in act):
         return False, "dedupe"
@@ -242,8 +239,6 @@ def risk_check(tr, sym, d, now, strat=None):
     cnet = sum(crypto_sign(t["sym"], t["dir"]) for t in act)
     if csign and cnet * csign >= GROUP_LIMIT:
         return False, "exposition crypto (même sens) au maximum"
-    if T.realized_r(tr, T.day_start(now)) <= -MAX_DAILY_LOSS_R:
-        return False, f"perte journalière de {MAX_DAILY_LOSS_R:g} R atteinte"
     return True, ""
 
 
