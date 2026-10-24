@@ -49,8 +49,6 @@ jobs:
           NOTIFY_OK: ${{ github.event.inputs.test == 'true' && '1' || '0' }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ACCOUNT_BALANCE: ${{ vars.ACCOUNT_BALANCE }}
-          RISK_PCT: ${{ vars.RISK_PCT }}
           STRATEGIES: ${{ vars.STRATEGIES }}
           SYMBOLS: ${{ vars.SYMBOLS }}
           SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
