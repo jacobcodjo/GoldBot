@@ -1,5 +1,5 @@
 """Garde-fous du bot (or, paires majeures, BTC et ETH) : fenêtres sans alerte (news, rollover, week-end),
-un seul trade actif par actif, stratégie et sens, exposition USD corrélée, calcul du lot, surveillance du bot, entonnoir de filtres et bilan hebdomadaire.
+un seul trade actif par actif, stratégie et sens, exposition corrélée par devise, surveillance du bot, entonnoir de filtres et bilan hebdomadaire.
 Autonome : aucun import de bot.py (les fonctions d'envoi sont passées en argument)."""
 import json, math, os, re
 from datetime import datetime
@@ -12,7 +12,6 @@ GUARD_FILE = "guard.json"
 NEWS_FILE = "news.json"
 
 # --- Limites de risque ---
-MAX_OPEN_TRADES = 8        # positions ouvertes en même temps (tous actifs et stratégies confondus)
 GROUP_LIMIT = 2            # exposition nette maximale par devise (USD, EUR, JPY…) et par groupe crypto, même sens
 # --- Fenêtres sans alerte (forex et or) ---
 ROLLOVER = (16 * 60 + 55, 17 * 60 + 15)     # minutes NY : élargissement des spreads
@@ -168,6 +167,14 @@ def calendar_events(g, now, http_get=None, notify=None):
 WEEKEND_EXIT_FROM = 16 * 60 + 30     # vendredi 16h30 New York : les trades forex/or encore ouverts sont clôturés
 
 
+SYNTH_PREFIXES = ("R_", "1HZ")   # indices synthétiques Deriv : R_100, 1HZ100V...
+
+
+def is_synthetic(sym):
+    """Indice synthétique Deriv (Volatility) : prix aléatoire, 24h/24 et 7j/7, insensible aux news."""
+    return sym.startswith(SYNTH_PREFIXES)
+
+
 def weekend_exit_due(sym, now):
     """Vrai si un trade ouvert sur cet actif doit être clôturé avant (ou pendant) la fermeture du week-end.
     Cryptos (24/7) : jamais. Désactivable avec WEEKEND_EXIT=0."""
@@ -180,6 +187,8 @@ def weekend_exit_due(sym, now):
 
 def blackout(sym, now, news=()):
     """Motif de blocage si l'alerte tombe dans une fenêtre à éviter, sinon None."""
+    if is_synthetic(sym):
+        return None                    # indices synthétiques : ni news, ni rollover, ni fermeture hebdomadaire
     for n in news:
         if n["start"] <= now <= n["end"] and (not n["cur"] or any(c in sym.upper() for c in n["cur"])):
             return f"news : {n['note']}"
@@ -233,13 +242,11 @@ def crypto_sign(sym, d):
 
 
 def risk_check(tr, sym, d, now, strat=None):
-    """Retourne (ok, motif). Contrôle : doublon (même actif, stratégie et sens), nombre de trades ouverts,
-    exposition USD nette et groupe crypto. Aucun blocage lié aux pertes de la journée ou de la semaine."""
+    """Retourne (ok, motif). Contrôle : doublon (même actif, stratégie et sens),
+    exposition nette par devise et groupe crypto. Aucune limite sur le nombre total de trades ouverts. Aucun blocage lié aux pertes de la journée ou de la semaine."""
     act = T.active_list(tr)
     if any(t["sym"] == sym and t["dir"] == d and t.get("cascade") == strat for t in act):
         return False, "dedupe"
-    if len(act) >= MAX_OPEN_TRADES:
-        return False, f"{MAX_OPEN_TRADES} trades déjà actifs"
     signs = ccy_signs(sym, d)
     for ccy in sorted(signs, key=lambda c: c != "USD"):          # l'USD d'abord, puis les autres devises du trade
         net = sum(ccy_signs(t["sym"], t["dir"]).get(ccy, 0) for t in act)
@@ -250,78 +257,6 @@ def risk_check(tr, sym, d, now, strat=None):
     if csign and cnet * csign >= GROUP_LIMIT:
         return False, "exposition crypto (même sens) au maximum"
     return True, ""
-
-
-# --------------------------------------------------------------------------
-# Taille de position (facultatif : variable d'environnement ACCOUNT_BALANCE)
-# --------------------------------------------------------------------------
-def contract_units(sym):
-    """Unités par lot standard : 100 onces pour l'or, 100 000 pour une paire forex, 1 pour une crypto. Autre contrat :
-    renseigne LOT_UNITS_<SYMBOLE> (ex. LOT_UNITS_FRXXAUUSD)."""
-    env = os.getenv(f"LOT_UNITS_{sym.upper()}")
-    if env:
-        try:
-            return float(env)
-        except ValueError:
-            return None
-    if sym == "frxXAUUSD":
-        return 100.0
-    if sym.startswith("cry"):
-        return 1.0
-    return 100000.0 if sym.startswith("frx") else None
-
-
-RATES = {}   # dernier prix de chaque actif scanné (rempli par gold.scan) : convertit en USD le risque des croisements
-
-
-def quote_to_usd(sym, entry, rates=None):
-    """Valeur d'une unité de la devise de cotation en USD, ou None si la paire de conversion n'est pas connue.
-    USDJPY, USDCHF, USDCAD : la cotation elle-même (1 / entry). Croisements (EURJPY, GBPAUD…) : prix de la paire
-    contre USD de la devise de cotation, suivie par le bot (frxUSDJPY, frxGBPUSD…)."""
-    quote = sym[6:9].upper()
-    if quote == "USD":
-        return 1.0
-    if sym[3:6].upper() == "USD":
-        return 1.0 / entry
-    rates = RATES if rates is None else rates
-    if rates.get("frx" + quote + "USD"):
-        return rates["frx" + quote + "USD"]
-    if rates.get("frxUSD" + quote):
-        return 1.0 / rates["frxUSD" + quote]
-    return None
-
-
-def lot_size(sym, entry, sl, balance=None, risk_pct=None, rates=None):
-    """Lot pour risquer risk_pct % du solde, ou None si inconnu (contrat, ou paire de conversion en USD non suivie).
-    Le résultat est arrondi vers le bas au 0,01 ; il reste une estimation à vérifier sur ta plateforme."""
-    try:
-        balance = float(balance or os.getenv("ACCOUNT_BALANCE") or 0)
-        risk_pct = float(risk_pct or os.getenv("RISK_PCT") or 1)
-    except ValueError:
-        return None
-    units = contract_units(sym)
-    dist = abs(entry - sl)
-    if balance <= 0 or not units or dist <= 0:
-        return None
-    loss_per_lot = dist * units
-    if sym.startswith("frx"):
-        k = quote_to_usd(sym, entry, rates)    # perte exprimée en devise de cotation -> USD
-        if k is None:
-            return None
-        loss_per_lot *= k
-    lot = math.floor(balance * risk_pct / 100 / loss_per_lot * 100 + 1e-9) / 100
-    return lot
-
-
-def lot_line(sym, entry, sl):
-    bal = os.getenv("ACCOUNT_BALANCE")
-    if not bal:
-        return None
-    lot = lot_size(sym, entry, sl)
-    pct = os.getenv("RISK_PCT") or "1"
-    if lot is None:
-        return f"Lot  à calculer (contrat ou conversion USD inconnus) · risque {pct} %"
-    return f"Lot  {lot:.2f}  (risque {pct} % de {bal})" if lot >= 0.01 else "Lot  < 0,01 : stop trop large pour ce risque"
 
 
 # --------------------------------------------------------------------------

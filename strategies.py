@@ -739,8 +739,9 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
         details.append("⚠️ Aucun biais de structure clair (H4 et H1)")
     else:
         details.append(f"⚠️ Contre le biais {bias_tf} (contre-tendance)")
-    details += [f"✅ CHoCH M5 sous {pivot:.{dec}f}" if d == "SELL" else f"✅ CHoCH M5 au-dessus de {pivot:.{dec}f}",
-                f"✅ Killzone {sess}"]
+    details.append(f"✅ CHoCH M5 sous {pivot:.{dec}f}" if d == "SELL" else f"✅ CHoCH M5 au-dessus de {pivot:.{dec}f}")
+    if kz:
+        details.append(f"✅ Killzone {sess}")
     if not S3_BIAS_FILTER:
         details.append("✅ Aligné avec l'EMA 50 du H4" if aligned else "⚠️ Contre l'EMA 50 du H4 (contre-tendance)")
     details += tp_lines

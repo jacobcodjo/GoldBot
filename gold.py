@@ -1,4 +1,4 @@
-"""Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH : 4 stratégies, données Deriv, alertes Telegram, suivi des trades.
+"""Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH + indices Volatility de Deriv : 4 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
 Stratégies (détail dans STRATEGIES.md) :
   Trend Pullback · S2 Cassure de la plage asiatique · Sweep + CHoCH · Mean Reversion
@@ -34,14 +34,23 @@ FOREX_MAJORS = ["frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxUSDCHF", "frxAUDUSD",
 # Autres paires classées « Forex majeures » par Deriv (catégorie major pairs : 14 paires, dont 6 des 7 ci-dessus ; NZDUSD, rangée en mineures par Deriv, reste suivie)
 FOREX_CROSSES = ["frxAUDJPY", "frxEURAUD", "frxEURCAD", "frxEURCHF", "frxEURGBP", "frxEURJPY", "frxGBPAUD", "frxGBPJPY"]
 CRYPTOS = ["cryBTCUSD", "cryETHUSD"]
-ALL_SYMBOLS = [GOLD] + FOREX_MAJORS + FOREX_CROSSES + CRYPTOS
-# Liste suivie : or + 7 majeures USD + 8 croisements majeurs Deriv + BTC + ETH. SYMBOLS="frxXAUUSD,cryBTCUSD" (variable d'environnement) pour la restreindre.
+# Indices synthétiques Volatility de Deriv (prix produit par un générateur aléatoire, marché 24h/24 et 7j/7) : V10, V25, V50, V75, V100
+# et leurs variantes à 1 tick par seconde (1s). Suivis avec la seule stratégie S3 (voir SYNTH_STRATEGIES).
+SYNTH_NAMES = {"R_10": "V10", "1HZ10V": "V10 (1s)", "R_25": "V25", "1HZ25V": "V25 (1s)", "R_50": "V50", "1HZ50V": "V50 (1s)",
+               "R_75": "V75", "1HZ75V": "V75 (1s)", "R_100": "V100", "1HZ100V": "V100 (1s)"}
+SYNTHETICS = list(SYNTH_NAMES)
+SYNTH_STRATEGIES = {sym: ["S3"] for sym in SYNTHETICS}   # défaut : S3 seule ; SYMBOL_STRATEGIES peut le remplacer
+ALL_SYMBOLS = [GOLD] + FOREX_MAJORS + FOREX_CROSSES + CRYPTOS + SYNTHETICS
+# Liste suivie : or + 7 majeures USD + 8 croisements majeurs Deriv + BTC + ETH + 10 indices Volatility. SYMBOLS="frxXAUUSD,cryBTCUSD" (variable d'environnement) pour la restreindre.
 SYMBOLS = [x.strip() for x in os.getenv("SYMBOLS", "").split(",") if x.strip()] or ALL_SYMBOLS
-DECIMALS = {"frxXAUUSD": 2, "cryBTCUSD": 2, "cryETHUSD": 2}   # paires en yen : 3 décimales ; les autres paires forex : 5
+DECIMALS = {"frxXAUUSD": 2, "cryBTCUSD": 2, "cryETHUSD": 2,   # paires en yen : 3 décimales ; les autres paires forex : 5
+            "R_10": 3, "R_25": 3, "R_50": 4, "R_75": 4, "R_100": 2,   # indices Volatility (variantes 1s : 2 décimales, par défaut) ; à vérifier sur Deriv
+            "1HZ10V": 2, "1HZ25V": 2, "1HZ50V": 2, "1HZ75V": 2, "1HZ100V": 2}
 BOT = "OR"
 SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05,   # % du prix (estimations ; variable SPREAD_PCT pour imposer)
                   "frxEURGBP": 0.007, "frxEURJPY": 0.008, "frxEURCHF": 0.009, "frxAUDJPY": 0.009,   # croisements : plus larges que les majeures USD
-                  "frxEURCAD": 0.010, "frxEURAUD": 0.010, "frxGBPJPY": 0.012, "frxGBPAUD": 0.014}
+                  "frxEURCAD": 0.010, "frxEURAUD": 0.010, "frxGBPJPY": 0.012, "frxGBPAUD": 0.014,
+                  **{sym: 0.02 for sym in SYNTHETICS}}   # indices Volatility : estimation, à ajuster (SPREAD_PCT) selon ton compte
 SPREAD_OTHER = 0.006                      # majeures contre USD
 MAX_AGE_MIN = float(os.getenv("MAX_AGE_MIN") or 20)   # signal plus vieux (clôture du déclencheur) : écarté
 
@@ -80,7 +89,7 @@ def entry_modes():
         if ENTRY_MODE in ("market", "limit") else dict(ENTRY_MODES)
 
 
-STRATS_BY_SYMBOL = parse_sym_strats(os.getenv("SYMBOL_STRATEGIES"))   # actif absent : toutes les stratégies actives
+STRATS_BY_SYMBOL = {**SYNTH_STRATEGIES, **parse_sym_strats(os.getenv("SYMBOL_STRATEGIES"))}   # actif absent : toutes les stratégies actives
 
 
 def apply_cost(t, spread=None):
@@ -95,16 +104,18 @@ def apply_cost(t, spread=None):
 
 
 def name_of(sym):
+    if sym in SYNTH_NAMES:
+        return SYNTH_NAMES[sym]
     return sym[3:] if sym.startswith(("frx", "cry")) else sym
 
 
 def dec_of(sym):
-    return DECIMALS.get(sym, 3 if sym.upper().endswith("JPY") else 5)
+    return DECIMALS.get(sym, 2 if G.is_synthetic(sym) else 3 if sym.upper().endswith("JPY") else 5)
 
 
 def is_247(sym):
-    """Cryptos : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S3 et S4."""
-    return sym.startswith("cry")
+    """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S3 et S4."""
+    return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
     """'S2,S3' -> ['S2', 'S3'] ; vide ou absent -> les 4 stratégies (GitHub transmet une chaîne vide si la variable n'existe pas)."""
     return [x.strip().upper() for x in (text or "").split(",") if x.strip()] or ["S1", "S2", "S3", "S4"]
@@ -113,7 +124,7 @@ def parse_strategies(text):
 ENABLED = parse_strategies(os.getenv("STRATEGIES"))
 GRAN = S.GRAN
 COUNTS = {"M5": 300, "M15": 400}         # bougies téléchargées à chaque scan
-COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York), ~100 jours
+COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York ; D1 en 00h GMT pour les indices synthétiques), ~100 jours
 STALE_DATA = 3 * GRAN["M5"]              # données plus vieilles que 15 min : marché fermé ou flux coupé
 TRADE_TTL = 3600                         # durée de validité affichée (ordres au marché : sans effet)
 
@@ -241,12 +252,29 @@ def aggregate_ny(h1, hours):
     return list(out.values())
 
 
+def aggregate_utc(h1, hours):
+    """Regroupe des H1 en bougies de `hours` heures alignées sur 00h00 GMT (bougie daily de Deriv : hours = 24)."""
+    out, span = {}, hours * 3600
+    for c in h1:
+        start = c["epoch"] - c["epoch"] % span
+        b = out.get(start)
+        if b is None:
+            out[start] = {"epoch": start, "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]}
+        else:
+            b["high"] = max(b["high"], c["high"])
+            b["low"] = min(b["low"], c["low"])
+            b["close"] = c["close"]
+    return list(out.values())
+
+
 def tf_candles(api, cache, sym, tf):
     """Bougies d'un timeframe ; la dernière est en formation. M5 et M15 sont toujours rafraîchis."""
     if tf in ("H1", "H4", "D1"):
         h1 = get_candles(api, cache, sym, GRAN["H1"], count=COUNT_H1)
         if not h1 or tf == "H1":
             return h1
+        if tf == "D1" and G.is_synthetic(sym):
+            return aggregate_utc(h1, 24)       # indices synthétiques : bougie daily de Deriv (00h GMT)
         return aggregate_ny(h1, 24 if tf == "D1" else 4)
     return get_candles(api, cache, sym, GRAN[tf], force=True, count=COUNTS[tf])
 
@@ -396,13 +424,6 @@ def rr_txt(d, entry, sl, tp):
     return f"1:{gain:.1f}".replace(".0", "")
 
 
-def lot_short(sig):
-    if not os.getenv("ACCOUNT_BALANCE"):
-        return None
-    lot = G.lot_size(sig["sym"], sig["entry"], sig["sl"])
-    return "Lot à calculer" if lot is None else (f"Lot {lot:.2f}" if lot >= 0.01 else "Lot < 0,01 (stop trop large)")
-
-
 def _tp_line(sig, c, with_rr=True):
     d = sig["dir"]
     return " · ".join(f"{n} {c(sig[k])}" + (f" ({rr_txt(d, sig['entry'], sig['sl'], sig[k])})" if with_rr else "")
@@ -425,7 +446,7 @@ def message_complet(sig, tid):
         lines.append(f"Invalidation  {c(sig['inval'])}  (clôture au-delà = sortie)")
     cancel = ("Annule l'ordre si TP1 est atteint avant l'entrée, si une bougie clôture au-delà du stop, "
               "ou après le délai." if is_limit(sig) else None)
-    extra = [x for x in (G.lot_line(sig["sym"], sig["entry"], sig["sl"]), cancel, mgmt_line(sig)) if x]
+    extra = [x for x in (cancel, mgmt_line(sig)) if x]
     if extra:
         lines += [""] + extra
     return "\n".join(lines) + (f"\n\nRéf. #{tid}" if tid else "")
@@ -439,7 +460,7 @@ def message_compact(sig, tid):
              f"✅ {sig['short']}"]
     if sig.get("trend_short"):
         lines.append(sig["trend_short"])
-    tail = " · ".join(x for x in (lot_short(sig), f"Réf. #{tid}" if tid else None,
+    tail = " · ".join(x for x in (f"Réf. #{tid}" if tid else None,
                                    f"signal {age_txt(sig)}" if age_txt(sig) else None) if x)
     return "\n".join(lines + ([""] + [tail] if tail else []))
 
@@ -447,7 +468,7 @@ def message_compact(sig, tid):
 def message_minimal(sig, tid):
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
     tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
-    tail = " · ".join(x for x in (lot_short(sig), f"#{tid}" if tid else None) if x)
+    tail = " · ".join(x for x in (f"#{tid}" if tid else None,) if x)
     return "\n".join([f"{'🟢' if d == 'BUY' else '🔴'} {d} {sig['name']} {sig['ltf']} · {sig['label']}"
                        + (f" · {sig_clock(sig)}" if sig_clock(sig) else ""),
                       f"{sig['otype'] + ' ' if is_limit(sig) else ''}{c(sig['entry'])} · SL {c(sig['sl'])} · TP {tps}"]
@@ -463,7 +484,7 @@ def message_contexte(sig, tid):
              _tp_line(sig, c), "", f"Setup : {sig['short']}"] + sig.get("trend_lines", [])
     if sig.get("inval") is not None and T.STRUCT_EXIT:
         lines.append(f"Invalidation {c(sig['inval'])}")
-    tail = " · ".join(x for x in (lot_short(sig), f"Réf. #{tid}" if tid else None) if x)
+    tail = " · ".join(x for x in (f"Réf. #{tid}" if tid else None,) if x)
     return "\n".join(lines + ([""] + [tail] if tail else []))
 
 
@@ -754,10 +775,17 @@ def recap_due(g, now):
     return recap_slot(g, now) is not None
 
 
-def build_recap(api, cache, now):
-    """Texte du récapitulatif (une liste de blocs, un par actif) ; actifs fermés ou en erreur ignorés."""
+RECAP_CLASSES = (("Or", [GOLD]), ("Forex · paires contre USD", FOREX_MAJORS),
+                 ("Forex · croisements majeurs", FOREX_CROSSES), ("Cryptos", CRYPTOS))   # un message par classe
+
+
+def build_recap(api, cache, now, syms=None):
+    """Texte du récapitulatif (une liste de blocs, un par actif) ; actifs fermés ou en erreur ignorés.
+    syms : actifs à traiter (défaut : tous les actifs suivis)."""
     blocks, closed = [], []
-    for sym in SYMBOLS:
+    for sym in (SYMBOLS if syms is None else syms):
+        if G.is_synthetic(sym):
+            continue                   # indices synthétiques : pas de récapitulatif de tendance (S3 seule, marché aléatoire)
         try:
             h1 = tf_candles(api, cache, sym, "H1")
             if not h1 or now - h1[-1]["epoch"] > RECAP_STALE:
@@ -771,25 +799,114 @@ def build_recap(api, cache, now):
 
 
 def send_recap(api, cache, now):
-    blocks, closed = build_recap(api, cache, now)
-    if not blocks:
-        return False
+    """Envoie le récapitulatif du matin : un message par classe d'actif (or, forex contre USD, croisements, cryptos).
+    Les actifs fermés sont listés à la fin. Retourne False si aucun actif n'a de données."""
     day = datetime.fromtimestamp(now, NY).strftime("%d/%m")
     clock = alert_clock(now)
-    head = (f"📅 Récapitulatif de tendance · {day}" + (f" · {clock}" if clock else "")
-            + " (avant l'ouverture de Londres)\n"
-            "Âge = jambes consécutives (sommet + creux plus hauts, ou plus bas) : naissante 1 · établie 2-3 · mûre 4 et plus. "
-            "⚡ = cassure impulsive.")
-    chunk = head
-    for b in blocks:
-        if len(chunk) + len(b) + 2 > 3800:
-            notify(chunk)
-            chunk = ""
-        chunk += ("\n\n" if chunk else "") + b
-    if closed:
-        chunk += f"\n\nMarché fermé : {', '.join(closed)}"
-    notify(chunk)
-    return True
+    legend = ("Âge = jambes consécutives (sommet + creux plus hauts, ou plus bas) : naissante 1 · établie 2-3 · mûre 4 et plus. "
+              "⚡ = cassure impulsive.")
+    sent, closed_all = False, []
+    for title, syms in RECAP_CLASSES:
+        blocks, closed = build_recap(api, cache, now, [s for s in syms if s in SYMBOLS])
+        if not blocks:
+            closed_all += closed
+            continue
+        chunk = (f"📅 {title} · récapitulatif de tendance · {day}" + (f" · {clock}" if clock else "")
+                 + " (avant l'ouverture de Londres)" + ("" if sent else "\n" + legend))
+        sent = True
+        for b in blocks:
+            if len(chunk) + len(b) + 2 > 3800:
+                notify(chunk)
+                chunk = ""
+            chunk += ("\n\n" if chunk else "") + b
+        if closed:
+            chunk += f"\n\nMarché fermé : {', '.join(closed)}"
+        notify(chunk)
+    if sent and closed_all:
+        notify(f"Marché fermé : {', '.join(closed_all)}")
+    return sent
+
+
+# --------------------------------------------------------------------------
+# Récapitulatif du soir des indices synthétiques (marché 24h/24 : tous les jours, 4 h avant la clôture de la bougie daily de Deriv, 00h GMT)
+# --------------------------------------------------------------------------
+SYNTH_CLASSES = (("Volatility Indices", ("R_10", "R_25", "R_50", "R_75", "R_100")),
+                 ("Volatility (1s) Indices", ("1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V")))   # un message par classe
+
+
+def synth_recap_hours():
+    """Heures avant la clôture de la bougie daily (défaut 4 ; variable SYNTH_RECAP_HEURES)."""
+    try:
+        h = float(os.getenv("SYNTH_RECAP_HEURES") or 4)
+        return h if 0 < h <= 20 else 4.0
+    except ValueError:
+        return 4.0
+
+
+def daily_close(now):
+    """Epoch de la prochaine clôture de la bougie daily de Deriv : 00h00 GMT (01h00 au Bénin)."""
+    return (int(now) // 86400 + 1) * 86400
+
+
+def synth_recap_slot(g, now):
+    """Epoch de la clôture daily visée si le récapitulatif des indices est dû (dans les dernières heures avant la
+    clôture) et pas encore envoyé pour cette bougie, sinon None. Tous les jours, week-end compris."""
+    close = daily_close(now)
+    if close - synth_recap_hours() * 3600 <= now < close and g.get("synth_recap_close") != close:
+        return close
+    return None
+
+
+def synth_block(api, cache, sym, now):
+    """Bloc d'un indice : tendance D1/H4/H1, biais utilisé par S3, extrêmes de la bougie daily en cours. None si pas de données."""
+    cs = {tf: tf_candles(api, cache, sym, tf) or [] for tf in TR.TIMEFRAMES}
+    if not cs["H1"] or now - cs["H1"][-1]["epoch"] > RECAP_STALE:
+        return None
+    dec = dec_of(sym)
+    infos = {tf: TR.trend_info(cs[tf], tf) for tf in TR.TIMEFRAMES}
+    lines = [TR.symbol_block(name_of(sym), infos, now, dec)]
+    if S.S3_BIAS_FILTER:
+        bias, tf = S.s3_bias(cs["H4"], cs["H1"])
+        lines.append("  Biais S3 : " + (f"{'🟢 haussier' if bias == 'BUY' else '🔴 baissier'} ({tf}) → S3 n'émet que des {'achats' if bias == 'BUY' else 'ventes'}"
+                                          if bias else "⚪ aucun → S3 n'émet pas de signal"))
+    if cs["D1"]:
+        day = cs["D1"][-1]
+        lines.append(f"  Bougie daily en cours : plus haut {day['high']:.{dec}f} · plus bas {day['low']:.{dec}f}")
+    return "\n".join(lines)
+
+
+def send_synth_recap(api, cache, now):
+    """Envoie un message par classe d'indices synthétiques. Retourne True si au moins un message est parti."""
+    close = daily_close(now)
+    left = max(0.0, (close - now) / 3600)
+    day = datetime.fromtimestamp(now, NY).strftime("%d/%m")
+    clock = alert_clock(close)
+    sent = False
+    for title, syms in SYNTH_CLASSES:
+        blocks = []
+        for sym in syms:
+            if sym not in SYMBOLS:
+                continue
+            try:
+                b = synth_block(api, cache, sym, now)
+            except Exception as ex:
+                print(f"Récap indices {name_of(sym)} ignoré : {str(ex)[:80]}")
+                continue
+            if b:
+                blocks.append(b)
+        if not blocks:
+            continue
+        chunk = (f"🎲 {title} · récapitulatif du soir · {day}\n"
+                 f"La bougie daily de Deriv (00h GMT) se clôture dans {left:.0f} h" + (f", à {clock}" if clock else "") + ". "
+                 "Tendance sur bougies clôturées (D1 = bougie daily de Deriv ; âge = jambes consécutives : naissante 1 · établie 2-3 · mûre 4 et plus). "
+                 "Marché aléatoire : aucun avantage garanti.")
+        for b in blocks:
+            if len(chunk) + len(b) + 2 > 3800:
+                sent = bool(notify(chunk)) or sent
+                chunk = ""
+            chunk += ("\n\n" if chunk else "") + b
+        sent = bool(notify(chunk)) or sent
+    return sent
 
 
 # --------------------------------------------------------------------------
@@ -814,7 +931,6 @@ def scan(sym, provide, now, sent, funnel, news=()):
     if not m5 or now - m5[-1]["epoch"] > STALE_DATA:
         return []                      # données absentes ou marché fermé
     funnel["data"] += 1
-    G.RATES[sym] = m5[-1]["close"]     # dernier prix : sert à convertir en USD le risque des croisements (lot)
     out = []
     dec = dec_of(sym)
     only = [x for x in ENABLED if x in STRATS_BY_SYMBOL.get(sym, ENABLED)]
@@ -882,6 +998,13 @@ def main():
                     g["recap_day"] = slot
             except Exception as ex:      # le récapitulatif ne doit jamais bloquer le scan
                 print(f"Récapitulatif ignoré : {str(ex)[:100]}")
+        synth_slot = synth_recap_slot(g, now)
+        if synth_slot:
+            try:
+                if send_synth_recap(api, cache, now):
+                    g["synth_recap_close"] = synth_slot
+            except Exception as ex:      # idem : jamais bloquant pour le scan
+                print(f"Récapitulatif des indices ignoré : {str(ex)[:100]}")
         for sym in SYMBOLS:
             memo = {}
 

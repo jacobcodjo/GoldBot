@@ -7,7 +7,7 @@ backtest), pas la rentabilité des stratégies.
 import os
 import unittest
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import backtest as B
@@ -22,6 +22,10 @@ NY = ZoneInfo("America/New_York")
 
 def ts(y, m, d, h, mi=0):
     return datetime(y, m, d, h, mi, tzinfo=NY).timestamp()
+
+
+def utc(y, m, d, h, mi=0):
+    return datetime(y, m, d, h, mi, tzinfo=timezone.utc).timestamp()
 
 
 def zigzag(legs, step=10.0, n=6, up=True):
@@ -182,13 +186,6 @@ class Garde(unittest.TestCase):
         self.assertFalse(G.weekend_exit_due("cryBTCUSD", ts(2026, 10, 24, 12)))
         os.environ["WEEKEND_EXIT"] = "0"
         self.assertFalse(G.weekend_exit_due("frxEURUSD", ts(2026, 10, 23, 16, 45)))
-
-    def test_lots(self):
-        os.environ["ACCOUNT_BALANCE"], os.environ["RISK_PCT"] = "10000", "1"
-        self.assertEqual(G.lot_size("frxEURUSD", 1.0850, 1.0820), 0.33)
-        self.assertEqual(G.lot_size("frxUSDJPY", 150.0, 149.7), 0.5)
-        self.assertEqual(G.lot_size("frxXAUUSD", 2650, 2646), 0.25)
-        self.assertEqual(G.lot_size("cryBTCUSD", 70000, 69500), 0.2)
 
     def test_alerte_calendrier_indisponible(self):
         sent, g = [], {}
@@ -369,16 +366,15 @@ class ListeDesActifs(unittest.TestCase):
                       "frxEURUSD", "frxGBPAUD", "frxGBPJPY", "frxGBPUSD", "frxUSDCAD", "frxUSDCHF", "frxUSDJPY"}
 
     def setUp(self):
-        for k in ("WEEKEND_EXIT", "ACCOUNT_BALANCE", "RISK_PCT", "SPREAD_PCT"):
+        for k in ("WEEKEND_EXIT", "SPREAD_PCT"):
             os.environ.pop(k, None)
-        G.RATES.clear()
 
     def test_toutes_les_majeures_deriv_sont_suivies(self):
         self.assertTrue(self.DERIV_MAJEURES <= set(gold.ALL_SYMBOLS))
         self.assertIn("frxNZDUSD", gold.ALL_SYMBOLS)                      # déjà suivie : conservée
         self.assertIn("frxXAUUSD", gold.ALL_SYMBOLS)
         self.assertEqual(len(gold.ALL_SYMBOLS), len(set(gold.ALL_SYMBOLS)))   # aucun doublon
-        self.assertEqual(len(gold.ALL_SYMBOLS), 1 + 7 + 8 + 2)
+        self.assertEqual(len(gold.ALL_SYMBOLS), 1 + 7 + 8 + 2 + 10)
 
     def test_decimales_et_spreads(self):
         for sym in ("frxAUDJPY", "frxEURJPY", "frxGBPJPY", "frxUSDJPY"):
@@ -417,29 +413,240 @@ class ListeDesActifs(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("JPY", why)
 
-    def test_lot_des_croisements(self):
-        os.environ["ACCOUNT_BALANCE"], os.environ["RISK_PCT"] = "10000", "1"
-        rates = {"frxUSDJPY": 150.0, "frxGBPUSD": 1.30, "frxAUDUSD": 0.65}
-        # EURJPY : stop de 0,30 yen -> perte par lot = 0,30 x 100 000 / 150 = 200 USD -> 100 USD / 200 = 0,50 lot
-        self.assertEqual(G.lot_size("frxEURJPY", 165.0, 164.7, rates=rates), 0.5)
-        # EURGBP : stop de 0,0020 livre -> 0,0020 x 100 000 x 1,30 = 260 USD -> 0,38 lot
-        self.assertEqual(G.lot_size("frxEURGBP", 0.85, 0.848, rates=rates), 0.38)
-        # GBPAUD : stop de 0,0030 dollar australien -> 0,0030 x 100 000 x 0,65 = 195 USD -> 0,51 lot
-        self.assertEqual(G.lot_size("frxGBPAUD", 1.95, 1.947, rates=rates), 0.51)
-        # paire de conversion non suivie : pas de lot plutôt qu'un lot faux
-        self.assertIsNone(G.lot_size("frxEURCAD", 1.45, 1.448, rates=rates))
-        self.assertIsNone(G.lot_size("frxEURCHF", 0.95, 0.948, rates={}))
-        # les paires déjà gérées ne changent pas
-        self.assertEqual(G.lot_size("frxUSDJPY", 150.0, 149.7), 0.5)
-        self.assertEqual(G.lot_size("frxEURUSD", 1.0850, 1.0820), 0.33)
 
-    def test_scan_enregistre_les_prix_de_conversion(self):
+class IndicesVolatility(unittest.TestCase):
+    ATTENDUS = {"R_10", "R_25", "R_50", "R_75", "R_100", "1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V"}
+
+    def setUp(self):
+        for k in ("WEEKEND_EXIT", "ACCOUNT_BALANCE", "SPREAD_PCT", "SYMBOL_STRATEGIES"):
+            os.environ.pop(k, None)
+
+    def test_liste_et_noms(self):
+        self.assertEqual(set(gold.SYNTHETICS), self.ATTENDUS)
+        self.assertTrue(self.ATTENDUS <= set(gold.ALL_SYMBOLS))
+        self.assertEqual(gold.name_of("R_75"), "V75")
+        self.assertEqual(gold.name_of("1HZ100V"), "V100 (1s)")
+        self.assertEqual(gold.name_of("frxEURUSD"), "EURUSD")
+        for sym in gold.SYNTHETICS:
+            self.assertTrue(G.is_synthetic(sym))
+            self.assertIn(sym, gold.DECIMALS)
+        self.assertFalse(any(G.is_synthetic(s) for s in gold.ALL_SYMBOLS if s not in self.ATTENDUS))
+
+    def test_uniquement_s3(self):
+        gold.ENABLED = ["S1", "S2", "S3", "S4"]
+        for sym in gold.SYNTHETICS:
+            self.assertEqual([x for x in gold.ENABLED if x in gold.STRATS_BY_SYMBOL.get(sym, gold.ENABLED)], ["S3"])
+        # les autres actifs gardent toutes les stratégies
+        self.assertEqual([x for x in gold.ENABLED if x in gold.STRATS_BY_SYMBOL.get("frxEURUSD", gold.ENABLED)],
+                         ["S1", "S2", "S3", "S4"])
+
+    def test_scan_ne_lance_que_s3_sans_killzone(self):
+        from unittest import mock
+        seen = {}
+
+        def fake(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
+            seen.update(only=only, kz=kz, dec=dec)
+            return []
         data = B.gen_sim(20, 4)
-        rp, sent, funnel = B.Replay(data), {}, Counter()
+        rp = B.Replay(data)
         t = 5000
         provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
-        gold.scan("frxUSDJPY", provide, data[t]["epoch"] + 300, sent, funnel, ())
-        self.assertAlmostEqual(G.RATES["frxUSDJPY"], data[t]["close"])
+        with mock.patch.object(S, "scan_all", fake):
+            gold.scan("R_75", provide, data[t]["epoch"] + 300, {}, Counter(), ())
+        self.assertEqual(seen, {"only": ["S3"], "kz": False, "dec": 4})
+
+    def test_marche_24h_sur_24_sans_news_ni_week_end(self):
+        samedi, news = ts(2026, 10, 24, 12), [{"start": ts(2026, 10, 24, 11), "end": ts(2026, 10, 24, 13), "note": "NFP", "cur": []}]
+        for sym in ("R_100", "1HZ100V"):
+            self.assertIsNone(G.blackout(sym, samedi, news))
+            self.assertIsNone(G.blackout(sym, ts(2026, 10, 23, 17, 5), news))      # pas de rollover
+            self.assertFalse(G.weekend_exit_due(sym, ts(2026, 10, 23, 16, 45)))
+            self.assertTrue(gold.is_247(sym))
+        self.assertIsNotNone(G.blackout("frxEURUSD", samedi, news))                 # le forex reste bloqué
+
+    def test_pas_dans_le_recap_de_tendance(self):
+        asked = []
+
+        def fake(api, cache, sym, tf):
+            asked.append(sym)
+            return None
+        from unittest import mock
+        with mock.patch.object(gold, "tf_candles", fake):
+            gold.build_recap(None, {}, 1.8e9)
+        self.assertFalse(any(G.is_synthetic(s) for s in asked))
+        self.assertIn("frxEURUSD", asked)
+
+    def test_alerte_s3_sans_ligne_killzone_sur_actif_24_7(self):
+        from unittest import mock
+        sig = None
+        for pad in range(0, 60, 5):
+            m5 = s3_scenario(False, pad)
+            sig = s3_first_signal(m5, S3_BIAS_FILTER=False, S3_HTF_ZONE=False, S3_LIQ_TARGETS=False)
+            if sig:
+                break
+        self.assertIsNotNone(sig)
+        self.assertFalse(any("Killzone" in x for x in sig["details"]))                 # s3_first_signal scanne avec kz=False
+
+
+class SansLotNiLimite(unittest.TestCase):
+    def test_plus_de_lot(self):
+        for name in ("lot_size", "lot_line", "contract_units", "quote_to_usd", "RATES"):
+            self.assertFalse(hasattr(G, name), name)
+        self.assertFalse(hasattr(gold, "lot_short"))
+        os.environ["ACCOUNT_BALANCE"], os.environ["RISK_PCT"] = "10000", "1"      # anciennes variables : sans effet
+        try:
+            sig = dict(dir="BUY", name="XAUUSD", ltf="M5", label="Sweep + CHoCH", session="Londres", entry=2650.0, sl=2646.0,
+                       tp1=2654.0, tp2=2658.0, tp3=2662.0, dec=2, otype="BUY", short="x", ts=1_700_000_000, key="k")
+            for fmt in (gold.message_compact, gold.message_minimal, gold.message_contexte):
+                self.assertNotIn("Lot", fmt(sig, 7))
+        finally:
+            os.environ.pop("ACCOUNT_BALANCE"), os.environ.pop("RISK_PCT")
+
+    def test_plus_de_limite_de_trades_ouverts(self):
+        self.assertFalse(hasattr(G, "MAX_OPEN_TRADES"))
+        tr = {"active": {}, "closed": []}
+        for i in range(20):                                                       # 20 trades sur des actifs non corrélés
+            sym = f"cryXXX{i}USD" if i % 2 else f"frxZZZ{i}QQQ"
+            tr["active"][f"k{i}"] = T.new_trade("OR", f"k{i}", sym, sym[3:], "BUY", "BUY", 1, .9, 1.1, 1.2, 1.3, "M15", 900, 2, "A", 1e9, 3600)
+        self.assertTrue(G.risk_check(tr, "R_100", "BUY", 1e9, "S3")[0])
+
+    def test_l_exposition_par_devise_reste_active(self):
+        tr = {"active": {}, "closed": []}
+        for i, sym in enumerate(("frxEURUSD", "frxEURJPY")):
+            tr["active"][f"k{i}"] = T.new_trade("OR", f"k{i}", sym, sym[3:], "BUY", "BUY", 1, .9, 1.1, 1.2, 1.3, "M15", 900, 2, "A", 1e9, 3600)
+        self.assertFalse(G.risk_check(tr, "frxEURGBP", "BUY", 1e9, "B")[0])        # 3e position longue EUR
+
+
+class RecapDuMatinParClasse(unittest.TestCase):
+    def run_recap(self, symbols=None, data=lambda sym, tf: None):
+        from unittest import mock
+        sent, cs = [], zigzag(3)
+        fake = lambda api, cache, sym, tf: (data(sym, tf) if data(sym, tf) is not None else cs)
+        with mock.patch.object(gold, "tf_candles", fake), \
+                mock.patch.object(gold, "SYMBOLS", symbols or gold.ALL_SYMBOLS), \
+                mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
+            ok = gold.send_recap(None, {}, cs[-1]["epoch"] + 600)
+        return ok, sent
+
+    def test_un_message_par_classe(self):
+        ok, sent = self.run_recap()
+        self.assertTrue(ok)
+        self.assertEqual(len(sent), 4)                                             # or, forex USD, croisements, cryptos
+        self.assertIn("Or ·", sent[0])
+        self.assertIn("XAUUSD", sent[0])
+        self.assertIn("Forex · paires contre USD", sent[1])
+        self.assertIn("Forex · croisements majeurs", sent[2])
+        self.assertIn("Cryptos", sent[3])
+        for name in ("EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"):
+            self.assertIn(name, sent[1])
+            self.assertNotIn(name, sent[0] + sent[2] + sent[3])
+        for name in ("AUDJPY", "EURAUD", "EURCAD", "EURCHF", "EURGBP", "EURJPY", "GBPAUD", "GBPJPY"):
+            self.assertIn(name, sent[2])
+        self.assertIn("BTCUSD", sent[3])
+        self.assertIn("ETHUSD", sent[3])
+        self.assertTrue(all("XAUUSD" not in m for m in sent[1:]))
+
+    def test_legende_une_seule_fois_et_pas_d_indices(self):
+        _, sent = self.run_recap()
+        self.assertIn("Âge = jambes consécutives", sent[0])
+        self.assertTrue(all("Âge = jambes consécutives" not in m for m in sent[1:]))
+        self.assertTrue(all("V75" not in m and "V100" not in m for m in sent))   # indices : récapitulatif du soir
+
+    def test_marche_ferme_liste_a_la_fin(self):
+        old = zigzag(3)
+
+        def data(sym, tf):                                                         # forex : données trop anciennes (week-end)
+            if sym.startswith("frx") and sym != "frxXAUUSD":
+                return [dict(c, epoch=c["epoch"] - 86400 * 5) for c in old]
+            return None
+        ok, sent = self.run_recap(data=data)
+        self.assertTrue(ok)
+        self.assertEqual(len(sent), 3)                                             # or, cryptos, et la liste des marchés fermés
+        self.assertTrue(sent[-1].startswith("Marché fermé : "))
+        self.assertIn("EURUSD", sent[-1])
+        self.assertIn("GBPJPY", sent[-1])
+
+    def test_aucune_donnee(self):
+        ok, sent = self.run_recap(data=lambda sym, tf: [])
+        self.assertFalse(ok)
+        self.assertEqual(sent, [])
+
+
+class RecapIndices(unittest.TestCase):
+    def setUp(self):
+        os.environ.pop("SYNTH_RECAP_HEURES", None)
+
+    def test_creneau_du_soir_4h_avant_la_cloture_daily_de_deriv(self):
+        g = {}
+        close = int(utc(2026, 10, 22, 0))                                          # clôture daily Deriv : 00h GMT
+        self.assertIsNone(gold.synth_recap_slot(g, utc(2026, 10, 21, 19, 59)))    # trop tôt
+        self.assertEqual(gold.synth_recap_slot(g, utc(2026, 10, 21, 20, 0)), close)   # 4 h avant (21h au Bénin)
+        self.assertEqual(gold.synth_recap_slot(g, utc(2026, 10, 21, 23, 59)), close)
+        self.assertIsNone(gold.synth_recap_slot(g, utc(2026, 10, 22, 0, 0)))      # nouvelle bougie : prochain envoi à 20h GMT
+        self.assertIsNone(gold.synth_recap_slot(g, utc(2026, 10, 21, 8, 0)))      # jamais le matin
+        self.assertIsNone(gold.synth_recap_slot({"synth_recap_close": close}, utc(2026, 10, 21, 22, 0)))   # déjà envoyé
+        self.assertEqual(gold.synth_recap_slot({"synth_recap_close": close}, utc(2026, 10, 22, 20, 5)), int(utc(2026, 10, 23, 0)))
+        for jour in (24, 25):                                                      # samedi et dimanche : marché 24/7
+            self.assertIsNotNone(gold.synth_recap_slot(g, utc(2026, 10, jour, 21, 0)))
+        self.assertEqual(gold.daily_close(utc(2026, 11, 10, 20, 0)), int(utc(2026, 11, 11, 0)))   # indépendant de l'heure d'hiver
+
+    def test_reglage_du_delai(self):
+        os.environ["SYNTH_RECAP_HEURES"] = "2"
+        try:
+            self.assertIsNone(gold.synth_recap_slot({}, utc(2026, 10, 21, 21, 0)))
+            self.assertIsNotNone(gold.synth_recap_slot({}, utc(2026, 10, 21, 22, 30)))
+        finally:
+            os.environ.pop("SYNTH_RECAP_HEURES")
+
+    def test_bougie_daily_de_deriv_pour_les_indices(self):
+        from unittest import mock
+        h1 = [candle(int(utc(2026, 10, 19, 0)) + 3600 * i, 100, 101, 99, 100) for i in range(24 * 6)]
+        with mock.patch.object(gold, "get_candles", lambda *a, **k: h1):
+            d_synth = gold.tf_candles(None, {}, "R_100", "D1")
+            d_forex = gold.tf_candles(None, {}, "frxEURUSD", "D1")
+            h4_synth = gold.tf_candles(None, {}, "R_100", "H4")
+        self.assertTrue(all(c["epoch"] % 86400 == 0 for c in d_synth))             # 00h GMT
+        self.assertEqual(len(d_synth), 6)
+        self.assertTrue(all(c["epoch"] % 86400 != 0 for c in d_forex))             # forex : 17h New York
+        self.assertTrue(all(datetime.fromtimestamp(c["epoch"], NY).hour == 17 for c in d_forex))
+        self.assertTrue(all(datetime.fromtimestamp(c["epoch"], NY).hour % 4 == 1 for c in h4_synth))   # H4 inchangé (17h New York)
+
+    def test_replay_daily_gmt(self):
+        m5 = [candle(int(utc(2026, 10, 19, 0)) + 300 * i, 100, 101, 99, 100) for i in range(288 * 4)]
+        self.assertTrue(all(c["epoch"] % 86400 == 0 for c in B.Replay(m5, utc_daily=True).provide("D1", 288 * 3, 5)))
+        self.assertTrue(all(c["epoch"] % 86400 != 0 for c in B.Replay(m5).provide("D1", 288 * 3, 5)))
+
+    def test_un_message_par_classe(self):
+        from unittest import mock
+        sent = []
+        cs = zigzag(3)
+        now = cs[-1]["epoch"] + 600
+        with mock.patch.object(gold, "tf_candles", lambda api, cache, sym, tf: cs), \
+                mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
+            ok = gold.send_synth_recap(None, {}, now)
+        self.assertTrue(ok)
+        self.assertEqual(len(sent), 2)                                             # deux classes, deux messages séparés
+        self.assertIn("Volatility Indices", sent[0])
+        self.assertIn("Volatility (1s) Indices", sent[1])
+        for name in ("V10", "V25", "V50", "V75", "V100"):
+            self.assertIn(name, sent[0])
+            self.assertNotIn("(1s)", sent[0].split("\n\n", 1)[1])
+            self.assertIn(f"{name} (1s)", sent[1])
+        self.assertIn("Biais S3", sent[0])
+        self.assertIn("Bougie daily en cours", sent[0])
+        self.assertNotIn("EURUSD", sent[0] + sent[1])
+
+    def test_classe_absente_de_symbols_non_envoyee(self):
+        from unittest import mock
+        sent = []
+        cs = zigzag(3)
+        with mock.patch.object(gold, "tf_candles", lambda api, cache, sym, tf: cs), \
+                mock.patch.object(gold, "SYMBOLS", ["frxEURUSD", "R_100"]), \
+                mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
+            gold.send_synth_recap(None, {}, cs[-1]["epoch"] + 600)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("V100", sent[0])
+        self.assertNotIn("1s", sent[0].split("\n", 2)[0])
 
 
 class SweepCHoCH(unittest.TestCase):

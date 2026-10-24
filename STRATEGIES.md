@@ -12,8 +12,8 @@ paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --se
 ## Actifs
 
 L'or (`frxXAUUSD`), les 7 majeures contre USD (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD, NZDUSD), les 8 autres
-paires classées « Forex majeures » par Deriv (AUDJPY, EURAUD, EURCAD, EURCHF, EURGBP, EURJPY, GBPAUD, GBPJPY) et deux cryptos
-(`cryBTCUSD`, `cryETHUSD`). Les règles sont
+paires classées « Forex majeures » par Deriv (AUDJPY, EURAUD, EURCAD, EURCHF, EURGBP, EURJPY, GBPAUD, GBPJPY) deux cryptos
+(`cryBTCUSD`, `cryETHUSD`) et les 10 indices synthétiques Volatility de Deriv (V10 à V100 et variantes 1s), **traités avec la seule S3**. Les règles sont
 identiques pour tous : seuils en ATR, heures de New York, D1/H4 à 17h. Les stratégies ont été conçues pour l'or ;
 leur comportement sur chaque paire est à vérifier au backtest (`--sym all`), actif par actif. Les cryptos ont une volatilité et des spreads très différents de l'or : ne
 les juge pas sur les résultats des autres actifs. Exposition **par devise** : un trade est long ou short
@@ -26,7 +26,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 
 ## Conventions communes
 
-- **Heures** : heure de New York. **D1 et H4 ouvrent à 17h New York** (reconstruits depuis le H1).
+- **Heures** : heure de New York. **D1 et H4 ouvrent à 17h New York** (reconstruits depuis le H1) ; exception : le D1 des indices synthétiques ouvre à 00h GMT (bougie daily de Deriv).
 - **Bougies clôturées** : toutes les conditions utilisent des bougies clôturées ; la bougie en formation ne
   sert qu'à connaître le prix actuel.
 - **Déclenchement récent** : la bougie de déclenchement doit être l'une des 2 dernières clôturées (`FRESH`).
@@ -62,7 +62,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Fenêtres sans alerte** : rollover 16h55-17h15, vendredi dès 15h30, ouverture de dimanche 17h-18h, NFP,
   FOMC, annonces à fort impact de la devise de l'actif (USD pour l'or ; les deux devises pour une paire),
   15 min avant et 45 min après (90 min après une décision de taux).
-- **Risque** : 6 trades ouverts au plus, exposition nette de 2 trades au plus dans le même sens sur une même devise (USD, EUR, JPY…), une seule
+- **Risque** : pas de limite sur le nombre total de trades ouverts ; exposition nette de 2 trades au plus dans le même sens sur une même devise (USD, EUR, JPY…), une seule
   position par actif, stratégie et sens. Aucun blocage après une série de pertes : le bot n'arrête pas les alertes
   selon les résultats de la journée ou de la semaine.
 
@@ -136,7 +136,7 @@ TP2 deux fois, TP3 trois fois. Pas de niveau d'invalidation séparé (le stop fa
 - On ne trade que dans le sens du biais (un achat exige un biais haussier). Un repli H1 contre un H4 haussier ne change pas le biais.
 
 **2. Niveaux de liquidité** (chacun a une date de naissance t0)
-- PDH / PDL : plus haut / plus bas de la veille (journée 17h-17h New York), valables dès l'ouverture du jour.
+- PDH / PDL : plus haut / plus bas de la veille (journée 17h-17h New York ; **00h-00h GMT, la bougie daily de Deriv, pour les indices synthétiques**), valables dès l'ouverture du jour.
 - Asie H / Asie B : extrêmes de la plage asiatique, valables dès 02h00.
 - EQH / EQL : deux swings H1 (fractale de 2) à moins de 0,15 x ATR H1 l'un de l'autre, parmi les 8 derniers
   (`S3_EQ_TOL_ATR`), valables dès la bougie du second swing.

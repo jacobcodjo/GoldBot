@@ -15,7 +15,8 @@ Outils de validation (pour ne pas se fier à un seul chiffre) :
 Exemples :
   python backtest.py --days 120 --split 0.6                          (or seul, par défaut)
   python backtest.py --sym frxXAUUSD,frxEURUSD,frxGBPUSD --days 120 --split 0.6
-  python backtest.py --sym all --days 120 --split 0.6                (or + 7 majeures + BTC + ETH)
+  python backtest.py --sym all --days 120 --split 0.6                (tous les actifs suivis)
+  python backtest.py --sym synth --days 120 --split 0.6              (10 indices Volatility, S3 seule par défaut)
   python backtest.py --days 180 --only S2,S3
   python backtest.py --days 120 --set strategies.S1_ADX_MIN=15,18,22 --set tracker.STRUCT_EXIT=true,false
   python backtest.py --source csv --file xauusd_m5.csv
@@ -93,12 +94,14 @@ def gen_sim(days, seed, vol=0.0006, sub=10, start=1_700_000_000):
 # Rejeu : bougies de n'importe quel timeframe à l'instant t, sans look-ahead
 # --------------------------------------------------------------------------
 class Replay:
-    def __init__(self, m5):
-        self.m5, self.n, self._b = m5, len(m5), {}
+    def __init__(self, m5, utc_daily=False):
+        """utc_daily : D1 ouvrant à 00h GMT (indices synthétiques, bougie daily de Deriv) au lieu de 17h New York."""
+        self.m5, self.n, self._b, self.utc_daily = m5, len(m5), {}, utc_daily
 
-    @staticmethod
-    def _start(tf, epoch):
+    def _start(self, tf, epoch):
         g = S.GRAN[tf]
+        if tf == "D1" and self.utc_daily:
+            return epoch - epoch % g
         if tf in ("D1", "H4"):                       # ouverture à 17h New York
             hours = 24 if tf == "D1" else 4
             dt = datetime.fromtimestamp(epoch, S.NY)
@@ -145,7 +148,7 @@ class Replay:
 # --------------------------------------------------------------------------
 def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
     """warmup_days : l'EMA 200 du H4 demande ~35 jours de bourse ; en dessous, S1 reste muet au début."""
-    rp, funnel, sent = Replay(m5), Counter(), {}
+    rp, funnel, sent = Replay(m5, utc_daily=gold.G.is_synthetic(sym)), Counter(), {}   # indices : bougie daily de Deriv (00h GMT)
     tr = {"active": {}, "closed": []}
     warm = min(int(warmup_days * 288), len(m5) // 3)
     boundary = m5[warm + int((len(m5) - warm) * split)]["epoch"] if split else None
@@ -355,7 +358,7 @@ def send_telegram(lines):
 
 def main():
     ap = argparse.ArgumentParser(description="Backtest du bot (or + majeures) sur historique M5")
-    ap.add_argument("--sym", default=gold.GOLD, help="actifs séparés par des virgules, ou 'all' (or + 7 majeures + BTC + ETH)")
+    ap.add_argument("--sym", default=gold.GOLD, help="actifs séparés par des virgules, ou 'all' (tous les actifs suivis), ou 'synth' (10 indices Volatility)")
     ap.add_argument("--source", choices=["deriv", "csv", "sim"], default="deriv")
     ap.add_argument("--file", help="CSV M5 (source csv, un seul actif)")
     ap.add_argument("--days", type=float, default=120)
@@ -373,10 +376,10 @@ def main():
     if a.split is not None and not 0.2 <= a.split <= 0.8:
         sys.exit("--split doit être compris entre 0.2 et 0.8")
     if a.sym_strats:
-        gold.STRATS_BY_SYMBOL = gold.parse_sym_strats(a.sym_strats)
+        gold.STRATS_BY_SYMBOL = {**gold.SYNTH_STRATEGIES, **gold.parse_sym_strats(a.sym_strats)}
     if a.only:
         gold.ENABLED = [x.strip().upper() for x in a.only.split(",") if x.strip()]
-    syms = gold.ALL_SYMBOLS if a.sym.strip().lower() == "all" else \
+    syms = gold.ALL_SYMBOLS if a.sym.strip().lower() == "all" else gold.SYNTHETICS if a.sym.strip().lower() == "synth" else \
         [x.strip() for x in a.sym.split(",") if x.strip()]
     datasets = []
     for k, sym in enumerate(syms):

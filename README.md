@@ -1,6 +1,6 @@
 # Bot or (XAUUSD) + paires forex majeures + BTC/ETH
 
-Bot d'alertes Telegram pour l'or, les paires forex majeures (7 contre USD et 8 croisements majeurs de Deriv), le BTC et l'ETH, avec quatre stratégies (détail précis dans
+Bot d'alertes Telegram pour l'or, les paires forex majeures (7 contre USD et 8 croisements majeurs de Deriv), le BTC, l'ETH et les 10 indices Volatility de Deriv, avec quatre stratégies (détail précis dans
 [STRATEGIES.md](STRATEGIES.md)). Il reprend l'architecture du bot CRT/Impulsion (client Deriv robuste, suivi
 des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune de ses stratégies**.
 
@@ -11,7 +11,7 @@ des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune d
 | S3 | Sweep + CHoCH (SMC) | H4/H1 > M15 > M5 |
 | S4 | Mean Reversion | H1 > M15 |
 
-Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à TP3 avec ratio, lot suggéré,
+Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à TP3 avec ratio,
 graphique) et suit leur résultat en R. Aucune stratégie n'est garantie ; les paramètres sont des points de
 départ à valider par backtest.
 
@@ -23,6 +23,7 @@ départ à valider par backtest.
 | Majeures contre USD | `frxEURUSD`, `frxGBPUSD`, `frxUSDJPY`, `frxUSDCHF`, `frxAUDUSD`, `frxUSDCAD`, `frxNZDUSD` |
 | Croisements majeurs Deriv | `frxAUDJPY`, `frxEURAUD`, `frxEURCAD`, `frxEURCHF`, `frxEURGBP`, `frxEURJPY`, `frxGBPAUD`, `frxGBPJPY` |
 | Cryptos | `cryBTCUSD`, `cryETHUSD` |
+| Indices Volatility (S3 seule) | `R_10`, `R_25`, `R_50`, `R_75`, `R_100` (V10 à V100) et `1HZ10V`, `1HZ25V`, `1HZ50V`, `1HZ75V`, `1HZ100V` (variantes 1s) |
 
 Les quatre stratégies s'appliquent à chaque actif avec les mêmes règles (toutes les distances sont exprimées en ATR,
 donc elles s'adaptent à la volatilité de chaque paire). Elles ont été pensées pour l'or : **rien ne dit qu'elles
@@ -33,15 +34,26 @@ sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; l'or ach
 dans le même sens sur une même devise sont ouverts à la fois. BTC et ETH forment un groupe corrélé : 2 trades au plus
 dans le même sens.
 
-**Croisements (sans USD)** : lot suggéré converti en USD avec le dernier prix de la paire de conversion (USDJPY, GBPUSD,
-AUDUSD, USDCAD, USDCHF), qui doit être dans `SYMBOLS` ; sinon l'alerte indique « lot à calculer » plutôt qu'un lot faux.
-Spreads par défaut (estimations, `SPREAD_PCT` pour imposer) : 0,007 à 0,014 % selon la paire, plus larges que les
+**Indices Volatility** : prix produit par un générateur aléatoire, marché 24h/24 et 7j/7, insensible aux news. Ils ne reçoivent que la
+stratégie S3 (réglable avec `SYMBOL_STRATEGIES`, ex. `R_100:S3,S4`), sans killzone, sans filtre de week-end ni de news, sans
+récapitulatif de tendance du matin ni limite d'exposition. **Rien ne garantit que S3 ait un avantage sur un prix aléatoire** : valide d'abord
+au backtest sur des mois de données réelles Deriv (`python backtest.py --sym synth --days 120 --split 0.6`) avant de te fier aux
+alertes. Spread par défaut 0,02 % (estimation, `SPREAD_PCT`) et décimales d'affichage à vérifier sur Deriv.
+
+**Récapitulatif du soir des indices** : chaque jour, week-end compris, **4 heures avant la clôture de la bougie daily de Deriv** (00h GMT, soit 20h
+GMT = 21h au Bénin), le bot envoie un message **séparé par classe** : « Volatility Indices »
+(V10 à V100) puis « Volatility (1s) Indices ». Pour chaque indice : tendance D1/H4/H1 avec âge et invalidation, biais utilisé par S3
+(les signaux S3 n'iront que dans ce sens) et plus haut / plus bas de la bougie daily en cours. Un seul envoi par bougie ; si le cron
+est trop en retard et que la bougie est déjà close, la journée est sautée. Variable `SYNTH_RECAP_HEURES` (défaut 4) pour changer le délai.
+Pour ces indices, **D1 (tendance, PDH/PDL de S3) est la bougie daily de Deriv, ouverte à 00h GMT** ; leur H4 reste ancré à 17h New York
+comme celui des autres actifs. Le backtest applique la même règle (`--sym synth`).
+
+**Croisements (sans USD)** : spreads par défaut (estimations, `SPREAD_PCT` pour imposer) : 0,007 à 0,014 % selon la paire, plus larges que les
 majeures USD (0,006 %). Les paires en yen s'affichent avec 3 décimales.
 
 **Cryptos (marché 24h/24, 7j/7)** : pas de rollover ni de fermeture hebdomadaire, donc aucune fenêtre sans alerte
 liée au week-end (seules les annonces USD à fort impact bloquent les alertes) ; les stratégies Sweep + CHoCH et
-Mean Reversion ne sont pas limitées aux heures de session. Lot suggéré : 1 unité de la crypto par lot, à vérifier
-sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par défaut du backtest : 0,05 %.
+Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut du backtest : 0,05 %.
 
 ## Fichiers
 
@@ -51,9 +63,9 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
 | `strategies.py` | Les 4 stratégies, indicateurs (EMA, ATR, ADX, RSI, Bollinger, swings), sessions |
 | `trend.py` | Tendance et âge de la tendance (D1, H4, H1) pour le récapitulatif journalier |
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
-| `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limites de risque, lot, santé du bot, bilan |
+| `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 53 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `tests.py` | 69 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 4 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
@@ -65,7 +77,7 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
 1. Crée un dépôt GitHub avec le contenu de ce dossier (le dossier `.github/workflows` inclus).
 2. **Settings > Secrets and variables > Actions** : secrets `TELEGRAM_TOKEN` et `TELEGRAM_CHAT_ID`.
 3. Variables facultatives (onglet Variables) :
-   - `ACCOUNT_BALANCE` et `RISK_PCT` (ex. 10000 et 1) : affichent le lot suggéré (100 oz par lot ; vérifie sur ta plateforme).
+   - `SYNTH_RECAP_HEURES` (défaut 4) : délai avant la clôture de la bougie daily pour le récapitulatif des indices synthétiques.
    - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4`).
    - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (un actif absent garde toutes les
      stratégies actives). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
@@ -75,10 +87,10 @@ sur ta plateforme (`LOT_UNITS_CRYBTCUSD` pour un autre contrat). Spread par déf
    - `MAX_AGE_MIN` : âge maximal d'un signal en minutes (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi.
    - `ALERT_FUSEAU` : fuseau d'affichage de l'heure (défaut `Africa/Porto-Novo`, soit l'heure du Bénin ; `none` pour désactiver).
    - `ALERT_FORMAT` : `complet`, `compact`, `contexte` ou `minimal` (voir plus bas).
-   - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures USD, les 8 croisements majeurs, BTC et ETH).
+   - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures USD, les 8 croisements majeurs, BTC, ETH et les 10 indices Volatility).
 4. Le workflow n'a pas de `schedule` : déclenche-le toutes les 5 minutes avec ton cron externe
-   (`workflow_dispatch`), comme pour l'ancien bot. Un scan télécharge M5 et M15 pour chaque actif (18 actifs : une
-   trentaine de secondes avec la temporisation anti-limite de requêtes).
+   (`workflow_dispatch`), comme pour l'ancien bot. Un scan télécharge M5 et M15 pour chaque actif (28 actifs : une
+   cinquantaine de secondes avec la temporisation anti-limite de requêtes).
 5. Lance une fois le workflow avec `test = true` : tu reçois un message de contrôle avec l'entonnoir.
 
 **Sauvegarde de l'état.** Les trades suivis, les garde-fous et les alertes déjà envoyées (`trades.json`, `guard.json`,
@@ -91,8 +103,8 @@ Pour les jours d'annonces non couverts par le calendrier automatique, copie `new
 ## Récapitulatif de tendance journalier
 
 Chaque matin du lundi au vendredi, à **01h00 New York** (une heure avant l'ouverture de Londres, qui ouvre à 02h00 New
-York ; environ 07h00 à Paris), à la première passe après cette heure, le bot envoie un message
-avec, pour chaque actif, la tendance en **D1, H4 et H1**, son **âge** et une phrase de synthèse sur l'alignement :
+York ; environ 07h00 à Paris), à la première passe après cette heure, le bot envoie **un message par classe d'actif** (Or,
+Forex · paires contre USD, Forex · croisements majeurs, Cryptos ; la légende figure seulement dans le premier) avec, pour chaque actif, la tendance en **D1, H4 et H1**, son **âge** et une phrase de synthèse sur l'alignement :
 
 ```
 XAUUSD
@@ -107,7 +119,7 @@ naissante 1 · établie 2-3 · mûre 4 et plus. Deux swings suffisent pour recon
 trop tard), avec des fractales de 2 bougies (1 seule en D1, pour confirmer un swing après 1 jour au lieu de 2 ;
 réglage `SWING_N_BY_TF` de `trend.py`, à comparer avec les colonnes `tend_d1` du backtest). La structure doit être intacte (aucune clôture au-delà du dernier creux/sommet), le sommet précédent doit
 être cassé par une **clôture**, et ⚡ signale une cassure impulsive. L'invalidation est le dernier creux (hausse) ou
-sommet (baisse). Les actifs dont le marché est fermé (forex le week-end) sont listés en bas du message.
+sommet (baisse). Les actifs dont le marché est fermé (forex le week-end) sont listés dans le message de leur classe, ou dans un dernier message si toute la classe est fermée.
 L'heure se règle avec les variables `RECAP_HEURE` (ex. `07:00`) et `RECAP_FUSEAU` (ex. `Europe/Paris` ; défaut :
 `America/New_York`). Si le workflow n'a pas pu tourner dans les 6 heures suivant l'heure prévue, la journée est sautée.
 La commande `/tendance` renvoie le récapitulatif à la demande (au prochain scan, sous 5 minutes). Réglages dans
@@ -192,13 +204,12 @@ GitHub `ALERT_FORMAT` (défaut : `complet` ; une valeur inconnue revient à `com
 
 | Valeur | Contenu | Longueur |
 |---|---|---|
-| `complet` | prix actuel, entrée, SL, TP et ratios, analyse détaillée, tendance D1/H4 avec âge, invalidation, lot, règle de gestion | ~24 lignes |
-| `compact` | entrée, SL, TP et ratios, résumé du setup, tendance D1/H4 avec âge, lot | ~10 lignes |
-| `contexte` | niveaux + risque, résumé du setup, tendance D1/H4 détaillée (jambes), invalidation, lot | ~11 lignes |
-| `minimal` | direction, entrée, SL, TP1/2/3, lot | 3 lignes |
+| `complet` | prix actuel, entrée, SL, TP et ratios, analyse détaillée, tendance D1/H4 avec âge, invalidation, règle de gestion | ~24 lignes |
+| `compact` | entrée, SL, TP et ratios, résumé du setup, tendance D1/H4 avec âge | ~10 lignes |
+| `contexte` | niveaux + risque, résumé du setup, tendance D1/H4 détaillée (jambes), invalidation | ~11 lignes |
+| `minimal` | direction, entrée, SL, TP1/2/3 | 3 lignes |
 
-Les messages de suivi (TP1 atteint, stop, structure cassée…) gardent leur forme, avec l'heure en plus. La ligne « Lot » n'apparaît que si
-`ACCOUNT_BALANCE` est renseigné. Exemple `compact` :
+Les messages de suivi (TP1 atteint, stop, structure cassée…) gardent leur forme, avec l'heure en plus. Exemple `compact` :
 
 ```
 🟢 BUY · XAUUSD · M5 · Sweep + CHoCH · Londres
@@ -210,7 +221,7 @@ TP1 2656.00 (1:1) · TP2 2659.60 (1:2) · TP3 2663.20 (1:3)
 ✅ PDL pris · CHoCH M5
 ✅ D1 haussière établie (9 j) · ⚠️ H4 baissière mûre (6 j)
 
-Lot 0.27 · Réf. #15
+Réf. #15
 ```
 
 ## Horaires en heure du Bénin (UTC+1, sans heure d'été)
@@ -245,7 +256,7 @@ scan (réponse sous 5 minutes).
 Workflow **Backtest Or** (ou en local : `python backtest.py --days 120 --split 0.6`).
 
 - Rejoue les mêmes fonctions que le bot en direct, sans regarder le futur, avec un spread (défaut : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 % ; `--spread-pct` pour imposer le tien).
-- `--sym frxXAUUSD,frxEURUSD` pour choisir les actifs, `--sym all` pour les 18 actifs.
+- `--sym frxXAUUSD,frxEURUSD` pour choisir les actifs, `--sym all` pour les 28 actifs, `--sym synth` pour les 10 indices Volatility.
 - Rapport par actif, par stratégie, sens, session, alignement H4, résultat, et stabilité entre deux périodes.
 - `--only S2,S3` pour une stratégie ; `--set strategies.S1_ADX_MIN=15,18,22` pour une grille ; `--source csv`
   pour tes propres données (un seul actif) ; `--source sim` pour un contrôle de bon sens sur marche aléatoire.
@@ -259,7 +270,7 @@ trades n'est pas évaluable.
 ## Ce qui a été vérifié, et ce qui ne l'a pas été
 
 Vérifié (données simulées, sans accès réseau) : le code s'exécute de bout en bout, les 4 stratégies produisent des
-signaux, le suivi (TP1/TP2/TP3, stop, doublons), le message, le lot et le graphique fonctionnent, et sur une marche
+signaux, le suivi (TP1/TP2/TP3, stop, doublons), le message et le graphique fonctionnent, et sur une marche
 aléatoire l'espérance est proche de zéro (pas de gain « gratuit » dans le code).
 
 **Non vérifié** : la connexion à l'API Deriv et l'envoi Telegram (pas d'accès réseau pendant la rédaction), et
