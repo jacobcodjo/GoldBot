@@ -59,6 +59,9 @@ jobs:
           RECAP_FUSEAU: ${{ vars.RECAP_FUSEAU }}
           ENTRY_MODE: ${{ vars.ENTRY_MODE }}
           ENTRY_MODES: ${{ vars.ENTRY_MODES }}
+          CONFLUENCE_MIN: ${{ vars.CONFLUENCE_MIN }}
+          CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
+          TIER_MAX: ${{ vars.TIER_MAX }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
           MAX_AGE_MIN: ${{ vars.MAX_AGE_MIN }}
           WEEKEND_EXIT: ${{ vars.WEEKEND_EXIT }}
