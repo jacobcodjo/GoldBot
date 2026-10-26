@@ -1,4 +1,4 @@
-"""Backtest du bot : rejoue les 4 stratégies sur de l'historique M5 de l'or et des paires majeures.
+"""Backtest du bot : rejoue les 5 stratégies sur de l'historique M5 de l'or et des paires majeures.
 
 Le rejeu appelle les mêmes fonctions de scan que le bot en direct (gold.scan), les mêmes garde-fous
 (guard.risk_check, fenêtres sans alerte) et la même gestion des trades (tracker.advance). Toutes les
@@ -16,7 +16,8 @@ Exemples :
   python backtest.py --days 120 --split 0.6                          (or seul, par défaut)
   python backtest.py --sym frxXAUUSD,frxEURUSD,frxGBPUSD --days 120 --split 0.6
   python backtest.py --sym all --days 120 --split 0.6                (tous les actifs suivis)
-  python backtest.py --sym synth --days 120 --split 0.6              (10 indices Volatility, S3 seule par défaut)
+  python backtest.py --sym synth --days 120 --split 0.6              (10 indices Volatility ; classes : or, forex, forex_jpy, crypto…)
+  python backtest.py --sym forex_jpy --split 0.6 --tier-max 1        (stratégie principale de la classe seulement)
   python backtest.py --days 180 --only S2,S3
   python backtest.py --days 120 --set strategies.S1_ADX_MIN=15,18,22 --set tracker.STRUCT_EXIT=true,false
   python backtest.py --source csv --file xauusd_m5.csv
@@ -172,7 +173,9 @@ def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
                 T.archive(tr, key)
         # 2) cherche de nouveaux setups
         provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
-        for sig, _ in gold.scan(sym, provide, now, sent, funnel, ()):
+        found = gold.scan(sym, provide, now, sent, funnel, ())
+        for sig, _ in found:
+            gold.add_confluence(sig, tr, [s for s, _ in found], now)
             sent[sig["key"]] = now
             ok, why = G.risk_check(tr, sym, sig["dir"], now, sig["label"])
             if not ok:
@@ -181,7 +184,7 @@ def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
             funnel["alert"] += 1
             if gold.is_limit(sig):
                 stats["placed"] += 1
-            extra = dict(sig["extra"], session=sig["session"])
+            extra = dict(sig["extra"], session=sig["session"], strat=sig["strat"])
             tr["active"][sig["key"]] = T.new_trade(
                 gold.BOT, sig["key"], sym, sig["name"], sig["dir"], sig["otype"], sig["entry"], sig["sl"],
                 sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], M5, sig["dec"], sig["label"], now,
@@ -265,7 +268,7 @@ def report(results, days, spread_pct, split=None):
             L.append(T.fmt_summary(f"  {gold.name_of(sym)}", sub) if sub else f"  {gold.name_of(sym)} : aucun trade")
     L.append("Par stratégie :")
     L += breakdown(ts, "cascade")
-    for key in ["dir", "session", "liq", "h4", "poi", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
+    for key in ["classe", "tier", "dir", "session", "liq", "h4", "poi", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
         L += breakdown(ts, key)
     if split:
         p1, p2 = [t["r"] for t in ts if t.get("period") == "1"], [t["r"] for t in ts if t.get("period") == "2"]
@@ -358,7 +361,7 @@ def send_telegram(lines):
 
 def main():
     ap = argparse.ArgumentParser(description="Backtest du bot (or + majeures) sur historique M5")
-    ap.add_argument("--sym", default=gold.GOLD, help="actifs séparés par des virgules, ou 'all' (tous les actifs suivis), ou 'synth' (10 indices Volatility)")
+    ap.add_argument("--sym", default=gold.GOLD, help="actifs séparés par des virgules, ou 'all' (tous les actifs suivis), ou une classe : or, forex, forex_session, forex_jpy, forex_calme, crypto, synth (10 indices Volatility)")
     ap.add_argument("--source", choices=["deriv", "csv", "sim"], default="deriv")
     ap.add_argument("--file", help="CSV M5 (source csv, un seul actif)")
     ap.add_argument("--days", type=float, default=120)
@@ -368,7 +371,9 @@ def main():
     ap.add_argument("--warmup-days", type=float, default=25)
     ap.add_argument("--split", type=float, default=None, help="fraction de la période pour la période 1 (ex. 0.6)")
     ap.add_argument("--set", action="append", help="grille : module.NOM=v1,v2 (répétable)")
-    ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S4\" (défaut : toutes)")
+    ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S4\" (défaut : celles de la classe de l'actif)")
+    ap.add_argument("--tier-max", type=int, choices=[1, 2, 3], help="niveau maximal : 1 principales, 2 + secondaires, 3 + à tester (défaut : 3)")
+    ap.add_argument("--class-strats", help="stratégies par classe, ex. \"or:S3/S1,S5/S2;forex_jpy:S1/S5/\" (principales/secondaires/à tester)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--vol", type=float, default=0.0006, help="volatilité M5 de la marche aléatoire (sim)")
     ap.add_argument("--telegram", action="store_true", help="envoie aussi le rapport sur Telegram")
@@ -376,11 +381,14 @@ def main():
     if a.split is not None and not 0.2 <= a.split <= 0.8:
         sys.exit("--split doit être compris entre 0.2 et 0.8")
     if a.sym_strats:
-        gold.STRATS_BY_SYMBOL = {**gold.SYNTH_STRATEGIES, **gold.parse_sym_strats(a.sym_strats)}
+        gold.SYMBOL_OVERRIDES = gold.parse_sym_strats(a.sym_strats)
+    if a.tier_max:
+        gold.TIER_MAX = a.tier_max
+    if a.class_strats:
+        gold.CLASS_TIERS = {**gold.CLASS_TIERS, **gold.parse_class_strats(a.class_strats)}
     if a.only:
         gold.ENABLED = [x.strip().upper() for x in a.only.split(",") if x.strip()]
-    syms = gold.ALL_SYMBOLS if a.sym.strip().lower() == "all" else gold.SYNTHETICS if a.sym.strip().lower() == "synth" else \
-        [x.strip() for x in a.sym.split(",") if x.strip()]
+    syms = gold.resolve_symbols(a.sym)
     datasets = []
     for k, sym in enumerate(syms):
         if a.source == "csv":

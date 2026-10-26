@@ -41,10 +41,11 @@ FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée 
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
 FUNNEL_ORDER = ["data", "S1_tendance", "S1_repli", "S1_signal", "S2_range", "S2_signal", "S3_niveau", "S3_sweep",
-                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "signal", "vol", "stale", "blackout", "dedupe", "risk", "alert"]
+                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "S5_regime", "S5_tendance", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "blackout", "dedupe", "risk", "alert"]
 FUNNEL_LABEL = {"data": "données", "S1_tendance": "Trend Pullback : tendance H4", "S1_repli": "repli H1", "S1_signal": "signal Trend Pullback",
                 "S2_range": "Asian Breakout : plage", "S2_signal": "signal Asian Breakout", "S3_niveau": "Sweep + CHoCH : niveaux",
                 "S3_sweep": "sweep (niveau intact)", "S3_biais": "sens du biais H4/H1", "S3_zone": "sur zone H1/H4", "S3_signal": "signal Sweep + CHoCH", "S4_regime": "Mean Reversion : range H1", "S4_signal": "signal Mean Reversion",
+                "S5_regime": "Impulsion : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_impulsion": "impulsion + Fibonacci", "S5_signal": "signal Impulsion",
                 "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 

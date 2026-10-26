@@ -1,8 +1,8 @@
 # Bot or (XAUUSD) + paires forex majeures + BTC/ETH
 
-Bot d'alertes Telegram pour l'or, les paires forex majeures (7 contre USD et 8 croisements majeurs de Deriv), le BTC, l'ETH et les 10 indices Volatility de Deriv, avec quatre stratégies (détail précis dans
+Bot d'alertes Telegram pour l'or, les paires forex majeures (7 contre USD et 8 croisements majeurs de Deriv), le BTC, l'ETH et les 10 indices Volatility de Deriv, avec cinq stratégies (détail précis dans
 [STRATEGIES.md](STRATEGIES.md)). Il reprend l'architecture du bot CRT/Impulsion (client Deriv robuste, suivi
-des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune de ses stratégies**.
+des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune de ses stratégies d'origine**, sauf la S5, portée depuis son module Impulsion.
 
 | Code (réglages) | Stratégie | Unités de temps |
 |---|---|---|
@@ -10,6 +10,7 @@ des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune d
 | S2 | Asian Breakout | M15 |
 | S3 | Sweep + CHoCH (SMC) | H4/H1 > M15 > M5 |
 | S4 | Mean Reversion | H1 > M15 |
+| S5 | Impulsion + Fibonacci (portée du crt-bot) | D1 > H4 > H1, H4 > H1 > M15 ou H1 > M15 > M5 |
 
 Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à TP3 avec ratio,
 graphique) et suit leur résultat en R. Aucune stratégie n'est garantie ; les paramètres sont des points de
@@ -23,9 +24,10 @@ départ à valider par backtest.
 | Majeures contre USD | `frxEURUSD`, `frxGBPUSD`, `frxUSDJPY`, `frxUSDCHF`, `frxAUDUSD`, `frxUSDCAD`, `frxNZDUSD` |
 | Croisements majeurs Deriv | `frxAUDJPY`, `frxEURAUD`, `frxEURCAD`, `frxEURCHF`, `frxEURGBP`, `frxEURJPY`, `frxGBPAUD`, `frxGBPJPY` |
 | Cryptos | `cryBTCUSD`, `cryETHUSD` |
-| Indices Volatility (S3 seule) | `R_10`, `R_25`, `R_50`, `R_75`, `R_100` (V10 à V100) et `1HZ10V`, `1HZ25V`, `1HZ50V`, `1HZ75V`, `1HZ100V` (variantes 1s) |
+| Indices Volatility | `R_10`, `R_25`, `R_50`, `R_75`, `R_100` (V10 à V100) et `1HZ10V`, `1HZ25V`, `1HZ50V`, `1HZ75V`, `1HZ100V` (variantes 1s) |
 
-Les quatre stratégies s'appliquent à chaque actif avec les mêmes règles (toutes les distances sont exprimées en ATR,
+Chaque actif appartient à une **classe** qui lui attribue ses stratégies (voir « Classes d'actifs et niveaux » plus bas).
+Les règles de chaque stratégie sont les mêmes pour tous les actifs (toutes les distances sont exprimées en ATR,
 donc elles s'adaptent à la volatilité de chaque paire). Elles ont été pensées pour l'or : **rien ne dit qu'elles
 fonctionnent aussi bien sur les majeures**. Compare actif par actif au backtest et retire ceux qui ne tiennent pas
 (variable `SYMBOLS`). La liste forex reprend les 14 paires que Deriv classe en « Forex majeures » (NZDUSD, rangée en
@@ -34,9 +36,35 @@ sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; l'or ach
 dans le même sens sur une même devise sont ouverts à la fois. BTC et ETH forment un groupe corrélé : 2 trades au plus
 dans le même sens.
 
-**Indices Volatility** : prix produit par un générateur aléatoire, marché 24h/24 et 7j/7, insensible aux news. Ils ne reçoivent que la
-stratégie S3 (réglable avec `SYMBOL_STRATEGIES`, ex. `R_100:S3,S4`), sans killzone, sans filtre de week-end ni de news, sans
-récapitulatif de tendance du matin ni limite d'exposition. **Rien ne garantit que S3 ait un avantage sur un prix aléatoire** : valide d'abord
+## Classes d'actifs et niveaux de stratégie
+
+Chaque actif est rangé dans une classe. Pour chaque classe : une stratégie **principale** (niveau 1), des **secondaires** (niveau 2) et des
+stratégies **à tester** (niveau 3). Ce sont des hypothèses de départ tirées de la logique de chaque stratégie, **pas des résultats de backtest**.
+
+| Classe | Actifs | Principale | Secondaires | À tester |
+|---|---|---|---|---|
+| Or | `frxXAUUSD` | S3 | S1, S5 | |
+| Forex de session | EURUSD, GBPUSD, USDCAD, EURGBP, EURAUD, EURCAD, GBPAUD | S3 | S2 | S1, S5 |
+| Forex JPY | USDJPY, EURJPY, GBPJPY, AUDJPY | S1 | S5 | |
+| Forex calme | USDCHF, EURCHF, AUDUSD, NZDUSD | S4 | S3 | |
+| Cryptos | BTC, ETH | S1 | S3, S5 | |
+| Indices synthétiques | les 10 Volatility | S3 | S5 | |
+
+Une stratégie absente de la ligne d'une classe n'y tourne pas (par exemple S2 et S4 sur l'or). L'alerte indique la classe et le niveau
+(« 🏷️ Or · stratégie principale ») ; une stratégie à tester est marquée « 🧪 À tester ». Le backtest ajoute les lignes `classe` et `tier` à son rapport.
+
+Réglages (onglet Variables) :
+- `TIER_MAX` : niveau maximal actif, `1` (principales seules), `2` (+ secondaires) ou `3` (+ à tester, défaut).
+- `CLASS_STRATEGIES` : change une classe, au format `classe:principales/secondaires/à tester`, ex. `or:S3/S1,S5/S2;forex_jpy:S1/S5/`
+  (classes : `or`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synthetique`).
+- `SYMBOL_STRATEGIES` reste **prioritaire**, actif par actif (alertes alors étiquetées « manuelle »). Attention : un actif absent de cette
+  variable suit désormais sa classe, il ne reçoit plus « toutes les stratégies ».
+- Backtest par classe : `python backtest.py --sym forex_jpy --split 0.6`, avec `--tier-max 1` pour la principale seule, ou
+  `--set gold.TIER_MAX=1,2,3` pour comparer les niveaux. Classes acceptées par `--sym` : `or`, `forex`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`.
+
+**Indices Volatility** : prix produit par un générateur aléatoire, marché 24h/24 et 7j/7, insensible aux news. Ils reçoivent S3 (principale) et S5
+(secondaire, sa version d'origine étant faite pour ces indices ; `TIER_MAX=1` la coupe), sans killzone, sans filtre de week-end ni de news, sans
+récapitulatif de tendance du matin ni limite d'exposition. **Rien ne garantit que S3 ou S5 ait un avantage sur un prix aléatoire** : valide d'abord
 au backtest sur des mois de données réelles Deriv (`python backtest.py --sym synth --days 120 --split 0.6`) avant de te fier aux
 alertes. Spread par défaut 0,02 % (estimation, `SPREAD_PCT`) et décimales d'affichage à vérifier sur Deriv.
 
@@ -60,13 +88,13 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 | Fichier | Rôle |
 |---|---|
 | `gold.py` | Scan, client Deriv (limites de requêtes, reconnexion), alertes et commandes Telegram, suivi |
-| `strategies.py` | Les 4 stratégies, indicateurs (EMA, ATR, ADX, RSI, Bollinger, swings), sessions |
+| `strategies.py` | Les 5 stratégies, indicateurs (EMA, ATR, ADX, RSI, Bollinger, swings), sessions |
 | `trend.py` | Tendance et âge de la tendance (D1, H4, H1) pour le récapitulatif journalier |
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
 | `tests.py` | 69 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
-| `backtest.py` | Rejeu M5 des 4 stratégies, par stratégie, avec deux périodes et grille de réglages |
+| `backtest.py` | Rejeu M5 des 5 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
 | `.github/workflows/tests.yml` | Lance les tests à chaque modification du dépôt |
@@ -78,10 +106,12 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 2. **Settings > Secrets and variables > Actions** : secrets `TELEGRAM_TOKEN` et `TELEGRAM_CHAT_ID`.
 3. Variables facultatives (onglet Variables) :
    - `SYNTH_RECAP_HEURES` (défaut 4) : délai avant la clôture de la bougie daily pour le récapitulatif des indices synthétiques.
-   - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4`).
-   - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (un actif absent garde toutes les
-     stratégies actives). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
-   - `ENTRY_MODE` : `auto` (défaut : ordres limites pour les 4 stratégies), `market` ou `limit` pour tout forcer ;
+   - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4,S5`).
+   - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (prioritaire sur la classe de l'actif ; un actif
+     absent suit sa classe). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
+   - `TIER_MAX` et `CLASS_STRATEGIES` : niveaux et stratégies par classe d'actifs (voir « Classes d'actifs et niveaux »).
+   - `CONFLUENCE_MIN` : fenêtre de confluence en minutes (défaut 60, `0` pour désactiver) : voir STRATEGIES.md.
+   - `ENTRY_MODE` : `auto` (défaut : ordres limites pour les 5 stratégies), `market` ou `limit` pour tout forcer ;
      `ENTRY_MODES` : par stratégie, ex. `S3:market,S4:market`.
    - `SPREAD_PCT` : spread supposé en % du prix, pour tous les actifs (défaut : or 0,015, majeures 0,006, BTC/ETH 0,05).
    - `MAX_AGE_MIN` : âge maximal d'un signal en minutes (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi.
@@ -269,7 +299,7 @@ trades n'est pas évaluable.
 
 ## Ce qui a été vérifié, et ce qui ne l'a pas été
 
-Vérifié (données simulées, sans accès réseau) : le code s'exécute de bout en bout, les 4 stratégies produisent des
+Vérifié (données simulées, sans accès réseau) : le code s'exécute de bout en bout, les 5 stratégies produisent des
 signaux, le suivi (TP1/TP2/TP3, stop, doublons), le message et le graphique fonctionnent, et sur une marche
 aléatoire l'espérance est proche de zéro (pas de gain « gratuit » dans le code).
 

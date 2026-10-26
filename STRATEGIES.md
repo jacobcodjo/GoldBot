@@ -1,7 +1,7 @@
 # Stratégies du bot (or, paires majeures, BTC et ETH)
 
-Quatre stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
-alertes Telegram (le code S1 à S4 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
+Cinq stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
+alertes Telegram (le code S1 à S5 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
 paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --set`).
 
 > **Important.** Aucune stratégie n'a un taux de réussite élevé garanti. Les valeurs ci-dessous sont des
@@ -13,7 +13,7 @@ paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --se
 
 L'or (`frxXAUUSD`), les 7 majeures contre USD (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD, NZDUSD), les 8 autres
 paires classées « Forex majeures » par Deriv (AUDJPY, EURAUD, EURCAD, EURCHF, EURGBP, EURJPY, GBPAUD, GBPJPY) deux cryptos
-(`cryBTCUSD`, `cryETHUSD`) et les 10 indices synthétiques Volatility de Deriv (V10 à V100 et variantes 1s), **traités avec la seule S3**. Les règles sont
+(`cryBTCUSD`, `cryETHUSD`) et les 10 indices synthétiques Volatility de Deriv (V10 à V100 et variantes 1s), classés par **classe d'actifs** (voir plus bas : chaque classe a ses stratégies principale, secondaires et à tester). Les règles sont
 identiques pour tous : seuils en ATR, heures de New York, D1/H4 à 17h. Les stratégies ont été conçues pour l'or ;
 leur comportement sur chaque paire est à vérifier au backtest (`--sym all`), actif par actif. Les cryptos ont une volatilité et des spreads très différents de l'or : ne
 les juge pas sur les résultats des autres actifs. Exposition **par devise** : un trade est long ou short
@@ -41,7 +41,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Ordres limites** (défaut, `ENTRY_MODE=auto`) : l'entrée est un ordre limite au retest d'une zone propre à chaque
   stratégie, à condition que la zone soit entre le stop et le prix actuel, sinon l'ordre est au marché.
   L'ordre est **annulé** si TP1 est atteint avant l'entrée, si une bougie clôture au-delà du stop, si le marché ferme pour
-  le week-end, ou après sa durée de validité (S1 2 h, S2 3 h, S3 1 h, S4 1 h 30 : `LIMIT_TTL`). Une zone à plus de
+  le week-end, ou après sa durée de validité (S1 2 h, S2 3 h, S3 1 h, S4 1 h 30, S5 24 h : `LIMIT_TTL`). Une zone à plus de
   1,5 x ATR du prix écarte le signal (`LIMIT_MAX_ATR`). Les ordres limites améliorent le prix d'entrée mais manquent
   les mouvements qui ne reviennent pas : compare les rendements **totaux** au backtest, pas seulement par trade.
   Le suivi ne considère l'ordre posé qu'à partir de la bougie suivant l'alerte.
@@ -199,6 +199,112 @@ moyenne. C'est la stratégie la plus risquée si une tendance démarre : le rég
 **Objectifs** : TP1 = moyenne mobile 20 de Bollinger, TP2 = bande opposée, **pas de TP3** (50 % à TP1, le reste
 à TP2). **Rejet du signal** si le ratio vers TP1 est < 0,8 ou vers TP2 < 1,5, ou si le risque dépasse 1 x ATR H1.
 **Invalidation** : clôture M15 au-delà de la mèche de rejet.
+
+
+---
+
+## Impulsion + Fibonacci (code S5) · HTF > MTF > LTF
+
+**Origine** : stratégie du module `impulse.py` du crt-bot, portée telle quelle (mêmes règles et mêmes valeurs), avec les
+adaptations listées en bas de section. Elle est faite pour être comparée à S1 (même idée de repli à 50-79 %) et S3.
+
+**Idée** : dans le sens d'une tendance HTF, trader le retracement 50-79 % d'une impulsion MTF, en entrant sur la
+confirmation LTF (sweep d'un creux, cassure de structure avec déplacement, FVG, bloc d'ordre dans la zone).
+
+**Cascades** (une alerte par cascade et par sens) : D1 > H4 > H1, H4 > H1 > M15, H1 > M15 > M5. Le garde-fou « un trade par
+actif, stratégie et sens » écarte les doublons d'un même mouvement : la cascade la plus haute passe en premier.
+Les calculs sont écrits pour un achat ; une vente passe par le miroir des prix.
+
+**1. Tendance HTF** (`s5_trend`) : dernier sommet et dernier creux plus hauts que les précédents (fractale de 2 bougies,
+2 swings suffisent), structure intacte (aucune clôture sous le dernier creux), dernier sommet dépassé par une **clôture**
+(`S5_BOS_BY_CLOSE`). Âge = jambes consécutives : 1 naissante, 2-3 établie, 4 et plus mûre. Seules « naissante » et
+« établie » donnent un signal (`S5_TREND_AGES_OK`).
+
+**2. Régime de volatilité** (`s5_vol_ok`) : ATR 14 / ATR 100 du MTF entre 0,6 et 2 (`S5_VOL_MIN/MAX`). Sans assez d'historique, le
+filtre ne s'applique pas.
+
+**3. Impulsion MTF** (`s5_find_impulse`) : cassure de structure avec déplacement (une bougie >= 1,5 x le corps moyen), jambe d'au
+moins 2 ATR MTF (`S5_IMPULSE_ATR`). Le Fibonacci va de l'origine (creux) à l'extrême (plus haut, mèche comprise). Setup
+annulé si une clôture dépasse 79 %, si l'origine est reprise, ou si l'extrême date de plus de 48 bougies MTF (`S5_IMPULSE_MAX_AGE`).
+
+**4. Entrée LTF** (`s5_find_entry`) : le prix touche la zone 50-79 %, balaie un creux LTF formé pendant le retracement,
+puis une bougie clôture au-dessus du dernier sommet (déplacement >= 1,2 x le corps moyen, `S5_DISP`), l'une des 2 dernières
+clôturées (`S5_FRESH`), en laissant un **FVG** (bougie centrale >= 1,5 x le corps moyen, taille >= 0,1 ATR). Le **bloc d'ordre**
+(dernière bougie baissière avant ce déplacement) doit chevaucher la zone. Si plusieurs combinaisons existent, la plus
+rentable en ratio est gardée. Étiquette : « Golden Zone » (50-61,8 %) ou « OTE » (61,8-79 %).
+
+**Entrée** (dans cet ordre) : 1) ordre **limite** au milieu du FVG, sinon à l'extrémité du bloc d'ordre, si le niveau est dans la zone, pas
+encore atteint, si le prix n'a pas fait plus de 50 % du chemin vers TP1 et si le ratio est >= 1:3 ; 2) au marché si le prix est dans le
+bloc d'ordre ; 3) au marché « entrée tardive » si le prix vient de quitter le bloc d'ordre (2 bougies au plus, moins d'une demi-hauteur de
+bloc, moins de 25 % du chemin vers TP1). Sinon, pas de signal.
+
+**Stop** : sous l'extrême du sweep (+ 0,15 x ATR LTF). **Objectifs** : TP1 = extrême de l'impulsion, TP2 = extension 1,272, TP3 = extension
+1,618. **Ratio minimal** 1:3 calculé sur TP2 (`S5_MIN_RR`, `S5_RR_ON`). **Invalidation** : clôture au-delà du bord du bloc d'ordre côté stop.
+Gestion habituelle (50 % à TP1, 25 % à TP2, 25 % vers TP3).
+
+**Adaptations au gold-bot** (le reste est identique au crt-bot) :
+- Elle suit les règles communes du bot : signal écarté si la clôture de la cassure date de plus de 20 minutes (`MAX_AGE_MIN`), ATR H1 trop
+  faible (`VOL_MIN_RATIO`), fenêtres sans alerte (news, rollover, week-end), exposition par devise, ordre limite valable 24 h comme dans le
+  crt-bot (`LIMIT_TTL`), et `ENTRY_MODE=market` qui supprime l'étape 1.
+- Pas de filtre de killzone (comme dans le crt-bot).
+- Pas de plafond de risque (`S5_RISK_CAP_H1 = 0`, comme dans le crt-bot) ; le mettre à 2, par exemple, rejette les stops de plus de 2 ATR H1.
+- **Actifs** : selon la classe (voir « Classes d'actifs et niveaux ») : secondaire sur l'or, les cryptos, le forex JPY et les indices synthétiques,
+  à tester sur le forex de session, absente du forex calme. `TIER_MAX=2` la coupe sur le forex de session, `TIER_MAX=1` partout.
+- Réglages testables : `python backtest.py --only S5 --split 0.6 --set strategies.S5_IMPULSE_ATR=1.5,2,2.5`.
+
+**Vérification du portage** : sur 12 séries simulées (plus de 20 000 évaluations par fonction), `s5_trend`, `s5_find_impulse` et
+`s5_find_entry` donnent des résultats identiques à ceux de `impulse.py` (tendance, impulsion, entrée limite FVG, limite bloc d'ordre,
+marché, entrée tardive). Le backtest bout en bout (suivi, garde-fous, rapport) fonctionne avec S5. Comme pour les autres stratégies,
+aucun avantage statistique n'est démontré : à valider sur de l'historique réel.
+
+
+
+---
+
+## Classes d'actifs et niveaux (quelle stratégie sur quel actif)
+
+Chaque actif a une classe ; chaque classe classe les stratégies en trois niveaux : **1 principale**, **2 secondaires**, **3 à tester**.
+Le bot ne lance sur un actif que les stratégies de sa classe jusqu'au niveau `TIER_MAX` (3 par défaut), dans l'ordre principale,
+secondaires, à tester. La logique :
+
+- **Or** (sessions, tendance par vagues, liquidité réelle PDH/PDL et plage asiatique) : S3 principale ; S1 et S5 secondaires.
+- **Forex de session** (paires EUR, GBP, USD : les cassures de l'ouverture de Londres et les killzones y ont un sens) : S3 principale ; S2
+  secondaire ; S1 et S5 à tester. USDCAD, EURCAD et GBPAUD y sont rangées par choix, faute de meilleure classe.
+- **Forex JPY** (tendances longues, Asie active donc plage asiatique peu significative) : S1 principale ; S5 secondaire.
+- **Forex calme** (USDCHF, EURCHF, AUDUSD, NZDUSD : peu directionnelles) : S4 principale ; S3 secondaire.
+- **Cryptos** (24h/24, tendances fortes ; S2 et S4 reposent sur des horaires ou un range que le 24h/24 rend peu pertinents) : S1 principale ;
+  S3 et S5 secondaires.
+- **Indices synthétiques** (prix généré par un algorithme, aucune liquidité réelle) : S3 principale ; S5 secondaire. Aucune stratégie n'y a de base
+  logique : à traiter comme une expérience.
+
+**Ces classements sont des hypothèses, pas des résultats.** Une stratégie absente d'une classe n'y tourne pas (S2 et S4 sur l'or, par exemple) ;
+pour les y remettre : `CLASS_STRATEGIES="or:S3/S1,S5/S2,S4"`. Réglages : `TIER_MAX`, `CLASS_STRATEGIES`, et `SYMBOL_STRATEGIES` (prioritaire, actif par actif).
+
+**Marquage** : l'alerte porte une ligne « 🏷️ <classe> · stratégie principale (ou secondaire) » ; une stratégie à tester est marquée « 🧪 À tester »
+(en-tête du format minimal, résumé des formats compact et contexte). Chaque trade enregistre `classe` et `tier`.
+
+**Valider** : `python backtest.py --sym forex_jpy --split 0.6` (classes : `or`, `forex`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`).
+Le rapport détaille les lignes `classe` et `tier` ; compare les niveaux avec `--set gold.TIER_MAX=1,2,3`. Garde une stratégie sur une classe
+seulement si elle est positive sur les deux périodes avec au moins 30 trades, sinon change-la de niveau avec `CLASS_STRATEGIES`.
+
+---
+
+## Confluence (étiquette, hors stratégies)
+
+Quand deux stratégies ou plus signalent **le même actif dans le même sens** à moins de `CONFLUENCE_MIN` minutes d'écart
+(60 par défaut ; `0` pour désactiver), l'alerte le dit : une ligne « ⚡ Confluence : S5 Impulsion (il y a 10 min) »
+(format complet), « confluence S5 » dans le résumé (formats compact et contexte), « ⚡S5 » dans l'en-tête (format minimal).
+
+- **Information seulement** : rien n'est filtré, chaque stratégie alerte comme avant, avec ses propres niveaux.
+- **Qui compte** : les trades des autres stratégies encore en attente ou ouverts, alertés dans la fenêtre, et les signaux trouvés au même
+  scan. Un trade clôturé, annulé ou expiré ne compte pas. Une même stratégie ne se compte pas elle-même (S5 sur deux cascades = une seule).
+- **Une seule étiquette, sur la seconde alerte** : si S3 alerte à 10h00 puis S5 à 10h20, c'est l'alerte de S5 qui porte la confluence ;
+  celle de S3, déjà envoyée, n'est pas modifiée. Au même scan, les deux alertes la portent.
+- **Mesure au backtest** : chaque trade enregistre `confluence` (ex. `S3+S5`, ou `aucune`) et le rapport ajoute une ligne par valeur.
+  Pour comparer les fenêtres : `python backtest.py --sym all --split 0.6 --set gold.CONFLUENCE_MIN=0,30,60,120`.
+  Compare le rendement par trade de `aucune` et des confluences, **sur les deux périodes** (`--split 0.6`) : il faut au moins
+  30 trades par ligne, et une confluence qui ne tient que sur une période est du sur-ajustement.
+- **Étape suivante possible** (non faite) : en faire un filtre (n'alerter que s'il y a confluence), seulement si le backtest le justifie.
 
 ---
 

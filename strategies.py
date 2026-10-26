@@ -1,4 +1,4 @@
-"""Quatre stratégies pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
+"""Cinq stratégies pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
 
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
@@ -7,6 +7,7 @@ timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
   S2  Asian Breakout                  M15, fenêtre 02h00-07h00 New York
   S3  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
   S4  Mean Reversion                  H1 (régime) > M15 (rejet des bandes de Bollinger)
+  S5  Impulsion + Fibonacci           HTF (tendance) > MTF (impulsion, retracement 50-79 %) > LTF (sweep, MSS, FVG, bloc d'ordre)
 
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
@@ -64,6 +65,30 @@ S4_BUF_ATR = 0.3
 S4_HOURS = [(20, 26), (11, 15)]        # 20h-02h et 11h-15h New York (26 = 02h du lendemain)
 S4_MIN_RR1, S4_MIN_RR2 = 0.8, 1.5      # ratios minimaux vers TP1 et TP2
 S4_RISK_CAP_H1 = 1.0
+
+# --- S5 Impulsion + retracement Fibonacci (portée du crt-bot : impulse.py) ---
+S5_CASCADES = [("D1", "H4", "H1"), ("H4", "H1", "M15"), ("H1", "M15", "M5")]   # (tendance, impulsion + Fibonacci, entrée)
+S5_ZONE = (0.5, 0.79)                  # zone de retracement acceptée : 50 % -> 79 % de la jambe
+S5_OTE_FROM = 0.618                    # entre 50 % et 61,8 % : « Golden Zone » ; entre 61,8 % et 79 % : « OTE »
+S5_EXT = (1.272, 1.618)                # extensions de TP2 et TP3 (TP1 = extrême de l'impulsion)
+S5_IMPULSE_ATR = 2.0                   # jambe d'impulsion >= 2 x ATR du timeframe d'impulsion
+S5_IMPULSE_DISP = 1.5                  # une bougie de la jambe >= 1,5 x corps moyen
+S5_IMPULSE_MAX_AGE = 48                # l'extrême de l'impulsion date de 48 bougies d'impulsion clôturées au plus
+S5_DISP = 1.2                          # déplacement de la bougie de cassure d'entrée (x corps moyen)
+S5_SL_BUF_ATR = 0.15                   # marge du stop au-delà de l'extrême du sweep (x ATR du timeframe d'entrée)
+S5_MIN_RR = 3.0                        # ratio gain/risque minimal (1 pour 3)
+S5_RR_ON = "tp2"                       # cible sur laquelle porte ce ratio : "tp1" ou "tp2"
+S5_FRESH = 2                           # la cassure d'entrée est l'une des 2 dernières bougies clôturées
+S5_MAX_PROGRESS = 0.5                  # ordre limite écarté si le prix a déjà fait plus de 50 % du chemin entrée -> TP1
+S5_LATE_CANDLES, S5_LATE_DIST, S5_LATE_PROGRESS = 2, 0.5, 0.25   # entrée tardive (le prix vient de quitter le bloc d'ordre)
+S5_FVG_DISP = 1.5                      # bougie centrale du FVG >= 1,5 x corps moyen
+S5_FVG_MIN_ATR = 0.1                   # taille minimale du FVG (x ATR du timeframe d'entrée)
+S5_BOS_BY_CLOSE = True                 # tendance : le dernier sommet (creux) doit être dépassé par une clôture, pas une mèche
+S5_AGE_ESTABLISHED, S5_AGE_MATURE = 2, 4   # jambes consécutives : 1 = naissante, 2-3 = établie, 4 et plus = mûre
+S5_TREND_AGES_OK = ("naissante", "établie")   # âges acceptés (ajouter "mûre" pour tout accepter)
+S5_VOL_FAST, S5_VOL_SLOW = 14, 100     # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
+S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0      # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
+S5_RISK_CAP_H1 = 0                     # plafond de risque en ATR H1 (0 = aucun, comme dans le crt-bot)
 
 
 # ==========================================================================
@@ -218,7 +243,7 @@ def is_late(d, price, trig_close, a_ltf):
 LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
 LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
 LIMIT_MAX_ATR = 1.5         # zone d'entrée à plus de 1,5 ATR du prix actuel : signal écarté (trop de retracement requis)
-LIMIT_TTL = {"S1": 7200, "S2": 10800, "S3": 3600, "S4": 5400}   # validité de l'ordre limite, en secondes
+LIMIT_TTL = {"S1": 7200, "S2": 10800, "S3": 3600, "S4": 5400, "S5": 86400}   # validité de l'ordre limite, en secondes
 
 
 def ob_zone(cs, lo_i, hi_i, d):
@@ -830,7 +855,277 @@ def scan_s4(provide, now, funnel, dec=2, kz=True, mode="market"):
     return None
 
 
-STRATEGIES = [("S1", scan_s1), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4)]
+# ==========================================================================
+# S5  Impulsion + retracement Fibonacci (zone 50-79 %)
+# ==========================================================================
+def _s5_flip(cs):
+    """Miroir des bougies (prix * -1) : les calculs sont écrits pour un achat, la vente passe par ce miroir."""
+    return [{"epoch": c["epoch"], "open": -c["open"], "high": -c["low"], "low": -c["high"], "close": -c["close"]} for c in cs]
+
+
+def _s5_bavg(cs):
+    """Corps moyen d'une liste de bougies (sans plafond de longueur)."""
+    return sum(body(c) for c in cs) / len(cs) if cs else 0.0
+
+
+def _s5_run(vals):
+    """Nombre de hausses successives à la fin de la liste (ex : 1, 2, 3 -> 2)."""
+    n = 0
+    for a, b in zip(vals[-2::-1], vals[:0:-1]):
+        if b > a:
+            n += 1
+        else:
+            break
+    return n
+
+
+def s5_trend(htf):
+    """Tendance haussière (écrite pour un achat) : {'age', 'legs'} ou None. Dernier sommet et dernier creux plus hauts que
+    les précédents (2 swings suffisent), structure intacte (aucune clôture sous le dernier creux), dernier sommet dépassé
+    par une clôture. Âge = jambes consécutives : 1 naissante, 2-3 établie, 4 et plus mûre."""
+    h = htf[:-1]
+    if len(h) < 12:
+        return None
+    sh, sl = swings(h, "high", 2), swings(h, "low", 2)
+    if len(sh) < 2 or len(sl) < 2:
+        return None
+    highs, lows = [h[i]["high"] for i in sh], [h[i]["low"] for i in sl]
+    if not (highs[-1] > highs[-2] and lows[-1] > lows[-2]):
+        return None
+    if any(c["close"] < lows[-1] for c in h[sl[-1] + 1:]):
+        return None                                   # structure cassée : le dernier creux a été clôturé en dessous
+    if S5_BOS_BY_CLOSE and not any(c["close"] > highs[-2] for c in h[sh[-2] + 1:]):
+        return None                                   # sommet dépassé seulement par une mèche
+    legs = max(1, min(_s5_run(highs), _s5_run(lows)))
+    age = "naissante" if legs < S5_AGE_ESTABLISHED else "établie" if legs < S5_AGE_MATURE else "mûre"
+    return {"age": age, "legs": legs}
+
+
+def s5_vol_ok(mtf):
+    """Régime de volatilité : ATR rapide / ATR lent du timeframe d'impulsion entre S5_VOL_MIN et S5_VOL_MAX.
+    Sans assez d'historique (moins de S5_VOL_SLOW + 1 bougies clôturées), le filtre ne s'applique pas."""
+    if not (S5_VOL_MIN or S5_VOL_MAX):
+        return True
+    cs = mtf[:-1]
+    if len(cs) < S5_VOL_SLOW + 1:
+        return True
+    slow = atr(cs, S5_VOL_SLOW)
+    return slow <= 0 or S5_VOL_MIN <= atr(cs, S5_VOL_FAST) / slow <= S5_VOL_MAX
+
+
+def s5_find_impulse(mtf):
+    """Impulsion haussière du timeframe d'impulsion : cassure de structure avec déplacement, jambe >= 2 ATR, origine
+    non reprise, retracement n'ayant pas clôturé au-delà de 79 %. Retourne {'lo', 'hi', 'leg', 'o_epoch', 'ext_epoch'} ou None."""
+    m = mtf[:-1]
+    if len(m) < 30:
+        return None
+    lows, highs = swings(m, "low", 2), swings(m, "high", 2)
+    for o in reversed(lows):
+        rest = m[o + 1:]
+        if len(rest) < 2 or min(x["low"] for x in rest) < m[o]["low"]:
+            continue                                  # l'origine a été reprise par le prix
+        e = o + 1 + max(range(len(rest)), key=lambda i: rest[i]["high"])
+        if len(m) - 1 - e > S5_IMPULSE_MAX_AGE:
+            return None                               # impulsion trop ancienne (les origines plus anciennes ont un extrême plus ancien encore)
+        before = [s for s in highs if s < o]
+        if not before:
+            continue
+        prior = m[before[-1]]["high"]
+        if not any(m[x]["close"] > prior for x in range(o + 1, e + 1)):
+            continue                                  # pas de cassure de structure
+        lo, hi = m[o]["low"], m[e]["high"]
+        leg = hi - lo
+        if leg <= 0 or leg < S5_IMPULSE_ATR * atr(m[:e + 1]):
+            continue
+        avg = _s5_bavg(m[max(0, o - 10):o + 1])
+        if avg and max(body(x) for x in m[o + 1:e + 1]) < S5_IMPULSE_DISP * avg:
+            continue                                  # pas de déplacement
+        if any(x["close"] < hi - S5_ZONE[1] * leg for x in m[e + 1:]):
+            return None                               # retracement trop profond (au-delà de 0,79) : setup annulé
+        return {"lo": lo, "hi": hi, "leg": leg, "o_epoch": m[o]["epoch"], "ext_epoch": m[e]["epoch"]}
+    return None
+
+
+def s5_find_entry(ltf, imp, mtf_gran, mode="limit"):
+    """Entrée haussière du timeframe d'entrée : zone 50-79 % touchée -> sweep d'un creux -> cassure de structure avec
+    déplacement et FVG -> bloc d'ordre dans la zone. Retourne le meilleur candidat (ratio le plus haut) ou None."""
+    lo, hi, leg = imp["lo"], imp["hi"], imp["leg"]
+    zone = (hi - S5_ZONE[1] * leg, hi - S5_ZONE[0] * leg)
+    closed = ltf[:-1]
+    start = imp["ext_epoch"] + mtf_gran
+    first = next((i for i, c in enumerate(closed) if c["epoch"] >= start), None)
+    if first is None:
+        return None
+    m = closed[first:]
+    a = atr(closed)
+    if len(m) < 8 or a <= 0:
+        return None
+    touch = next((i for i, c in enumerate(m) if c["low"] <= zone[1] and c["high"] >= zone[0]), None)
+    if touch is None or any(c["close"] < lo for c in m):
+        return None                                   # zone jamais touchée, ou origine cassée
+    if any(c["close"] < zone[0] for c in m):
+        return None                                   # une clôture au-delà de 79 % : retracement trop profond
+    cands = []
+    for k in range(touch, len(m)):
+        # sweep : la mèche prend un creux (formé pendant le retracement) et referme au-dessus
+        levels = [m[s]["low"] for s in swings(m[:k], "low", 2)[-3:]] if k >= 5 else []
+        swept = [lv for lv in levels if m[k]["low"] < lv < m[k]["close"]]
+        if not swept or any(c["close"] < m[k]["low"] for c in m[k + 1:]):
+            continue
+        for j in range(max(k + 1, len(m) - S5_FRESH), len(m)):
+            sh = swings(m[:j], "high", 2)
+            if not sh:
+                continue
+            level = m[sh[-1]]["high"]
+            if not (m[j]["close"] > level and m[j - 1]["close"] <= level):
+                continue                              # pas de cassure de structure
+            avg = _s5_bavg(m[max(0, j - 8):j])
+            if avg and body(m[j]) < S5_DISP * avg:
+                continue                              # pas de déplacement
+            i = next((ii for ii in (j, j + 1)
+                      if 2 <= ii < len(m) and ii - 1 >= k
+                      and m[ii]["low"] > m[ii - 2]["high"]
+                      and m[ii]["low"] - m[ii - 2]["high"] >= S5_FVG_MIN_ATR * a
+                      and m[ii - 1]["close"] > m[ii - 1]["open"]
+                      and (not avg or body(m[ii - 1]) >= S5_FVG_DISP * avg)), None)
+            if i is None:
+                continue                              # pas de FVG
+            ob_i = next((x for x in range(i - 2, k - 1, -1) if m[x]["close"] < m[x]["open"]), None)
+            if ob_i is None:
+                continue
+            ob = (m[ob_i]["low"], m[ob_i]["high"])
+            if not (ob[0] <= zone[1] and ob[1] >= zone[0]):
+                continue                              # le bloc d'ordre doit chevaucher la zone 50 %-79 %
+            cands.append({"k": k, "i": i, "ob": ob, "fvg": (m[i - 2]["high"], m[i]["low"]),
+                          "sweep": max(swept), "sweep_low": m[k]["low"], "trig": m[j]["epoch"]})
+    if not cands:
+        return None
+    best = [r for r in (_s5_evaluate(c, m, ltf, zone, lo, hi, leg, a, mode) for c in cands) if r]
+    return max(best, key=lambda r: r["rr"]) if best else None
+
+
+def _s5_evaluate(found, m, ltf, zone, lo, hi, leg, a, mode="limit"):
+    """Stop, cibles et type d'ordre d'un candidat (None si le trade est refusé). Écrit pour un achat."""
+    ob, fvg, price = found["ob"], found["fvg"], ltf[-1]["close"]
+    sl = found["sweep_low"] - S5_SL_BUF_ATR * a
+    tp1, tp2 = hi, lo + S5_EXT[0] * leg
+    if price <= sl or price >= tp1:
+        return None
+    after = m[found["i"] + 1:] + [ltf[-1]]            # bougies depuis la fin du FVG, bougie en cours comprise
+
+    def rr_at(e):                                     # ratio gain/risque sur la cible choisie par S5_RR_ON
+        tp = tp2 if S5_RR_ON == "tp2" else tp1
+        return (tp - e) / (e - sl) if e > sl else 0
+
+    kind = entry = how = None
+    # 1) ordre limite : milieu du FVG (prioritaire), sinon extrémité du bloc d'ordre, dans la zone et pas encore atteint
+    if mode == "limit":
+        for name, e in (("FVG 50 %", (fvg[0] + fvg[1]) / 2), ("extrémité OB", ob[1])):
+            if not (zone[0] <= e <= zone[1]) or any(c["low"] <= e for c in after):
+                continue
+            if (price - e) > S5_MAX_PROGRESS * (tp1 - e) or rr_at(e) < S5_MIN_RR:
+                continue
+            kind, entry, how = "LIMITE", e, name
+            break
+    # 2) ordre instantané : le prix est dans le bloc d'ordre
+    if kind is None and ob[0] <= price <= ob[1] and rr_at(price) >= S5_MIN_RR:
+        kind, entry, how = "MARCHE", price, "OB"
+    # 3) entrée tardive : le prix vient de quitter le bloc d'ordre
+    if kind is None and price > ob[1]:
+        touches = [n for n, c in enumerate(after) if c["low"] <= ob[1]]
+        if touches:
+            since = len(after) - 1 - touches[-1]
+            if (since <= S5_LATE_CANDLES
+                    and price - ob[1] <= S5_LATE_DIST * (ob[1] - ob[0])
+                    and (price - ob[1]) < S5_LATE_PROGRESS * (tp1 - ob[1])
+                    and rr_at(price) >= S5_MIN_RR):
+                kind, entry, how = "MARCHE", price, "tardive"
+    if kind is None:
+        return None
+    return {"kind": kind, "entry": entry, "how": how, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": lo + S5_EXT[1] * leg,
+            "rr": rr_at(entry), "ob": ob, "fvg": fvg, "zone": zone, "trig": found["trig"],
+            "label": "Golden Zone" if (hi - entry) / leg < S5_OTE_FROM else "OTE",
+            "sweep": found["sweep"], "price": price}
+
+
+def _s5_unflip(r):
+    out = dict(r)
+    for k in ("entry", "sl", "tp1", "tp2", "tp3", "sweep", "price"):
+        out[k] = -r[k]
+    for k in ("ob", "fvg", "zone"):
+        out[k] = (-r[k][1], -r[k][0])
+    return out
+
+
+def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
+    """Retourne la LISTE des signaux (une par cascade et par sens : D1>H4>H1, H4>H1>M15, H1>M15>M5), la cascade la plus
+    haute en premier ; le garde-fou « un trade par actif, stratégie et sens » écarte les doublons d'un même mouvement.
+    Pas de filtre de killzone : l'impulsion se juge sur la structure, pas sur l'heure (kz est ignoré)."""
+    out = []
+    for htf_n, mtf_n, ltf_n in S5_CASCADES:
+        htf, mtf = provide(htf_n), provide(mtf_n)
+        if not htf or not mtf:
+            continue
+        if not s5_vol_ok(mtf):
+            continue                                  # volatilité en compression extrême ou en pic
+        funnel["S5_regime"] += 1
+        ltf = None
+        for d in ("BUY", "SELL"):
+            buy = d == "BUY"
+            H, M = (htf, mtf) if buy else (_s5_flip(htf), _s5_flip(mtf))
+            trend = s5_trend(H)
+            if not trend or trend["age"] not in S5_TREND_AGES_OK:
+                continue
+            funnel["S5_tendance"] += 1
+            imp = s5_find_impulse(M)
+            if not imp:
+                continue
+            funnel["S5_impulsion"] += 1
+            if ltf is None:
+                ltf = provide(ltf_n) or []
+            if not ltf or now - ltf[-1]["epoch"] > 3 * GRAN[ltf_n]:
+                continue
+            r = s5_find_entry(ltf if buy else _s5_flip(ltf), imp, GRAN[mtf_n], "limit" if mode == "limit" else "market")
+            if not r:
+                continue
+            if not buy:
+                r = _s5_unflip(r)
+            a_ltf, a_h1 = atr(ltf[:-1]), atr((provide("H1") or [])[:-1])
+            if S5_RISK_CAP_H1 and a_h1 > 0 and abs(r["entry"] - r["sl"]) > S5_RISK_CAP_H1 * a_h1:
+                continue                              # risque supérieur au plafond (désactivé par défaut)
+            funnel["S5_signal"] += 1
+            limit = r["kind"] == "LIMITE"
+            origin, extreme = (imp["lo"], imp["hi"]) if buy else (-imp["lo"], -imp["hi"])
+            inval = r["ob"][0] if buy else r["ob"][1]          # bord du bloc d'ordre côté stop
+            lv = {"sl": r["sl"], "risk": abs(r["entry"] - r["sl"]), "tp": [r["tp1"], r["tp2"], r["tp3"]]}
+            where = "au milieu du FVG" if r["how"] == "FVG 50 %" else "à l'extrémité du bloc d'ordre"
+            details = [f"✅ {r['label']} · bloc d'ordre {min(r['ob']):.{dec}f} - {max(r['ob']):.{dec}f}",
+                       f"✅ Sweep {r['sweep']:.{dec}f}",
+                       f"✅ Tendance {trend['age']} {htf_n}",
+                       f"✅ Impulsion {mtf_n} : retracement 50-79 % ({imp['lo'] if buy else -imp['lo']:.{dec}f} → "
+                       f"{imp['hi'] if buy else -imp['hi']:.{dec}f})"]
+            if r["how"] == "tardive":
+                details.append("⏱ Entrée tardive : le prix vient de quitter le bloc d'ordre")
+            sig = _signal(
+                "S5", "Impulsion", d, r["entry"], lv, ltf, ltf_n, f"{htf_n}>{mtf_n}>{ltf_n}|{imp['o_epoch']}|{imp['ext_epoch']}",
+                details,
+                lines=[{"y": r["sweep"], "label": "Sweep", "kind": "sweep"},
+                       {"y": origin, "label": "Origine", "kind": "range"}, {"y": extreme, "label": "Extrême", "kind": "range"}],
+                zones=[{"lo": r["zone"][0], "hi": r["zone"][1], "label": "Zone 50-79 %", "kind": "fib"},
+                       {"lo": r["fvg"][0], "hi": r["fvg"][1], "label": "FVG", "kind": "fvg"},
+                       {"lo": r["ob"][0], "hi": r["ob"][1], "label": "OB", "kind": "ob"}],
+                inval=inval, extra={"cascade": f"{htf_n}>{mtf_n}>{ltf_n}", "tendance": trend["age"], "zone": r["label"],
+                                    "poi": r["how"] if limit else "marché"},
+                short=f"{r['label']} · impulsion {mtf_n} · {htf_n}>{mtf_n}>{ltf_n}", trig=r["trig"],
+                otype=f"{d} LIMIT" if limit else d, price_now=r["price"],
+                ttl=LIMIT_TTL["S5"] if limit else None,
+                entry_note=f"Ordre limite {where} {ltf_n}" if limit else "")
+            out.append(sig)
+    return out or None
+
+
+STRAT_LABELS = {"S1": "Trend Pullback", "S2": "Asian Breakout", "S3": "Sweep + CHoCH", "S4": "Mean Reversion", "S5": "Impulsion"}
+STRATEGIES = [("S1", scan_s1), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4), ("S5", scan_s5)]
 
 
 def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
@@ -843,7 +1138,7 @@ def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
         if only and name not in only:
             continue
         sig = fn(provide, now, funnel, dec, kz, (modes or {}).get(name, "market"))
-        if sig:
+        for one in (sig if isinstance(sig, list) else [sig] if sig else []):   # S5 renvoie une liste (une par cascade et sens)
             funnel["signal"] += 1
-            out.append(sig)
+            out.append(one)
     return out
