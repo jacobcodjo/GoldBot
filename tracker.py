@@ -126,11 +126,13 @@ def advance(t, candles, now):
         if c["epoch"] < start or c["epoch"] + g <= t["seen"]:
             continue
         closed = c["epoch"] + g <= now
+        just_filled = False
         if t["status"] == "pending":
             fill = {"BUY LIMIT": c["low"] <= t["entry"], "BUY STOP": c["high"] >= t["entry"],
                     "SELL LIMIT": c["high"] >= t["entry"], "SELL STOP": c["low"] <= t["entry"]}[t["otype"]]
             if fill:
                 t["status"] = "open"
+                just_filled = True
                 ev.append("filled")
             else:
                 if t["tp1"] is not None and up(c, t["tp1"]):
@@ -164,6 +166,12 @@ def advance(t, candles, now):
                 _close(t, r_of(t, c["close"]), "time", now)
                 ev.append("time")
                 break
+        if just_filled:
+            # ordre rempli dans cette bougie : l'ordre des extrêmes est inconnu, donc aucun objectif n'est compté
+            # avant la bougie suivante (le stop, lui, reste évalué : hypothèse prudente)
+            if closed:
+                last_closed = c["epoch"] + g
+            continue
         if t["stage"] == 0 and t["tp1"] is not None and up(c, t["tp1"]):
             r1 = r_of(t, t["tp1"])
             part = min(PARTIAL_AT_TP1, t["rem"])
@@ -173,6 +181,11 @@ def advance(t, candles, now):
             if BE_AT_TP1:
                 t["sl_now"] = t["entry"]
             ev.append("tp1")
+            if t["sl_now"] != t["sl"] and down(c, t["sl_now"]):
+                # même bougie : l'ordre des extrêmes est inconnu, le retour à l'entrée est supposé survenu (prudent)
+                _close(t, t["r_acc"] + t["rem"] * r_of(t, t["sl_now"]), "TP1+BE", now)
+                ev.append("be")
+                break
         if t["stage"] < 2 and up(c, t["tp2"]):
             r2 = r_of(t, t["tp2"])
             if PARTIAL_AT_TP2 > 0 and t.get("tp3") is not None:
@@ -183,6 +196,10 @@ def advance(t, candles, now):
                 if LOCK_AT_TP2:
                     t["sl_now"] = t["tp1"] if t["tp1"] is not None else t["entry"]
                 ev.append("tp2")
+                if LOCK_AT_TP2 and down(c, t["sl_now"]):
+                    _close(t, t["r_acc"] + t["rem"] * r_of(t, t["sl_now"]), "TP2+stop", now)
+                    ev.append("lock")
+                    break
             else:
                 _close(t, t["r_acc"] + t["rem"] * r2, "TP2", now)
                 ev.append("tp2")

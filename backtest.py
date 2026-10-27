@@ -198,23 +198,47 @@ def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
     return tr, funnel, stats
 
 
-def mean_ci(rs, n=2000, seed=1):
-    """Intervalle de confiance à 95 % de la moyenne par rééchantillonnage (bootstrap)."""
-    rnd, m = random.Random(seed), len(rs)
-    means = sorted(sum(rnd.choice(rs) for _ in range(m)) / m for _ in range(n))
+def mean_ci(rs, n=2000, seed=1, groups=None):
+    """Intervalle de confiance à 95 % de la moyenne par rééchantillonnage (bootstrap).
+    groups : un identifiant (ex. le jour) par trade. Les trades d'un même jour (actifs corrélés, confluences) ne sont
+    pas indépendants : on rééchantillonne alors des jours entiers, ce qui élargit l'intervalle (plus honnête)."""
+    rnd = random.Random(seed)
+    if groups is None:
+        m = len(rs)
+        means = sorted(sum(rnd.choice(rs) for _ in range(m)) / m for _ in range(n))
+        return means[int(0.025 * n)], means[int(0.975 * n) - 1]
+    blocs = {}
+    for r, g in zip(rs, groups):
+        blocs.setdefault(g, []).append(r)
+    liste = [(sum(v), len(v)) for v in blocs.values()]
+    means = []
+    for _ in range(n):
+        pick = [rnd.choice(liste) for _ in liste]
+        means.append(sum(p[0] for p in pick) / sum(p[1] for p in pick))
+    means.sort()
     return means[int(0.025 * n)], means[int(0.975 * n) - 1]
 
 
-def verdict(rs):
+def verdict(rs, groups=None):
     if len(rs) < 30:
         return f"Trop peu de trades ({len(rs)}) pour conclure : il en faut au moins 30, idéalement plusieurs centaines."
-    lo, hi = mean_ci(rs)
-    head = f"Espérance par trade : IC 95 % [{lo:+.2f} ; {hi:+.2f}] R"
+    lo, hi = mean_ci(rs, groups=groups)
+    head = f"Espérance par trade : IC 95 % [{lo:+.2f} ; {hi:+.2f}] R" + (" (jours rééchantillonnés)" if groups is not None else "")
     if lo > 0:
         return head + " : positive avec une bonne probabilité (à confirmer sur d'autres périodes)."
     if hi < 0:
         return head + " : négative avec une bonne probabilité."
     return head + " : indistinguable de zéro, aucun avantage démontré."
+
+
+def multiple_tests_warning(ts):
+    """Nombre de combinaisons actif x stratégie observées : à 95 %, une sur vingt paraît positive par hasard."""
+    cells = {(t.get("sym"), t.get("cascade")) for t in ts if t.get("r") is not None}
+    if len(cells) < 2:
+        return None
+    return (f"Attention : {len(cells)} combinaisons actif x stratégie observées ; même sans aucun avantage réel, "
+            f"environ {max(1, round(len(cells) / 20))} paraîtraient positives par hasard. Ne retiens une cellule que si elle "
+            "reste positive sur la période 2 (--split) et sur d'autres actifs.")
 
 
 def breakdown(ts, key):
@@ -260,7 +284,10 @@ def report(results, days, spread_pct, split=None):
     if not s:
         return L + ["Aucun trade clôturé : pas assez de signaux sur cette période."]
     L.append(T.fmt_summary("TOTAL", s))
-    L.append(verdict([t["r"] for t in ts]))
+    L.append(verdict([t["r"] for t in ts], groups=[int(t.get("t0", 0)) // 86400 for t in ts]))
+    warn = multiple_tests_warning(ts)
+    if warn:
+        L.append(warn)
     if len(results) > 1:
         L.append("Par actif :")
         for sym, tr, _, _ in results:

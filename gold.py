@@ -46,7 +46,7 @@ DECIMALS = {"frxXAUUSD": 2, "cryBTCUSD": 2, "cryETHUSD": 2,   # paires en yen : 
             "R_10": 3, "R_25": 3, "R_50": 4, "R_75": 4, "R_100": 2,   # indices Volatility (variantes 1s : 2 décimales, par défaut) ; à vérifier sur Deriv
             "1HZ10V": 2, "1HZ25V": 2, "1HZ50V": 2, "1HZ75V": 2, "1HZ100V": 2}
 BOT = "OR"
-SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05,   # % du prix (estimations ; variable SPREAD_PCT pour imposer)
+SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05,   # % du prix (estimations ; SPREAD_TABLE par actif ou SPREAD_PCT pour imposer)
                   "frxEURGBP": 0.007, "frxEURJPY": 0.008, "frxEURCHF": 0.009, "frxAUDJPY": 0.009,   # croisements : plus larges que les majeures USD
                   "frxEURCAD": 0.010, "frxEURAUD": 0.010, "frxGBPJPY": 0.012, "frxGBPAUD": 0.014,
                   **{sym: 0.02 for sym in SYNTHETICS}}   # indices Volatility : estimation, à ajuster (SPREAD_PCT) selon ton compte
@@ -54,8 +54,26 @@ SPREAD_OTHER = 0.006                      # majeures contre USD
 MAX_AGE_MIN = float(os.getenv("MAX_AGE_MIN") or 20)   # signal plus vieux (clôture du déclencheur) : écarté
 
 
+def spread_table():
+    """Spreads imposés par actif : variable SPREAD_TABLE, ex. 'frxXAUUSD=0.02,frxEURUSD=0.008' (en % du prix)."""
+    out = {}
+    for part in (os.getenv("SPREAD_TABLE") or "").split(","):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        try:
+            out[k.strip()] = float(v)
+        except ValueError:
+            pass
+    return out
+
+
 def spread_pct(sym):
-    """Spread supposé, en % du prix : variable SPREAD_PCT si définie, sinon valeur par défaut de l'actif."""
+    """Spread supposé, en % du prix. Priorité : SPREAD_TABLE (par actif, ex. tes spreads Exness Standard),
+    puis SPREAD_PCT (une valeur pour tous), puis l'estimation par défaut de l'actif."""
+    tbl = spread_table()
+    if sym in tbl:
+        return tbl[sym]
     try:
         if os.getenv("SPREAD_PCT"):
             return float(os.environ["SPREAD_PCT"])
@@ -507,7 +525,7 @@ def mgmt_line(sig):
     return out + (". Sortie si " + " ou ".join(exits) if exits else "")
 
 
-ALERT_FORMATS = ("complet", "compact", "minimal", "contexte")
+ALERT_FORMATS = ("complet", "compact", "minimal", "contexte", "essentiel")
 
 
 def alert_format():
@@ -603,6 +621,21 @@ def message_minimal(sig, tid):
                      + ([tail] if tail else []))
 
 
+def message_essentiel(sig, tid):
+    """3 lignes : type d'ordre, actif, stratégie (avec la confluence), heure ; niveaux ; validité et numéro."""
+    d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
+    names = [sig["label"]] + [S.STRAT_LABELS.get(x, x) for x in (sig.get("confluence") or [])]
+    strat = ("⚡ " if len(names) > 1 else "") + " + ".join(names)
+    tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
+    entry = c(sig["entry"]) if is_limit(sig) else f"Marché {c(sig['entry'])}"
+    l1 = (f"{'🟢' if d == 'BUY' else '🔴'} {sig['otype'] if is_limit(sig) else d} · {sig['name']} {sig['ltf']} · {strat}"
+          + (f" · {sig_clock(sig)}" if sig_clock(sig) else "") + (" · 🧪" if sig.get("tier") == 3 else ""))
+    l2 = f"{entry} · SL {c(sig['sl'])} · TP {tps}"
+    valid = limit_validity(sig) if is_limit(sig) else None
+    l3 = " · ".join(x for x in ((valid[0].upper() + valid[1:]) if valid else None, f"#{tid}" if tid else None) if x)
+    return "\n".join([l1, l2] + ([l3] if l3 else []))
+
+
 def message_contexte(sig, tid):
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
     risk = abs(sig["entry"] - sig["sl"])
@@ -617,9 +650,9 @@ def message_contexte(sig, tid):
 
 
 def gold_message(sig, tid=None):
-    """Texte de l'alerte dans le format choisi (variable ALERT_FORMAT : complet, compact, minimal, contexte)."""
+    """Texte de l'alerte dans le format choisi (variable ALERT_FORMAT : complet, compact, minimal, contexte, essentiel)."""
     return {"complet": message_complet, "compact": message_compact, "minimal": message_minimal,
-            "contexte": message_contexte}[alert_format()](sig, tid)
+            "contexte": message_contexte, "essentiel": message_essentiel}[alert_format()](sig, tid)
 
 
 def trade_event_message(t, e, now=None):

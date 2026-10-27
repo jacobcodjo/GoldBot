@@ -1333,6 +1333,119 @@ class ClassesEtNiveaux(unittest.TestCase):
                 os.environ.pop("ALERT_FORMAT", None)
 
 
+class TestBougieDeFillEtSpreads(unittest.TestCase):
+    """Hypothèses prudentes du suivi (bougie de fill, stop remonté) et spreads par actif."""
+
+    @staticmethod
+    def _trade(otype):
+        return T.new_trade("OR", "k", "frxXAUUSD", "XAUUSD", "BUY", otype, 100, 98, 102, 104, 106,
+                           "M5", 300, 2, "c", 1000, 3600)
+
+    def test_ordre_limite_rempli_aucun_objectif_dans_la_meme_bougie(self):
+        t = self._trade("BUY LIMIT")
+        ev = T.advance(t, [{"epoch": 1200, "open": 101, "high": 103, "low": 99.5, "close": 100.5}], 1600)
+        self.assertEqual(ev, ["filled"])
+        self.assertEqual((t["status"], t["stage"]), ("open", 0))
+        ev = T.advance(t, [{"epoch": 1500, "open": 100.5, "high": 103, "low": 100.2, "close": 102.5}], 1900)
+        self.assertEqual(ev, ["tp1"])                          # l'objectif compte à la bougie suivante
+
+    def test_ordre_limite_rempli_et_stop_touche_dans_la_meme_bougie(self):
+        t = self._trade("BUY LIMIT")
+        ev = T.advance(t, [{"epoch": 1200, "open": 101, "high": 101, "low": 97, "close": 97.5}], 1600)
+        self.assertEqual(ev, ["filled", "sl"])                 # le stop reste évalué (prudent)
+
+    def test_retour_a_l_entree_dans_la_bougie_de_tp1_ferme_a_break_even(self):
+        t = self._trade("BUY")
+        ev = T.advance(t, [{"epoch": 1200, "open": 100.5, "high": 102.5, "low": 99, "close": 99.5}], 1600)
+        self.assertEqual(ev, ["tp1", "be"])
+        self.assertEqual((t["status"], t["result"]), ("closed", "TP1+BE"))
+        self.assertAlmostEqual(t["r"], 0.5 * 1.0, places=2)    # moitié à TP1 (+1 R), reste à l'entrée
+
+    def test_spread_par_actif(self):
+        for k in ("SPREAD_TABLE", "SPREAD_PCT"):
+            os.environ.pop(k, None)
+        defaut = gold.spread_pct("frxXAUUSD")
+        os.environ["SPREAD_TABLE"] = "frxXAUUSD=0.03, frxEURUSD=0.008,mauvais,cryBTCUSD=abc"
+        try:
+            self.assertEqual(gold.spread_pct("frxXAUUSD"), 0.03)
+            self.assertEqual(gold.spread_pct("frxEURUSD"), 0.008)
+            self.assertEqual(gold.spread_pct("cryBTCUSD"), gold.SPREAD_DEFAULT["cryBTCUSD"])   # valeur invalide ignorée
+            os.environ["SPREAD_PCT"] = "0.5"
+            self.assertEqual(gold.spread_pct("frxXAUUSD"), 0.03)    # la table l'emporte sur SPREAD_PCT
+            self.assertEqual(gold.spread_pct("frxGBPUSD"), 0.5)
+        finally:
+            os.environ.pop("SPREAD_TABLE", None)
+            os.environ.pop("SPREAD_PCT", None)
+        self.assertEqual(gold.spread_pct("frxXAUUSD"), defaut)
+
+    def test_workflow_transmet_les_variables_documentees(self):
+        with open(os.path.join(os.path.dirname(__file__), ".github", "workflows", "gold.yml"), encoding="utf-8") as f:
+            wf = f.read()
+        for k in ("SPREAD_TABLE", "SYNTH_RECAP_HEURES", "ALERT_FUSEAU_NOM", "SPREAD_PCT"):
+            self.assertIn(f"{k}: ${{{{ vars.{k} }}}}", wf, k)
+
+
+class TestIntervalleParJours(unittest.TestCase):
+    def test_bootstrap_par_jours_plus_large_quand_les_trades_d_un_jour_sont_correles(self):
+        # 40 jours, 5 trades par jour qui finissent tous pareil : le bootstrap par trade sous-estime l'incertitude
+        rs, jours = [], []
+        for j in range(40):
+            r = 1.0 if j % 2 else -1.0
+            rs += [r] * 5
+            jours += [j] * 5
+        lo1, hi1 = B.mean_ci(rs)
+        lo2, hi2 = B.mean_ci(rs, groups=jours)
+        self.assertGreater(hi2 - lo2, hi1 - lo1)
+
+    def test_verdict_et_avertissement_tests_multiples(self):
+        rs = [1.0, -1.0] * 20
+        self.assertIn("jours rééchantillonnés", B.verdict(rs, groups=list(range(len(rs)))))
+        ts = [{"sym": "frxXAUUSD", "cascade": "A", "r": 1.0}, {"sym": "frxEURUSD", "cascade": "B", "r": -1.0}]
+        self.assertIn("2 combinaisons", B.multiple_tests_warning(ts))
+        self.assertIsNone(B.multiple_tests_warning(ts[:1]))
+
+
+class TestFormatEssentiel(unittest.TestCase):
+    @staticmethod
+    def _sig(**kw):
+        sig = {"label": "Sweep + CHoCH", "dir": "SELL", "otype": "SELL LIMIT", "sym": "frxXAUUSD", "name": "XAUUSD",
+               "dec": 2, "ltf": "M15", "session": "Londres", "entry": 4012.5, "price_now": 4010.0, "sl": 4018.2,
+               "tp1": 4001.3, "tp2": 3992.4, "tp3": 3980.1, "short": "x", "details": [], "ttl": 7200, "ts": 1_700_000_000}
+        sig.update(kw)
+        return sig
+
+    def _msg(self, sig, tid=12):
+        os.environ["ALERT_FORMAT"] = "essentiel"
+        try:
+            return gold.gold_message(sig, tid)
+        finally:
+            os.environ.pop("ALERT_FORMAT", None)
+
+    def test_ordre_limite_trois_lignes(self):
+        txt = self._msg(self._sig())
+        lines = txt.split("\n")
+        self.assertEqual(len(lines), 3)
+        self.assertIn("SELL LIMIT", lines[0])
+        self.assertIn("XAUUSD M15", lines[0])
+        self.assertNotIn("⚡", txt)
+        for v in ("4012.50", "4018.20", "4001.30", "3992.40", "3980.10"):
+            self.assertIn(v, lines[1])
+        self.assertTrue(lines[2].startswith("Valable"))
+        self.assertTrue(lines[2].endswith("#12"))
+
+    def test_confluence_dans_le_nom_de_la_strategie(self):
+        txt = self._msg(self._sig(confluence=["S2"]))
+        self.assertIn("⚡ Sweep + CHoCH + ", txt.split("\n")[0])
+        self.assertIn(S.STRAT_LABELS["S2"], txt.split("\n")[0])
+
+    def test_ordre_au_marche_et_signal_test(self):
+        txt = self._msg(self._sig(dir="BUY", otype="BUY", tier=3), tid=13)
+        lines = txt.split("\n")
+        self.assertEqual(lines[0].split(" · ")[0].split()[-1], "BUY")
+        self.assertIn("🧪", lines[0])
+        self.assertIn("Marché", lines[1])
+        self.assertEqual(lines[2], "#13")
+
 
 if __name__ == "__main__":
     unittest.main()

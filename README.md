@@ -93,7 +93,7 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 69 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `tests.py` | 112 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 5 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
@@ -114,9 +114,11 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
    - `ENTRY_MODE` : `auto` (défaut : ordres limites pour les 5 stratégies), `market` ou `limit` pour tout forcer ;
      `ENTRY_MODES` : par stratégie, ex. `S3:market,S4:market`.
    - `SPREAD_PCT` : spread supposé en % du prix, pour tous les actifs (défaut : or 0,015, majeures 0,006, BTC/ETH 0,05).
+   - `SPREAD_TABLE` : spreads par actif, en % du prix, ex. `frxXAUUSD=0.02,frxEURUSD=0.008,cryBTCUSD=0.04` (prioritaire sur `SPREAD_PCT` ;
+     sert à saisir les spreads de ton courtier, par exemple Exness Standard, actif par actif).
    - `MAX_AGE_MIN` : âge maximal d'un signal en minutes (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi.
    - `ALERT_FUSEAU` : fuseau d'affichage de l'heure (défaut `Africa/Porto-Novo`, soit l'heure du Bénin ; `none` pour désactiver).
-   - `ALERT_FORMAT` : `complet`, `compact`, `contexte` ou `minimal` (voir plus bas).
+   - `ALERT_FORMAT` : `complet`, `compact`, `contexte`, `minimal` ou `essentiel` (voir plus bas).
    - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures USD, les 8 croisements majeurs, BTC, ETH et les 10 indices Volatility).
 4. Le workflow n'a pas de `schedule` : déclenche-le toutes les 5 minutes avec ton cron externe
    (`workflow_dispatch`), comme pour l'ancien bot. Un scan télécharge M5 et M15 pour chaque actif (28 actifs : une
@@ -229,7 +231,7 @@ limite indique sa fin de validité (« valable jusqu'à 10h15 Bénin »). Variab
 
 ## Format des alertes (variable `ALERT_FORMAT`)
 
-Le graphique est toujours joint (désactivable avec `CHARTS=0`). Le texte existe en 4 formats, choisis par la variable
+Le graphique est toujours joint (désactivable avec `CHARTS=0`). Le texte existe en 5 formats, choisis par la variable
 GitHub `ALERT_FORMAT` (défaut : `complet` ; une valeur inconnue revient à `complet`) :
 
 | Valeur | Contenu | Longueur |
@@ -238,6 +240,15 @@ GitHub `ALERT_FORMAT` (défaut : `complet` ; une valeur inconnue revient à `com
 | `compact` | entrée, SL, TP et ratios, résumé du setup, tendance D1/H4 avec âge | ~10 lignes |
 | `contexte` | niveaux + risque, résumé du setup, tendance D1/H4 détaillée (jambes), invalidation | ~11 lignes |
 | `minimal` | direction, entrée, SL, TP1/2/3 | 3 lignes |
+| `essentiel` | type d'ordre, actif, stratégie (⚡ si confluence), heure, entrée, SL, TP1/2/3, validité, numéro | 3 lignes |
+
+Exemple `essentiel` (ordre limite avec confluence) :
+
+```
+🔴 SELL LIMIT · XAUUSD M15 · ⚡ Sweep + CHoCH + Asian Breakout · 14:35
+4012.50 · SL 4018.20 · TP 4001.30 / 3992.40 / 3980.10
+Valable jusqu'à 16:30 · #12
+```
 
 Les messages de suivi (TP1 atteint, stop, structure cassée…) gardent leur forme, avec l'heure en plus. Exemple `compact` :
 
