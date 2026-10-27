@@ -420,6 +420,11 @@ class IndicesVolatility(unittest.TestCase):
     def setUp(self):
         for k in ("WEEKEND_EXIT", "ACCOUNT_BALANCE", "SPREAD_PCT", "SYMBOL_STRATEGIES"):
             os.environ.pop(k, None)
+        self._cf = gold.CLASS_FILTER
+        gold.CLASS_FILTER = True            # ces tests décrivent le filtrage par classe (CLASS_FILTER=1)
+
+    def tearDown(self):
+        gold.CLASS_FILTER = self._cf
 
     def test_liste_et_noms(self):
         self.assertEqual(set(gold.SYNTHETICS), self.ATTENDUS)
@@ -1200,11 +1205,23 @@ class ClassesEtNiveaux(unittest.TestCase):
     TOUTES = ["S1", "S2", "S3", "S4", "S5"]
 
     def setUp(self):
-        self._enabled = gold.ENABLED
+        self._enabled, self._cf = gold.ENABLED, gold.CLASS_FILTER
         gold.ENABLED = list(self.TOUTES)
+        gold.CLASS_FILTER = True            # le filtrage par classe est optionnel (CLASS_FILTER=1)
 
     def tearDown(self):
-        gold.ENABLED = self._enabled
+        gold.ENABLED, gold.CLASS_FILTER = self._enabled, self._cf
+
+    def test_par_defaut_toutes_les_strategies_sur_chaque_actif(self):
+        gold.CLASS_FILTER = False
+        for sym in gold.ALL_SYMBOLS:
+            self.assertEqual(gold.strategies_for(sym), self.TOUTES, sym)
+            self.assertIsNone(gold.tier_of(sym, "S2"), sym)
+        sig = gold.add_tier({"strat": "S2", "details": [], "short": "x", "extra": {}}, "frxXAUUSD")
+        self.assertEqual(sig["extra"]["tier"], "toutes")
+        self.assertNotIn("🧪", sig["short"])
+        gold.ENABLED = ["S1", "S3"]                  # la variable STRATEGIES reste prioritaire
+        self.assertEqual(gold.strategies_for("frxXAUUSD"), ["S1", "S3"])
 
     def test_les_classes_couvrent_tous_les_actifs_une_fois(self):
         listed = [s for _, syms in gold.ASSET_CLASSES.values() for s in syms]
@@ -1381,7 +1398,7 @@ class TestBougieDeFillEtSpreads(unittest.TestCase):
     def test_workflow_transmet_les_variables_documentees(self):
         with open(os.path.join(os.path.dirname(__file__), ".github", "workflows", "gold.yml"), encoding="utf-8") as f:
             wf = f.read()
-        for k in ("SPREAD_TABLE", "SYNTH_RECAP_HEURES", "ALERT_FUSEAU_NOM", "SPREAD_PCT"):
+        for k in ("SPREAD_TABLE", "SYNTH_RECAP_HEURES", "ALERT_FUSEAU_NOM", "SPREAD_PCT", "CLASS_FILTER"):
             self.assertIn(f"{k}: ${{{{ vars.{k} }}}}", wf, k)
 
 
@@ -1445,6 +1462,42 @@ class TestFormatEssentiel(unittest.TestCase):
         self.assertIn("🧪", lines[0])
         self.assertIn("Marché", lines[1])
         self.assertEqual(lines[2], "#13")
+
+
+class TestRemplissageEtCouts(unittest.TestCase):
+    @staticmethod
+    def _trade(otype, entry=100.0, fill_buf=0.0):
+        sl, tps = (98.0, (102, 104, 106)) if otype.startswith("BUY") else (102.0, (98, 96, 94))
+        t = T.new_trade("OR", "k", "frxXAUUSD", "XAUUSD", otype.split()[0], otype, entry, sl, *tps,
+                        "M5", 300, 2, "c", 1000, 3600)
+        t["fill_buf"] = fill_buf
+        return t
+
+    def test_ordre_limite_exige_de_traverser_le_niveau_du_demi_spread(self):
+        t = self._trade("BUY LIMIT", fill_buf=0.2)
+        T.advance(t, [{"epoch": 1200, "open": 101, "high": 101, "low": 99.9, "close": 100.5}], 1600)
+        self.assertEqual(t["status"], "pending")                # touché mais pas traversé : pas rempli
+        T.advance(t, [{"epoch": 1500, "open": 100.5, "high": 101, "low": 99.7, "close": 100.5}], 1900)
+        self.assertEqual(t["status"], "open")
+        s = self._trade("SELL LIMIT", fill_buf=0.2)
+        T.advance(s, [{"epoch": 1200, "open": 99, "high": 100.1, "low": 99, "close": 99.5}], 1600)
+        self.assertEqual(s["status"], "pending")
+        T.advance(s, [{"epoch": 1500, "open": 99, "high": 100.3, "low": 99, "close": 99.5}], 1900)
+        self.assertEqual(s["status"], "open")
+
+    def test_sans_fill_buf_comportement_inchange(self):
+        t = self._trade("BUY LIMIT")
+        T.advance(t, [{"epoch": 1200, "open": 101, "high": 101, "low": 99.95, "close": 100.5}], 1600)
+        self.assertEqual(t["status"], "open")
+
+    def test_cout_moyen_par_strategie(self):
+        ts = [{"cascade": "A", "r": 0.9, "cost_r": 0.1}, {"cascade": "A", "r": -1.1, "cost_r": 0.1},
+              {"cascade": "B", "r": 0.0, "cost_r": 0.3}]
+        rows = B.cost_lines(ts)
+        self.assertEqual(len(rows), 2)
+        self.assertIn("A : coût 0.10 R/trade", rows[0])
+        self.assertIn("-0.10 après", rows[0])
+        self.assertIn("+0.30 R/trade avant coût", rows[1])
 
 
 if __name__ == "__main__":

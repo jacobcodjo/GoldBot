@@ -128,8 +128,9 @@ def advance(t, candles, now):
         closed = c["epoch"] + g <= now
         just_filled = False
         if t["status"] == "pending":
-            fill = {"BUY LIMIT": c["low"] <= t["entry"], "BUY STOP": c["high"] >= t["entry"],
-                    "SELL LIMIT": c["high"] >= t["entry"], "SELL STOP": c["low"] <= t["entry"]}[t["otype"]]
+            fb = t.get("fill_buf", 0.0)    # demi-spread : le prix doit traverser le niveau d'autant pour que l'ordre soit rempli
+            fill = {"BUY LIMIT": c["low"] <= t["entry"] - fb, "BUY STOP": c["high"] >= t["entry"] + fb,
+                    "SELL LIMIT": c["high"] >= t["entry"] + fb, "SELL STOP": c["low"] <= t["entry"] - fb}[t["otype"]]
             if fill:
                 t["status"] = "open"
                 just_filled = True

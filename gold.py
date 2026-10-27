@@ -160,15 +160,19 @@ def parse_tier_max(text, default=3):
 CLASS_TIERS = {**DEFAULT_CLASS_TIERS, **parse_class_strats(os.getenv("CLASS_STRATEGIES"))}
 TIER_MAX = parse_tier_max(os.getenv("TIER_MAX"))
 SYMBOL_OVERRIDES = parse_sym_strats(os.getenv("SYMBOL_STRATEGIES"))   # prioritaire sur les classes, actif par actif
+# Par défaut, TOUTES les stratégies actives (variable STRATEGIES) tournent sur CHAQUE actif. Les classes et niveaux
+# ci-dessus ne s'appliquent que si CLASS_FILTER=1 (ou true / oui / on).
+CLASS_FILTER = (os.getenv("CLASS_FILTER") or "").strip().lower() in ("1", "true", "oui", "on", "yes")
 
 
 def strategies_for(sym):
-    """Stratégies de l'actif : SYMBOL_OVERRIDES s'il y est, sinon les niveaux 1 à TIER_MAX de sa classe (dans l'ordre
-    principale, secondaires, à tester). Un actif hors classe garde toutes les stratégies actives."""
+    """Stratégies de l'actif : SYMBOL_OVERRIDES s'il y est ; sinon toutes les stratégies actives (défaut) ; avec
+    CLASS_FILTER, les niveaux 1 à TIER_MAX de sa classe (dans l'ordre principale, secondaires, à tester). Un actif
+    hors classe garde toutes les stratégies actives."""
     if sym in SYMBOL_OVERRIDES:
         return list(SYMBOL_OVERRIDES[sym])
     cls = CLASS_OF.get(sym)
-    if cls is None:
+    if cls is None or not CLASS_FILTER:
         return list(ENABLED)
     out = []
     for tier in CLASS_TIERS[cls][:TIER_MAX]:
@@ -180,7 +184,7 @@ def tier_of(sym, strat):
     """Niveau (1 principale, 2 secondaire, 3 à tester) de la stratégie pour cet actif ; None si l'actif est réglé à la main
     (SYMBOL_OVERRIDES), hors classe, ou si la stratégie n'est pas dans sa classe."""
     cls = CLASS_OF.get(sym)
-    if sym in SYMBOL_OVERRIDES or cls is None:
+    if sym in SYMBOL_OVERRIDES or cls is None or not CLASS_FILTER:
         return None
     for n, tier in enumerate(CLASS_TIERS[cls][:TIER_MAX], 1):
         if strat in tier:
@@ -194,7 +198,8 @@ def add_tier(sig, sym):
     cls = CLASS_OF.get(sym)
     label = ASSET_CLASSES[cls][0] if cls else "Hors classe"
     tier = tier_of(sym, sig["strat"])
-    name = "manuelle" if sym in SYMBOL_OVERRIDES else TIER_NAMES.get(tier, "hors classe")
+    name = ("manuelle" if sym in SYMBOL_OVERRIDES else "toutes" if not CLASS_FILTER
+            else TIER_NAMES.get(tier, "hors classe"))
     sig["tier"] = tier
     sig["extra"] = dict(sig["extra"], classe=label, tier=name)
     if tier == 3:
@@ -814,7 +819,8 @@ def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
                 pass
     if not delivered:
         notify(text, html=True, buttons=buttons)
-    extra = dict(sig["extra"], session=sig["session"], id=tid, strat=sig["strat"])
+    extra = dict(sig["extra"], session=sig["session"], id=tid, strat=sig["strat"],
+                 fill_buf=round(spread_pct(sig["sym"]) / 100 * sig["entry"] / 2, 8))
     tr["active"][sig["key"]] = T.new_trade(
         BOT, sig["key"], sig["sym"], sig["name"], sig["dir"], sig["otype"], sig["entry"], sig["sl"],
         sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], sig["gran"], sig["dec"], sig["label"], now,

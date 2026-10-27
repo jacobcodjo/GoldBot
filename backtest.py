@@ -184,7 +184,8 @@ def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
             funnel["alert"] += 1
             if gold.is_limit(sig):
                 stats["placed"] += 1
-            extra = dict(sig["extra"], session=sig["session"], strat=sig["strat"])
+            extra = dict(sig["extra"], session=sig["session"], strat=sig["strat"],
+                         fill_buf=round(spread_pct / 100 * sig["entry"] / 2, 8))
             tr["active"][sig["key"]] = T.new_trade(
                 gold.BOT, sig["key"], sym, sig["name"], sig["dir"], sig["otype"], sig["entry"], sig["sl"],
                 sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], M5, sig["dec"], sig["label"], now,
@@ -229,6 +230,18 @@ def verdict(rs, groups=None):
     if hi < 0:
         return head + " : négative avec une bonne probabilité."
     return head + " : indistinguable de zéro, aucun avantage démontré."
+
+
+def cost_lines(ts):
+    """Coût moyen du spread (en R par trade) et résultat avant/après coût, par stratégie : montre où le spread pèse."""
+    rows = []
+    for val in sorted({str(t.get("cascade")) for t in ts if t.get("r") is not None}):
+        sub = [t for t in ts if str(t.get("cascade")) == val and t.get("r") is not None]
+        cost = sum(t.get("cost_r") or 0.0 for t in sub) / len(sub)
+        net = sum(t["r"] for t in sub) / len(sub)
+        rows.append(f"  {val} : coût {cost:.2f} R/trade · résultat {net + cost:+.2f} R/trade avant coût, {net:+.2f} après "
+                    f"({len(sub)} trades)")
+    return rows
 
 
 def multiple_tests_warning(ts):
@@ -295,6 +308,8 @@ def report(results, days, spread_pct, split=None):
             L.append(T.fmt_summary(f"  {gold.name_of(sym)}", sub) if sub else f"  {gold.name_of(sym)} : aucun trade")
     L.append("Par stratégie :")
     L += breakdown(ts, "cascade")
+    L.append("Coût du spread par stratégie :")
+    L += cost_lines(ts)
     for key in ["classe", "tier", "dir", "session", "liq", "h4", "poi", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
         L += breakdown(ts, key)
     if split:
@@ -400,6 +415,8 @@ def main():
     ap.add_argument("--set", action="append", help="grille : module.NOM=v1,v2 (répétable)")
     ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S4\" (défaut : celles de la classe de l'actif)")
     ap.add_argument("--tier-max", type=int, choices=[1, 2, 3], help="niveau maximal : 1 principales, 2 + secondaires, 3 + à tester (défaut : 3)")
+    ap.add_argument("--class-filter", action="store_true",
+                    help="restreint chaque actif aux stratégies de sa classe (défaut : toutes les stratégies sur chaque actif)")
     ap.add_argument("--class-strats", help="stratégies par classe, ex. \"or:S3/S1,S5/S2;forex_jpy:S1/S5/\" (principales/secondaires/à tester)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--vol", type=float, default=0.0006, help="volatilité M5 de la marche aléatoire (sim)")
@@ -409,6 +426,8 @@ def main():
         sys.exit("--split doit être compris entre 0.2 et 0.8")
     if a.sym_strats:
         gold.SYMBOL_OVERRIDES = gold.parse_sym_strats(a.sym_strats)
+    if a.class_filter:
+        gold.CLASS_FILTER = True
     if a.tier_max:
         gold.TIER_MAX = a.tier_max
     if a.class_strats:

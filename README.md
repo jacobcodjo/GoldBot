@@ -26,7 +26,7 @@ départ à valider par backtest.
 | Cryptos | `cryBTCUSD`, `cryETHUSD` |
 | Indices Volatility | `R_10`, `R_25`, `R_50`, `R_75`, `R_100` (V10 à V100) et `1HZ10V`, `1HZ25V`, `1HZ50V`, `1HZ75V`, `1HZ100V` (variantes 1s) |
 
-Chaque actif appartient à une **classe** qui lui attribue ses stratégies (voir « Classes d'actifs et niveaux » plus bas).
+Par défaut, **toutes les stratégies actives tournent sur chaque actif**. Avec `CLASS_FILTER=1`, chaque actif est restreint aux stratégies de sa **classe** (voir « Classes d'actifs et niveaux » plus bas).
 Les règles de chaque stratégie sont les mêmes pour tous les actifs (toutes les distances sont exprimées en ATR,
 donc elles s'adaptent à la volatilité de chaque paire). Elles ont été pensées pour l'or : **rien ne dit qu'elles
 fonctionnent aussi bien sur les majeures**. Compare actif par actif au backtest et retire ceux qui ne tiennent pas
@@ -38,7 +38,7 @@ dans le même sens.
 
 ## Classes d'actifs et niveaux de stratégie
 
-Chaque actif est rangé dans une classe. Pour chaque classe : une stratégie **principale** (niveau 1), des **secondaires** (niveau 2) et des
+**Ce tableau ne s'applique que si `CLASS_FILTER=1`** (variable GitHub ; par défaut, toutes les stratégies tournent sur tous les actifs et les alertes n'affichent ni niveau ni 🧪). Chaque actif est rangé dans une classe. Pour chaque classe : une stratégie **principale** (niveau 1), des **secondaires** (niveau 2) et des
 stratégies **à tester** (niveau 3). Ce sont des hypothèses de départ tirées de la logique de chaque stratégie, **pas des résultats de backtest**.
 
 | Classe | Actifs | Principale | Secondaires | À tester |
@@ -54,10 +54,12 @@ Une stratégie absente de la ligne d'une classe n'y tourne pas (par exemple S2 e
 (« 🏷️ Or · stratégie principale ») ; une stratégie à tester est marquée « 🧪 À tester ». Le backtest ajoute les lignes `classe` et `tier` à son rapport.
 
 Réglages (onglet Variables) :
+- `CLASS_FILTER` : `1` pour restreindre chaque actif aux stratégies de sa classe (défaut : vide = toutes les stratégies sur chaque actif).
+  Le backtest accepte `--class-filter` et lit aussi les variables `CLASS_FILTER`, `CLASS_STRATEGIES`, `SYMBOL_STRATEGIES` et `TIER_MAX`.
 - `TIER_MAX` : niveau maximal actif, `1` (principales seules), `2` (+ secondaires) ou `3` (+ à tester, défaut).
 - `CLASS_STRATEGIES` : change une classe, au format `classe:principales/secondaires/à tester`, ex. `or:S3/S1,S5/S2;forex_jpy:S1/S5/`
   (classes : `or`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synthetique`).
-- `SYMBOL_STRATEGIES` reste **prioritaire**, actif par actif (alertes alors étiquetées « manuelle »). Attention : un actif absent de cette
+- `SYMBOL_STRATEGIES` reste **prioritaire** sur tout, actif par actif (alertes alors étiquetées « manuelle »). Attention : un actif absent de cette
   variable suit désormais sa classe, il ne reçoit plus « toutes les stratégies ».
 - Backtest par classe : `python backtest.py --sym forex_jpy --split 0.6`, avec `--tier-max 1` pour la principale seule, ou
   `--set gold.TIER_MAX=1,2,3` pour comparer les niveaux. Classes acceptées par `--sym` : `or`, `forex`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`.
@@ -93,7 +95,7 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 112 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `tests.py` | 116 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 5 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
@@ -228,6 +230,14 @@ stratégie avec `ENTRY_MODES` (ex. `S3:market`) ou repasse tout au marché avec 
 Chaque alerte, chaque message de suivi et le récapitulatif affichent l'heure du Bénin (« 08h15 Bénin »), et un ordre
 limite indique sa fin de validité (« valable jusqu'à 10h15 Bénin »). Variable `ALERT_FUSEAU` pour un autre fuseau
 (ex. `Europe/Paris`, avec `ALERT_FUSEAU_NOM=Paris` pour le libellé) ou `none` pour ne plus afficher d'heure.
+
+## Hypothèses du suivi et du backtest
+
+- Un ordre limite n'est rempli que si le prix traverse le niveau d'au moins un **demi-spread** (le spread de l'actif, voir `SPREAD_TABLE`) : un simple effleurement ne compte pas.
+- Dans la bougie où un ordre est rempli, aucun objectif n'est compté (l'ordre des extrêmes de la bougie est inconnu). Le stop, lui, reste évalué.
+- Si une bougie atteint TP1 puis revient à l'entrée, le trade ferme à break-even (idem pour le stop remonté à TP1 après TP2).
+- Le rapport du backtest donne le coût moyen du spread par stratégie, avec le résultat avant et après coût.
+- Ces hypothèses sont prudentes : elles rendent le backtest plus pessimiste, donc plus proche du réel.
 
 ## Format des alertes (variable `ALERT_FORMAT`)
 
