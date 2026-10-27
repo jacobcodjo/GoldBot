@@ -38,6 +38,10 @@ jobs:
           ONLY: ${{ github.event.inputs.only }}
           SPREAD: ${{ github.event.inputs.spread_pct }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
+          CLASS_FILTER: ${{ vars.CLASS_FILTER }}
+          CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
+          SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
+          TIER_MAX: ${{ vars.TIER_MAX }}
           SPLIT: ${{ github.event.inputs.split }}
           GRID: ${{ github.event.inputs.grid }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
