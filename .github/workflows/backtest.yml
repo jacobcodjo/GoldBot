@@ -37,6 +37,7 @@ jobs:
           DAYS: ${{ github.event.inputs.days }}
           ONLY: ${{ github.event.inputs.only }}
           SPREAD: ${{ github.event.inputs.spread_pct }}
+          SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
           SPLIT: ${{ github.event.inputs.split }}
           GRID: ${{ github.event.inputs.grid }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}

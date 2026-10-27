@@ -63,6 +63,9 @@ jobs:
           CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
           TIER_MAX: ${{ vars.TIER_MAX }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
+          SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
+          SYNTH_RECAP_HEURES: ${{ vars.SYNTH_RECAP_HEURES }}
+          ALERT_FUSEAU_NOM: ${{ vars.ALERT_FUSEAU_NOM }}
           MAX_AGE_MIN: ${{ vars.MAX_AGE_MIN }}
           WEEKEND_EXIT: ${{ vars.WEEKEND_EXIT }}
 
