@@ -534,9 +534,9 @@ ALERT_FORMATS = ("complet", "compact", "minimal", "contexte", "essentiel")
 
 
 def alert_format():
-    """Format des alertes, réglé par la variable ALERT_FORMAT (défaut : complet)."""
-    fmt_name = (os.getenv("ALERT_FORMAT") or "complet").strip().lower()
-    return fmt_name if fmt_name in ALERT_FORMATS else "complet"
+    """Format des alertes, réglé par la variable ALERT_FORMAT (défaut : essentiel)."""
+    fmt_name = (os.getenv("ALERT_FORMAT") or "essentiel").strip().lower()
+    return fmt_name if fmt_name in ALERT_FORMATS else "essentiel"
 
 
 def sig_clock(sig):
@@ -637,7 +637,8 @@ def message_essentiel(sig, tid):
           + (f" · {sig_clock(sig)}" if sig_clock(sig) else "") + (" · 🧪" if sig.get("tier") == 3 else ""))
     l2 = f"{entry} · SL {c(sig['sl'])} · TP {tps}"
     valid = limit_validity(sig) if is_limit(sig) else None
-    l3 = " · ".join(x for x in ((valid[0].upper() + valid[1:]) if valid else None, f"#{tid}" if tid else None) if x)
+    age = f"signal {age_txt(sig)}" if (sig.get("age_min") or 0) >= 3 else None    # alerte tardive : on le dit
+    l3 = " · ".join(x for x in ((valid[0].upper() + valid[1:]) if valid else None, age, f"#{tid}" if tid else None) if x)
     return "\n".join([l1, l2] + ([l3] if l3 else []))
 
 

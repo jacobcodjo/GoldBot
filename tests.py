@@ -231,8 +231,12 @@ class Messages(unittest.TestCase):
 
     def test_format_inconnu_et_age(self):
         os.environ["ALERT_FORMAT"] = "n'importe quoi"
-        self.assertEqual(gold.alert_format(), "complet")
+        self.assertEqual(gold.alert_format(), "essentiel")
         self.assertIn("signal il y a 3 min", gold.gold_message(self.sig, 15))
+        os.environ.pop("ALERT_FORMAT", None)
+        self.assertEqual(gold.alert_format(), "essentiel")                  # format par défaut
+        os.environ["ALERT_FORMAT"] = "complet"
+        self.assertEqual(gold.alert_format(), "complet")
         self.assertEqual(gold.age_txt({"age_min": 0.2}), "à l'instant")
 
     def test_variables_vides(self):
@@ -1454,6 +1458,12 @@ class TestFormatEssentiel(unittest.TestCase):
         txt = self._msg(self._sig(confluence=["S2"]))
         self.assertIn("⚡ Sweep + CHoCH + ", txt.split("\n")[0])
         self.assertIn(S.STRAT_LABELS["S2"], txt.split("\n")[0])
+
+    def test_age_affiche_seulement_si_alerte_tardive(self):
+        self.assertNotIn("signal il y a", self._msg(self._sig(age_min=1.0)))
+        txt = self._msg(self._sig(age_min=7.0))
+        self.assertIn("signal il y a 7 min", txt)
+        self.assertEqual(len(txt.split("\n")), 3)
 
     def test_ordre_au_marche_et_signal_test(self):
         txt = self._msg(self._sig(dir="BUY", otype="BUY", tier=3), tid=13)

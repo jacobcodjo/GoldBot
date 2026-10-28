@@ -50,25 +50,25 @@ stratégies **à tester** (niveau 3). Ce sont des hypothèses de départ tirées
 | Cryptos | BTC, ETH | S1 | S3, S5 | |
 | Indices synthétiques | les 10 Volatility | S3 | S5 | |
 
-Une stratégie absente de la ligne d'une classe n'y tourne pas (par exemple S2 et S4 sur l'or). L'alerte indique la classe et le niveau
-(« 🏷️ Or · stratégie principale ») ; une stratégie à tester est marquée « 🧪 À tester ». Le backtest ajoute les lignes `classe` et `tier` à son rapport.
+Avec `CLASS_FILTER=1`, une stratégie absente de la ligne d'une classe n'y tourne pas (par exemple S2 et S4 sur l'or). L'alerte indique alors la classe et le niveau
+(« 🏷️ Or · stratégie principale ») ; une stratégie à tester est marquée « 🧪 À tester ». Le backtest ajoute les lignes `classe` et `tier` à son rapport (le niveau vaut « toutes » quand `CLASS_FILTER` est vide).
 
 Réglages (onglet Variables) :
 - `CLASS_FILTER` : `1` pour restreindre chaque actif aux stratégies de sa classe (défaut : vide = toutes les stratégies sur chaque actif).
   Le backtest accepte `--class-filter` et lit aussi les variables `CLASS_FILTER`, `CLASS_STRATEGIES`, `SYMBOL_STRATEGIES` et `TIER_MAX`.
-- `TIER_MAX` : niveau maximal actif, `1` (principales seules), `2` (+ secondaires) ou `3` (+ à tester, défaut).
-- `CLASS_STRATEGIES` : change une classe, au format `classe:principales/secondaires/à tester`, ex. `or:S3/S1,S5/S2;forex_jpy:S1/S5/`
+- `TIER_MAX` (avec `CLASS_FILTER=1`) : niveau maximal actif, `1` (principales seules), `2` (+ secondaires) ou `3` (+ à tester, défaut).
+- `CLASS_STRATEGIES` (avec `CLASS_FILTER=1`) : change une classe, au format `classe:principales/secondaires/à tester`, ex. `or:S3/S1,S5/S2;forex_jpy:S1/S5/`
   (classes : `or`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synthetique`).
 - `SYMBOL_STRATEGIES` reste **prioritaire** sur tout, actif par actif (alertes alors étiquetées « manuelle »). Attention : un actif absent de cette
-  variable suit désormais sa classe, il ne reçoit plus « toutes les stratégies ».
-- Backtest par classe : `python backtest.py --sym forex_jpy --split 0.6`, avec `--tier-max 1` pour la principale seule, ou
+  variable reçoit toutes les stratégies actives (ou celles de sa classe avec `CLASS_FILTER=1`).
+- Backtest par classe : `python backtest.py --sym forex_jpy --split 0.6 --class-filter`, avec `--tier-max 1` pour la principale seule, ou
   `--set gold.TIER_MAX=1,2,3` pour comparer les niveaux. Classes acceptées par `--sym` : `or`, `forex`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`.
 
-**Indices Volatility** : prix produit par un générateur aléatoire, marché 24h/24 et 7j/7, insensible aux news. Ils reçoivent S3 (principale) et S5
-(secondaire, sa version d'origine étant faite pour ces indices ; `TIER_MAX=1` la coupe), sans killzone, sans filtre de week-end ni de news, sans
-récapitulatif de tendance du matin ni limite d'exposition. **Rien ne garantit que S3 ou S5 ait un avantage sur un prix aléatoire** : valide d'abord
+**Indices Volatility** : prix produit par un générateur aléatoire, marché 24h/24 et 7j/7, insensible aux news. Par défaut ils reçoivent toutes les
+stratégies actives (avec `CLASS_FILTER=1` : S3 principale et S5 secondaire, sa version d'origine étant faite pour ces indices ; `TIER_MAX=1` la coupe), sans killzone, sans filtre de week-end ni de news, sans
+récapitulatif de tendance du matin ni limite d'exposition. **Rien ne garantit qu'une stratégie ait un avantage sur un prix aléatoire** : valide d'abord
 au backtest sur des mois de données réelles Deriv (`python backtest.py --sym synth --days 120 --split 0.6`) avant de te fier aux
-alertes. Spread par défaut 0,02 % (estimation, `SPREAD_PCT`) et décimales d'affichage à vérifier sur Deriv.
+alertes. Spread par défaut 0,02 % (estimation, `SPREAD_TABLE` ou `SPREAD_PCT`) et décimales d'affichage à vérifier sur Deriv.
 
 **Récapitulatif du soir des indices** : chaque jour, week-end compris, **4 heures avant la clôture de la bougie daily de Deriv** (00h GMT, soit 20h
 GMT = 21h au Bénin), le bot envoie un message **séparé par classe** : « Volatility Indices »
@@ -78,7 +78,7 @@ est trop en retard et que la bougie est déjà close, la journée est sautée. V
 Pour ces indices, **D1 (tendance, PDH/PDL de S3) est la bougie daily de Deriv, ouverte à 00h GMT** ; leur H4 reste ancré à 17h New York
 comme celui des autres actifs. Le backtest applique la même règle (`--sym synth`).
 
-**Croisements (sans USD)** : spreads par défaut (estimations, `SPREAD_PCT` pour imposer) : 0,007 à 0,014 % selon la paire, plus larges que les
+**Croisements (sans USD)** : spreads par défaut (estimations, `SPREAD_TABLE` ou `SPREAD_PCT` pour imposer) : 0,007 à 0,014 % selon la paire, plus larges que les
 majeures USD (0,006 %). Les paires en yen s'affichent avec 3 décimales.
 
 **Cryptos (marché 24h/24, 7j/7)** : pas de rollover ni de fermeture hebdomadaire, donc aucune fenêtre sans alerte
@@ -95,7 +95,7 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 116 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `tests.py` | 117 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 5 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
@@ -109,9 +109,10 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 3. Variables facultatives (onglet Variables) :
    - `SYNTH_RECAP_HEURES` (défaut 4) : délai avant la clôture de la bougie daily pour le récapitulatif des indices synthétiques.
    - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4,S5`).
-   - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (prioritaire sur la classe de l'actif ; un actif
-     absent suit sa classe). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
-   - `TIER_MAX` et `CLASS_STRATEGIES` : niveaux et stratégies par classe d'actifs (voir « Classes d'actifs et niveaux »).
+   - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (prioritaire sur tout ; un actif
+     absent reçoit toutes les stratégies actives, ou celles de sa classe avec `CLASS_FILTER=1`). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
+   - `CLASS_FILTER` : `1` pour restreindre chaque actif aux stratégies de sa classe (défaut : vide, toutes les stratégies sur chaque actif).
+   - `TIER_MAX` et `CLASS_STRATEGIES` : niveaux et stratégies par classe d'actifs, utiles seulement avec `CLASS_FILTER=1` (voir « Classes d'actifs et niveaux »).
    - `CONFLUENCE_MIN` : fenêtre de confluence en minutes (défaut 60, `0` pour désactiver) : voir STRATEGIES.md.
    - `ENTRY_MODE` : `auto` (défaut : ordres limites pour les 5 stratégies), `market` ou `limit` pour tout forcer ;
      `ENTRY_MODES` : par stratégie, ex. `S3:market,S4:market`.
@@ -120,7 +121,7 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
      sert à saisir les spreads de ton courtier, par exemple Exness Standard, actif par actif).
    - `MAX_AGE_MIN` : âge maximal d'un signal en minutes (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi.
    - `ALERT_FUSEAU` : fuseau d'affichage de l'heure (défaut `Africa/Porto-Novo`, soit l'heure du Bénin ; `none` pour désactiver).
-   - `ALERT_FORMAT` : `complet`, `compact`, `contexte`, `minimal` ou `essentiel` (voir plus bas).
+   - `ALERT_FORMAT` : `essentiel` (défaut), `complet`, `compact`, `contexte` ou `minimal` (voir plus bas).
    - `SYMBOLS` : actifs suivis, ex. `frxXAUUSD,frxEURUSD` (défaut : l'or, les 7 majeures USD, les 8 croisements majeurs, BTC, ETH et les 10 indices Volatility).
 4. Le workflow n'a pas de `schedule` : déclenche-le toutes les 5 minutes avec ton cron externe
    (`workflow_dispatch`), comme pour l'ancien bot. Un scan télécharge M5 et M15 pour chaque actif (28 actifs : une
@@ -211,7 +212,7 @@ stratégie avec `ENTRY_MODES` (ex. `S3:market`) ou repasse tout au marché avec 
 ## Réalisme des résultats et fiabilité
 
 - **Spread** : le suivi en direct et le backtest retirent le spread de chaque trade (« spread inclus » dans le message
-  de résultat). Estimations par défaut ; remplace-les par ceux de ton courtier (`SPREAD_PCT`).
+  de résultat). Estimations par défaut ; remplace-les par ceux de ton courtier (`SPREAD_TABLE`, actif par actif, ou `SPREAD_PCT`).
 - **Gaps** : si une bougie ouvre au-delà du stop, le trade est clôturé à l'ouverture (perte supérieure à 1 R possible).
 - **Week-end** : les trades or et forex encore ouverts le vendredi à 16h30 New York sont clôturés (message « Fermeture
   avant le week-end ») et les ordres limites en attente annulés, et aucune alerte ne part le week-end pour ces actifs. Les cryptos ne sont pas concernées.
@@ -223,7 +224,7 @@ stratégie avec `ENTRY_MODES` (ex. `S3:market`) ou repasse tout au marché avec 
   alors plus les alertes) ; un autre message prévient du retour.
 - **Bilan** (`/bilan`) : par stratégie, par actif, et réel vs simulé par stratégie pour les trades renseignés avec `/r`.
 - **Écart de prix avec ton courtier** : non mesurable ici. Compare le prix de quelques alertes à celui de ta plateforme
-  (spread inclus) et ajuste `SPREAD_PCT` en conséquence.
+  (spread inclus) et ajuste `SPREAD_TABLE` en conséquence.
 
 ## Heure locale dans les messages
 
@@ -242,7 +243,7 @@ limite indique sa fin de validité (« valable jusqu'à 10h15 Bénin »). Variab
 ## Format des alertes (variable `ALERT_FORMAT`)
 
 Le graphique est toujours joint (désactivable avec `CHARTS=0`). Le texte existe en 5 formats, choisis par la variable
-GitHub `ALERT_FORMAT` (défaut : `complet` ; une valeur inconnue revient à `complet`) :
+GitHub `ALERT_FORMAT` (défaut : `essentiel` ; une valeur inconnue revient à `essentiel`) :
 
 | Valeur | Contenu | Longueur |
 |---|---|---|
@@ -250,7 +251,7 @@ GitHub `ALERT_FORMAT` (défaut : `complet` ; une valeur inconnue revient à `com
 | `compact` | entrée, SL, TP et ratios, résumé du setup, tendance D1/H4 avec âge | ~10 lignes |
 | `contexte` | niveaux + risque, résumé du setup, tendance D1/H4 détaillée (jambes), invalidation | ~11 lignes |
 | `minimal` | direction, entrée, SL, TP1/2/3 | 3 lignes |
-| `essentiel` | type d'ordre, actif, stratégie (⚡ si confluence), heure, entrée, SL, TP1/2/3, validité, numéro | 3 lignes |
+| `essentiel` (défaut) | type d'ordre, actif, stratégie (⚡ si confluence), heure, entrée, SL, TP1/2/3, validité, numéro ; « signal il y a N min » si l'alerte a 3 minutes ou plus | 3 lignes |
 
 Exemple `essentiel` (ordre limite avec confluence) :
 
@@ -306,9 +307,10 @@ scan (réponse sous 5 minutes).
 
 Workflow **Backtest Or** (ou en local : `python backtest.py --days 120 --split 0.6`).
 
-- Rejoue les mêmes fonctions que le bot en direct, sans regarder le futur, avec un spread (défaut : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 % ; `--spread-pct` pour imposer le tien).
+- Rejoue les mêmes fonctions que le bot en direct, sans regarder le futur, avec un spread (défaut : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 % ; `--spread-pct` pour imposer le tien, ou la variable `SPREAD_TABLE` actif par actif).
 - `--sym frxXAUUSD,frxEURUSD` pour choisir les actifs, `--sym all` pour les 28 actifs, `--sym synth` pour les 10 indices Volatility.
-- Rapport par actif, par stratégie, sens, session, alignement H4, résultat, et stabilité entre deux périodes.
+- Rapport par actif, par stratégie, sens, session, alignement H4, résultat, coût du spread par stratégie, et stabilité entre deux périodes. L'intervalle de confiance rééchantillonne des jours entiers, et un avertissement signale le nombre de combinaisons actif x stratégie testées.
+- `--class-filter` restreint chaque actif aux stratégies de sa classe (par défaut, toutes les stratégies tournent sur chaque actif).
 - `--only S2,S3` pour une stratégie ; `--set strategies.S1_ADX_MIN=15,18,22` pour une grille ; `--source csv`
   pour tes propres données (un seul actif) ; `--source sim` pour un contrôle de bon sens sur marche aléatoire.
 - Il faut environ 25 jours d'échauffement (EMA 200 du H4) : demande `--days` en plus.
