@@ -61,10 +61,16 @@ jobs:
           ENTRY_MODES: ${{ vars.ENTRY_MODES }}
           CONFLUENCE_MIN: ${{ vars.CONFLUENCE_MIN }}
           CLASS_FILTER: ${{ vars.CLASS_FILTER }}
+          INTRADAY: ${{ vars.INTRADAY }}
+          INTRADAY_RUNNERS: ${{ vars.INTRADAY_RUNNERS }}
           CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
           TIER_MAX: ${{ vars.TIER_MAX }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
+          HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
+          DERIV_APP_ID: ${{ vars.DERIV_APP_ID }}
+          DERIV_WS_URL: ${{ vars.DERIV_WS_URL }}
+          CALENDAR_URL: ${{ vars.CALENDAR_URL }}
           SYNTH_RECAP_HEURES: ${{ vars.SYNTH_RECAP_HEURES }}
           ALERT_FUSEAU_NOM: ${{ vars.ALERT_FUSEAU_NOM }}
           MAX_AGE_MIN: ${{ vars.MAX_AGE_MIN }}

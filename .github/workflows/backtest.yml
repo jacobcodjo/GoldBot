@@ -39,9 +39,17 @@ jobs:
           SPREAD: ${{ github.event.inputs.spread_pct }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
           CLASS_FILTER: ${{ vars.CLASS_FILTER }}
+          INTRADAY: ${{ vars.INTRADAY }}
+          INTRADAY_RUNNERS: ${{ vars.INTRADAY_RUNNERS }}
           CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
           SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
           TIER_MAX: ${{ vars.TIER_MAX }}
+          CONFLUENCE_MIN: ${{ vars.CONFLUENCE_MIN }}
+          ENTRY_MODE: ${{ vars.ENTRY_MODE }}
+          ENTRY_MODES: ${{ vars.ENTRY_MODES }}
+          WEEKEND_EXIT: ${{ vars.WEEKEND_EXIT }}
+          DERIV_APP_ID: ${{ vars.DERIV_APP_ID }}
+          DERIV_WS_URL: ${{ vars.DERIV_WS_URL }}
           SPLIT: ${{ github.event.inputs.split }}
           GRID: ${{ github.event.inputs.grid }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
