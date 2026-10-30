@@ -4,7 +4,9 @@ Aucun accès réseau : les données viennent d'une marche aléatoire (backtest.g
 Ces tests vérifient la mécanique du bot (indicateurs, tendance, suivi des trades, garde-fous, messages,
 backtest), pas la rentabilité des stratégies.
 """
-import os
+import glob, os, re
+os.environ.setdefault("INTRADAY", "0")      # les tests historiques décrivent l'ancien comportement ; le cadre intraday a ses propres tests
+import random
 import unittest
 from collections import Counter
 from datetime import datetime, timezone
@@ -1508,6 +1510,226 @@ class TestRemplissageEtCouts(unittest.TestCase):
         self.assertIn("A : coût 0.10 R/trade", rows[0])
         self.assertIn("-0.10 après", rows[0])
         self.assertIn("+0.30 R/trade avant coût", rows[1])
+
+
+class TestBilanHebdomadaire(unittest.TestCase):
+    NOW = 1_800_000_000
+
+    def _tr(self, specs):
+        closed = [{"name": n, "cascade": c, "r": r, "t_close": self.NOW - j * 86400, "t0": self.NOW - j * 86400 - 600}
+                  for (n, c, r, j) in specs]
+        return {"closed": closed, "active": {}}
+
+    def _g(self):
+        return {"funnel": {"OR": {"alert": 28, "stale": 21, "blackout": 2, "dedupe": 1, "risk": 6, "data": 999}}}
+
+    def test_bilan_court_sans_repetition(self):
+        tr = self._tr([("OR", "Asian Breakout", 1.4, 1), ("OR", "Asian Breakout", 1.4, 2),
+                       ("OR", "Mean Reversion", -1.1, 2), ("OR", "Mean Reversion", 3.0, 3)])
+        txt = G.build_report(self._g(), tr, self.NOW)
+        lines = txt.split("\n")
+        self.assertEqual(lines[0], "📊 Bilan hebdomadaire")
+        self.assertTrue(lines[1].startswith("7 j : 4 trades"))
+        self.assertEqual(lines[2], "30 j : identique")
+        self.assertLess(txt.index("Asian Breakout"), txt.index("Mean Reversion"))     # meilleure stratégie d'abord
+        self.assertNotIn("Par actif", txt)                                              # un seul actif : pas de ligne en plus
+        self.assertNotIn("Entonnoir", txt)
+        self.assertIn("alertes : 28", txt)
+        self.assertIn("tardifs 21 · news/horaire 2 · doublons 1 · risque 6", txt)
+        self.assertNotIn("données", txt)
+        self.assertLess(len(lines), 12)
+
+    def test_trente_jours_differents_et_plusieurs_actifs(self):
+        tr = self._tr([("OR", "A", 1.0, 1), ("EURUSD", "A", -1.0, 2), ("OR", "A", 2.0, 20)])
+        txt = G.build_report(self._g(), tr, self.NOW)
+        self.assertTrue(any(l.startswith("30 j : 3 trades") for l in txt.split("\n")))
+        self.assertIn("Par actif : OR +1.0 R (1) · EURUSD -1.0 R (1)", txt)
+
+    def test_aucun_trade(self):
+        txt = G.build_report({"funnel": {}}, {"closed": [], "active": {}}, self.NOW)
+        self.assertIn("7 j : aucun trade clôturé", txt)
+        self.assertIn("Trades actifs : 0 · alertes : 0", txt)
+
+
+class TestSurveillanceEtVariables(unittest.TestCase):
+    ENV_RE = re.compile(r'(?:getenv|environ\.get|environ)\(?\[?\s*"([A-Z][A-Z0-9_]+)"')
+
+    def _lire(self, nom):
+        with open(os.path.join(os.path.dirname(__file__), nom), encoding="utf-8") as f:
+            return f.read()
+
+    def test_toute_variable_lue_par_le_code_est_transmise_par_le_workflow(self):
+        wf = self._lire(os.path.join(".github", "workflows", "gold.yml"))
+        manquantes = []
+        for fichier in glob.glob(os.path.join(os.path.dirname(__file__), "*.py")):
+            if fichier.endswith("tests.py"):
+                continue
+            with open(fichier, encoding="utf-8") as f:
+                for nom in self.ENV_RE.findall(f.read()):
+                    if nom.startswith("GITHUB_") or f"{nom}:" in wf:
+                        continue
+                    manquantes.append(nom)
+        self.assertEqual(sorted(set(manquantes)), [], "variables lues par le code mais absentes de gold.yml")
+
+    def test_le_backtest_recoit_les_variables_qui_changent_ses_resultats(self):
+        wf = self._lire(os.path.join(".github", "workflows", "backtest.yml"))
+        for nom in ("SPREAD_TABLE", "CLASS_FILTER", "CLASS_STRATEGIES", "SYMBOL_STRATEGIES", "TIER_MAX", "CONFLUENCE_MIN",
+                    "ENTRY_MODE", "ENTRY_MODES", "WEEKEND_EXIT", "INTRADAY", "INTRADAY_RUNNERS"):
+            self.assertIn(f"{nom}:", wf, nom)
+
+    def test_variable_vide_ne_casse_pas_l_url_deriv(self):
+        src = self._lire("gold.py")
+        self.assertIn('os.getenv("DERIV_APP_ID") or "1089"', src)
+
+    def test_ping_de_surveillance(self):
+        appels = []
+        vrai = gold.requests.get
+        gold.requests.get = lambda url, timeout=0: appels.append((url, timeout))
+        try:
+            os.environ.pop("HEARTBEAT_URL", None)
+            self.assertFalse(gold.ping_heartbeat())
+            self.assertEqual(appels, [])
+            os.environ["HEARTBEAT_URL"] = "https://hc-ping.example/abc"
+            self.assertTrue(gold.ping_heartbeat())
+            self.assertEqual(appels, [("https://hc-ping.example/abc", 10)])
+            def boom(url, timeout=0):
+                raise RuntimeError("réseau")
+            gold.requests.get = boom
+            self.assertFalse(gold.ping_heartbeat())                   # n'interrompt jamais le bot
+        finally:
+            gold.requests.get = vrai
+            os.environ.pop("HEARTBEAT_URL", None)
+
+    def test_bilan_indique_combien_de_trades_pour_valider(self):
+        tr = {"closed": [{"name": "OR", "cascade": "A", "r": 1.0, "t_close": 1_799_000_000, "t0": 1_798_999_000}], "active": {}}
+        txt = G.build_report({"funnel": {}}, tr, 1_800_000_000)
+        self.assertIn("Validation : 1 trades clôturés sur ~100", txt)
+
+
+class TestCadreIntraday(unittest.TestCase):
+    NY = ZoneInfo("America/New_York")
+
+    def setUp(self):
+        self._t, self._s = T.INTRADAY, S.INTRADAY
+        T.INTRADAY = S.INTRADAY = True
+        self._ho = S.htf_obstacles
+
+    def tearDown(self):
+        T.INTRADAY, S.INTRADAY = self._t, self._s
+        S.htf_obstacles = self._ho
+
+    def _ts(self, h, m=0, day=10):
+        return int(datetime(2026, 11, day, h, m, tzinfo=self.NY).timestamp())
+
+    def test_fin_de_seance(self):
+        ts = self._ts(10)
+        self.assertEqual(T.intraday_deadline(ts), self._ts(16, 45))                 # avant 16h45 : clôture le jour même
+        ts = self._ts(20)
+        self.assertEqual(T.intraday_deadline(ts), ts + 10 * 3600)                    # la nuit : durée maximale de 10 h
+        ts = self._ts(17, 30)
+        self.assertEqual(T.intraday_deadline(ts), ts + 10 * 3600)                    # après 16h45 : jamais plus de 10 h
+        T.INTRADAY = False
+        self.assertIsNone(T.intraday_deadline(self._ts(10)))
+        self.assertEqual(T.intraday_ttl(86400, self._ts(10)), 86400)
+
+    def test_ordre_en_attente_plafonne_a_la_fin_de_seance(self):
+        ts = self._ts(14)
+        self.assertEqual(T.intraday_ttl(86400, ts), 2 * 3600 + 45 * 60)
+        self.assertEqual(T.intraday_ttl(3600, ts), 3600)
+
+    def test_position_clôturée_en_fin_de_seance(self):
+        t = T.new_trade("OR", "k", "frxXAUUSD", "XAUUSD", "BUY", "BUY", 100, 98, 102, 104, 106, "M5", 300, 2, "c", 1000, 3600,
+                        extra={"eod": 2000})
+        quiet = lambda ep: {"epoch": ep, "open": 100.5, "high": 101, "low": 99.5, "close": 100.8}
+        self.assertEqual(T.advance(t, [quiet(1500)], 1800), [])
+        self.assertEqual(T.advance(t, [quiet(1800)], 2100), ["eod"])
+        self.assertEqual((t["status"], t["result"]), ("closed", "eod"))
+        self.assertAlmostEqual(t["r"], 0.4, places=2)
+
+    def test_apres_tp1_le_reste_court_au_dela_de_la_fin_de_seance(self):
+        mk = lambda: T.new_trade("OR", "k", "frxXAUUSD", "XAUUSD", "BUY", "BUY", 100, 98, 102, 104, 106, "M5", 300, 2, "c",
+                                 1000, 3600, extra={"eod": 2000})
+        c_tp1 = {"epoch": 1500, "open": 100.5, "high": 102.2, "low": 100.3, "close": 102.0}
+        calme = {"epoch": 1800, "open": 102.0, "high": 102.5, "low": 101.0, "close": 101.5}
+        t = mk()
+        self.assertEqual(T.advance(t, [c_tp1], 1800), ["tp1"])
+        self.assertEqual(T.advance(t, [calme], 2100), [])                    # fin de séance dépassée : le reste continue
+        self.assertEqual(t["status"], "open")
+        self.assertEqual(T.advance(t, [{"epoch": 2100, "open": 101.5, "high": 104.5, "low": 102.5, "close": 104.2}], 2400), ["tp2"])
+        old = T.INTRADAY_RUNNERS
+        T.INTRADAY_RUNNERS = False                                           # option : tout clôturer en fin de séance
+        try:
+            t = mk()
+            T.advance(t, [c_tp1], 1800)
+            self.assertEqual(T.advance(t, [calme], 2100), ["eod"])
+        finally:
+            T.INTRADAY_RUNNERS = old
+
+    def _sig(self, strat="S1", d="BUY", entry=100.0, sl=98.0, tp1=106.0):
+        return {"strat": strat, "dir": d, "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp1 + 4, "tp3": tp1 + 8, "dec": 2,
+                "details": []}
+
+    def _obs(self, sup=(), res=()):
+        S.htf_obstacles = lambda provide, now: {"sup": list(sup), "res": list(res), "atr": 2.0}
+
+    def test_entree_sur_un_niveau_h4_h1(self):
+        self._obs(sup=[(99.6, 99.6, "creux H1")])
+        sig = self._sig()
+        self.assertIsNone(S.obstacle_filter(sig, None, 0))
+        self.assertIn("✅ Entrée sur creux H1", sig["details"])
+        self._obs(sup=[(90.0, 90.0, "creux H4")])
+        self.assertEqual(S.obstacle_filter(self._sig(), None, 0), "obst_entree")      # niveau trop loin (tolérance 1,0)
+        self.assertIsNone(S.obstacle_filter(self._sig(strat="S2"), None, 0))          # cassure de plage : exemptée
+        self.assertIsNone(S.obstacle_filter(self._sig(strat="S4"), None, 0))
+
+    def test_zone_contenant_l_entree(self):
+        self._obs(sup=[(99.0, 100.5, "bloc d'ordre H1")])
+        self.assertIsNone(S.obstacle_filter(self._sig(), None, 0))
+
+    def test_objectif_ramene_avant_l_obstacle(self):
+        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(104.0, 104.0, "sommet H1")])
+        sig = self._sig()
+        self.assertIsNone(S.obstacle_filter(sig, None, 0))
+        self.assertAlmostEqual(sig["tp1"], 104.0 - 0.1 * 2.0)                         # 0,1 ATR avant l'obstacle
+        self.assertTrue(any(x.startswith("🧱 Obstacle sommet H1") for x in sig["details"]))
+        self.assertGreater(sig["tp2"], sig["tp1"])
+
+    def test_obstacle_trop_proche_ecarte_le_signal(self):
+        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(101.0, 101.0, "sommet H1")])   # 0,5 R seulement
+        self.assertEqual(S.obstacle_filter(self._sig(), None, 0), "obst_cible")
+
+    def test_vente_symetrique(self):
+        self._obs(res=[(100.2, 100.2, "sommet H1")], sup=[(96.0, 96.0, "creux H1")])
+        sig = self._sig(d="SELL", sl=102.0, tp1=94.0)
+        self.assertIsNone(S.obstacle_filter(sig, None, 0))
+        self.assertAlmostEqual(sig["tp1"], 96.0 + 0.2)
+
+    def test_sans_donnees_le_signal_passe(self):
+        S.htf_obstacles = lambda provide, now: None
+        self.assertIsNone(S.obstacle_filter(self._sig(), None, 0))
+
+    def test_obstacles_reels_sur_des_bougies(self):
+        random.seed(3)
+        def bougies(n, pas, base=2000.0, vol=2.0):
+            out, p = [], base
+            for i in range(n):
+                o = p
+                p = o + random.uniform(-vol, vol)
+                out.append({"epoch": 1_790_000_000 + i * pas, "open": o, "high": max(o, p) + random.uniform(0, 1),
+                            "low": min(o, p) - random.uniform(0, 1), "close": p})
+            return out
+        h1, h4 = bougies(200, 3600), bougies(80, 14400, vol=5.0)
+        S.htf_obstacles = self._ho
+        obs = S.htf_obstacles(lambda tf: {"H1": h1, "H4": h4}[tf], 1_790_000_000 + 200 * 3600)
+        self.assertIsNotNone(obs)
+        self.assertGreater(obs["atr"], 0)
+        self.assertTrue(obs["sup"] and obs["res"])
+        self.assertTrue(all(lo <= hi for lo, hi, _ in obs["sup"] + obs["res"]))
+        self.assertIsNone(S.htf_obstacles(lambda tf: None, 0))
+
+    def test_cascade_s5_unique_en_intraday(self):
+        self.assertEqual(S.S5_CASCADES_INTRADAY, [("H4", "H1", "M15")])
+        self.assertIn(S.S5_CASCADES_INTRADAY[0], S.S5_CASCADES)
 
 
 if __name__ == "__main__":

@@ -95,7 +95,7 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 117 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `tests.py` | 137 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
 | `backtest.py` | Rejeu M5 des 5 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
@@ -111,6 +111,9 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
    - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4,S5`).
    - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (prioritaire sur tout ; un actif
      absent reçoit toutes les stratégies actives, ou celles de sa classe avec `CLASS_FILTER=1`). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
+   - `HEARTBEAT_URL` (secret, pas variable) : URL de ping de surveillance (par exemple une vérification healthchecks.io). Le bot l'appelle à la fin de chaque passage réussi ; si les pings cessent, le service t'alerte, ce qui signale que le cron externe est tombé.
+   - `DERIV_APP_ID`, `DERIV_WS_URL`, `CALENDAR_URL` : réglages techniques facultatifs (identifiant d'application Deriv, point d'accès forcé, source du calendrier économique).
+   - `INTRADAY` : `0` pour désactiver le cadre intraday (défaut : actif, voir « Cadre intraday »). `INTRADAY_RUNNERS` : `0` pour clôturer aussi, en fin de séance, les restes de trades dont TP1 est atteint.
    - `CLASS_FILTER` : `1` pour restreindre chaque actif aux stratégies de sa classe (défaut : vide, toutes les stratégies sur chaque actif).
    - `TIER_MAX` et `CLASS_STRATEGIES` : niveaux et stratégies par classe d'actifs, utiles seulement avec `CLASS_FILTER=1` (voir « Classes d'actifs et niveaux »).
    - `CONFLUENCE_MIN` : fenêtre de confluence en minutes (défaut 60, `0` pour désactiver) : voir STRATEGIES.md.
@@ -223,6 +226,10 @@ stratégie avec `ENTRY_MODES` (ex. `S3:market`) ou repasse tout au marché avec 
 - **Calendrier économique** : si le flux reste indisponible plus de 6 h, tu reçois un message (les annonces ne bloquent
   alors plus les alertes) ; un autre message prévient du retour.
 - **Bilan** (`/bilan`) : par stratégie, par actif, et réel vs simulé par stratégie pour les trades renseignés avec `/r`.
+- **Bilan hebdomadaire** (envoyé automatiquement, sans l'entonnoir détaillé) : total sur 7 jours, ligne « 30 j : identique » si le résultat est le même,
+  une ligne par stratégie (meilleure d'abord), les actifs s'il y en a plusieurs, le nombre de trades actifs et d'alertes, et les signaux écartés
+  (tardifs, volatilité faible, news/horaire, doublons, risque), puis « Validation : N trades clôturés sur ~100 pour juger » tant que l'échantillon est trop petit.
+  L'entonnoir détaillé reste dans les journaux du workflow.
 - **Écart de prix avec ton courtier** : non mesurable ici. Compare le prix de quelques alertes à celui de ta plateforme
   (spread inclus) et ajuste `SPREAD_TABLE` en conséquence.
 
@@ -231,6 +238,16 @@ stratégie avec `ENTRY_MODES` (ex. `S3:market`) ou repasse tout au marché avec 
 Chaque alerte, chaque message de suivi et le récapitulatif affichent l'heure du Bénin (« 08h15 Bénin »), et un ordre
 limite indique sa fin de validité (« valable jusqu'à 10h15 Bénin »). Variable `ALERT_FUSEAU` pour un autre fuseau
 (ex. `Europe/Paris`, avec `ALERT_FUSEAU_NOM=Paris` pour le libellé) ou `none` pour ne plus afficher d'heure.
+
+## Cadre intraday (par défaut, `INTRADAY=0` pour le désactiver)
+
+Toutes les stratégies suivent le même cadre : contexte et obstacles majeurs en H4 / H1, confirmation en M15, trade de la journée.
+
+- **Confirmation en M15** : S5 ne garde que la cascade H4>H1>M15 (plus de D1>H4>H1 ni de H1>M15>M5). S3 confirme (CHoCH, bloc d'ordre, FVG) en M15 au lieu de M5.
+- **Entrée sur réaction à un niveau** (S1, S3, S5) : l'entrée doit être à moins de 0,5 ATR H1 d'un niveau ou dans une zone H4/H1 du bon côté (creux ou sommet H1/H4, plus haut ou bas de la veille, bloc d'ordre ou FVG non invalidé par une clôture). Sinon le signal est écarté (« hors niveau H4/H1 »). S2 (cassure de plage) et S4 (range H1) en sont exemptées.
+- **Objectif avant le prochain obstacle** (toutes les stratégies) : TP1 ne dépasse jamais le prochain obstacle opposé (sommet ou creux H1/H4, plus haut ou bas de la veille, zone d'offre ou de demande). S'il est à moins de 1 R de l'entrée, le signal est écarté (« obstacle devant l'objectif ») ; sinon TP1 est ramené 0,1 ATR H1 avant lui. TP2 et TP3 ne sont pas modifiés : après TP1, le stop est à l'entrée.
+- **Fin de séance** : un trade dont TP1 n'est pas atteint est clôturé au plus tard à 16h45 (New York) ou 10 heures après son ouverture, le plus proche des deux ; un ordre en attente est annulé au même moment. Le message de suivi s'appelle « Fin de séance » et le résultat `eod`. **Après TP1** (stop à l'entrée), le reste continue jusqu'à TP2 ou TP3 même après la fin de séance ; seule la fermeture avant le week-end l'arrête. `INTRADAY_RUNNERS=0` clôture aussi ces restes en fin de séance.
+- Les seuils (0,5 ATR, 1 R, 0,1 ATR, 16h45, 10 h) sont des choix de départ, pas des résultats de backtest. Pour comparer : lance le backtest avec la variable `INTRADAY` vide, puis à `0` (ou `--no-intraday` en ligne de commande).
 
 ## Hypothèses du suivi et du backtest
 

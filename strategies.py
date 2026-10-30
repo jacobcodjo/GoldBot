@@ -11,6 +11,7 @@ timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
 
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
+import os
 import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -68,6 +69,18 @@ S4_RISK_CAP_H1 = 1.0
 
 # --- S5 Impulsion + retracement Fibonacci (portée du crt-bot : impulse.py) ---
 S5_CASCADES = [("D1", "H4", "H1"), ("H4", "H1", "M15"), ("H1", "M15", "M5")]   # (tendance, impulsion + Fibonacci, entrée)
+
+
+def _flag(name, default=True):
+    v = (os.getenv(name) or "").strip().lower()
+    return default if v == "" else v not in ("0", "false", "non", "off", "no")
+
+
+# Cadre intraday (INTRADAY=0 pour revenir à l'ancien comportement) : contexte et obstacles en H4 / H1, confirmation en M15,
+# clôture de fin de séance (voir tracker.py).
+INTRADAY = _flag("INTRADAY", True)
+S5_CASCADES_INTRADAY = [("H4", "H1", "M15")]
+S3_PIVOT_BARS_M15 = 12                  # confirmation M15 : pivot à moins de 12 bougies M15 (3 h) du sommet/creux du sweep
 S5_ZONE = (0.5, 0.79)                  # zone de retracement acceptée : 50 % -> 79 % de la jambe
 S5_OTE_FROM = 0.618                    # entre 50 % et 61,8 % : « Golden Zone » ; entre 61,8 % et 79 % : « OTE »
 S5_EXT = (1.272, 1.618)                # extensions de TP2 et TP3 (TP1 = extrême de l'impulsion)
@@ -581,7 +594,7 @@ def s3_bias(h4, h1):
     return None, None
 
 
-def htf_zones(cs, d, tf, before):
+def htf_zones(cs, d, tf, before, untouched=None):
     """Zones d'intérêt du timeframe `tf` dans le sens d (achat = zones de demande), nées d'un déplacement qui casse la
     structure : bloc d'ordre (dernière bougie opposée avant le déplacement) et FVG. Seules les bougies entièrement
     clôturées avant l'epoch `before` comptent. Une zone est écartée si elle a été retestée (S3_HTF_UNTOUCHED) ou
@@ -610,7 +623,7 @@ def htf_zones(cs, d, tf, before):
                 found.append(("FVG", (b["high"], a["low"]), j + 2))
         for kind, (lo, hi), k in found:
             later = cs[k:]
-            if S3_HTF_UNTOUCHED:
+            if (S3_HTF_UNTOUCHED if untouched is None else untouched):
                 dead = any((x["low"] <= hi) if d == "BUY" else (x["high"] >= lo) for x in later)
             else:
                 dead = any((x["close"] < lo) if d == "BUY" else (x["close"] > hi) for x in later)
@@ -666,6 +679,10 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     a_h1, a_m15, a_m5 = atr(h1c), atr(m15c), atr(m5c)
     if min(a_h1, a_m15, a_m5) <= 0:
         return None
+    if INTRADAY:      # confirmation (CHoCH, bloc d'ordre, FVG) en M15 ; sinon en M5
+        cf, cfc, a_cf, cf_n, pivot_bars = m15, m15c, a_m15, "M15", S3_PIVOT_BARS_M15
+    else:
+        cf, cfc, a_cf, cf_n, pivot_bars = m5, m5c, a_m5, "M5", S3_PIVOT_BARS
     levels = liquidity_levels(h1c, d1, m15c, now, a_h1)
     if not levels:
         return None
@@ -695,23 +712,23 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     if S3_BIAS_FILTER and bias != d:
         return None                                   # contre le biais de structure (ou aucun biais clair)
     funnel["S3_biais"] += 1
-    after = [(i, c) for i, c in enumerate(m5c) if c["epoch"] >= sc["epoch"]]
+    after = [(i, c) for i, c in enumerate(cfc) if c["epoch"] >= sc["epoch"]]
     if len(after) < 3:
         return None
     ext_i, ext = (max(after, key=lambda x: (x[1]["high"], x[0])) if d == "SELL"
                   else min(after, key=lambda x: (x[1]["low"], -x[0])))
     ext_px = ext["high"] if d == "SELL" else ext["low"]
     pk = "low" if d == "SELL" else "high"
-    piv = [i for i in swings(m5c, pk, 2) if ext_i - S3_PIVOT_BARS <= i < ext_i]
+    piv = [i for i in swings(cfc, pk, 2) if ext_i - pivot_bars <= i < ext_i]
     if not piv:
         return None
-    pivot = m5c[piv[-1]][pk]
-    avg = body_avg(m5c[-21:-1])
-    trig = next((i for i in range(ext_i + 1, len(m5c))
-                 if ((m5c[i]["close"] < pivot) if d == "SELL" else (m5c[i]["close"] > pivot))), None)
-    if trig is None or trig < len(m5c) - FRESH:
+    pivot = cfc[piv[-1]][pk]
+    avg = body_avg(cfc[-21:-1])
+    trig = next((i for i in range(ext_i + 1, len(cfc))
+                 if ((cfc[i]["close"] < pivot) if d == "SELL" else (cfc[i]["close"] > pivot))), None)
+    if trig is None or trig < len(cfc) - FRESH:
         return None
-    tc = m5c[trig]
+    tc = cfc[trig]
     if body(tc) < DISP_MULT * avg:
         return None
     sess = session_name(tc["epoch"])
@@ -721,18 +738,18 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     if S3_HTF_ZONE and zone is None:
         return None                                   # le sweep n'a touché aucune zone d'intérêt H1/H4
     funnel["S3_zone"] += 1
-    price = m5[-1]["close"]
+    price = cf[-1]["close"]
     sl = ext_px + BUF_ATR * a_m15 if d == "SELL" else ext_px - BUF_ATR * a_m15
-    poi = entry_zone(m5c, ext_i, trig - 1, d)
+    poi = entry_zone(cfc, ext_i, trig - 1, d)
     otype, entry = pick_entry(d, price, poi[0] if poi else None, sl, mode)
     if otype != d:
-        if abs(price - entry) > LIMIT_MAX_ATR * a_m5:
+        if abs(price - entry) > LIMIT_MAX_ATR * a_cf:
             funnel["stale"] += 1
             return None
-    elif is_late(d, price, tc["close"], a_m5):
+    elif is_late(d, price, tc["close"], a_cf):
         funnel["stale"] += 1
         return None
-    lv = build_levels(d, entry, sl, a_m5, a_h1, S3_RISK_CAP_H1)
+    lv = build_levels(d, entry, sl, a_cf, a_h1, S3_RISK_CAP_H1)
     if lv is None:
         return None
     funnel["S3_signal"] += 1
@@ -764,7 +781,7 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
         details.append("⚠️ Aucun biais de structure clair (H4 et H1)")
     else:
         details.append(f"⚠️ Contre le biais {bias_tf} (contre-tendance)")
-    details.append(f"✅ CHoCH M5 sous {pivot:.{dec}f}" if d == "SELL" else f"✅ CHoCH M5 au-dessus de {pivot:.{dec}f}")
+    details.append(f"✅ CHoCH {cf_n} sous {pivot:.{dec}f}" if d == "SELL" else f"✅ CHoCH {cf_n} au-dessus de {pivot:.{dec}f}")
     if kz:
         details.append(f"✅ Killzone {sess}")
     if not S3_BIAS_FILTER:
@@ -773,16 +790,102 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     zones = [{"lo": zone["lo"], "hi": zone["hi"], "label": f"{zone['kind']} {zone['tf']}",
               "kind": "ob" if zone["kind"] == "OB" else "fvg"}] if zone else []
     return _signal(
-        "S3", "Sweep + CHoCH", d, entry, lv, m5, "M5", f"{sc['epoch']}|{tc['epoch']}", details,
+        "S3", "Sweep + CHoCH", d, entry, lv, cf, cf_n, f"{sc['epoch']}|{tc['epoch']}", details,
         lines=[{"y": px, "label": name, "kind": "range"}, {"y": ext_px, "label": "Sweep", "kind": "sweep"},
                {"y": pivot, "label": "CHoCH", "kind": "info"}],
         zones=zones, inval=ext_px, session=sess,
         extra={"liq": name, "h4": "aligné" if aligned else "contre", "poi": poi[1] if otype != d else "marché",
                "biais": bias_tf if bias == d else ("contre" if bias else "aucun"),
                "zone": f"{zone['tf']} {zone['kind']}" if zone else "aucune", "tp": tp_src},
-        short=f"{name} pris · CHoCH M5", trig=tc["epoch"], otype=otype, price_now=price,
+        short=f"{name} pris · CHoCH {cf_n}", trig=tc["epoch"], otype=otype, price_now=price,
         ttl=LIMIT_TTL["S3"] if otype != d else None,
-        entry_note=poi_note(poi, "M5", dec) if otype != d else "")
+        entry_note=poi_note(poi, cf_n, dec) if otype != d else "")
+
+
+# ==========================================================================
+# Cadre intraday : obstacles majeurs H4 / H1
+# ==========================================================================
+OBST_ENTRY_STRATS = ("S1", "S3", "S5")  # entrent sur réaction à un niveau ; S2 (cassure de plage) et S4 (range H1) en sont exemptées
+OBST_TOL_ATR = 0.5                      # l'entrée doit être à moins de 0,5 ATR H1 d'un niveau (ou dans une zone) du bon côté
+OBST_MIN_RR = 1.0                       # obstacle opposé à moins de 1 R de l'entrée : signal écarté
+OBST_BUF_ATR = 0.1                      # TP1 placé 0,1 ATR H1 avant l'obstacle
+OBST_SWING_N = {"H4": 2, "H1": 3}
+OBST_BARS = {"H4": 60, "H1": 120}
+
+
+def prev_day_range(h1c, now):
+    """(plus haut, plus bas) du dernier jour de New York complet avant `now`, d'après les H1 clôturées ; None si inconnu."""
+    today = datetime.fromtimestamp(now, NY).date()
+    days = {}
+    for c in h1c:
+        dd = datetime.fromtimestamp(c["epoch"], NY).date()
+        if dd < today:
+            days.setdefault(dd, []).append(c)
+    if not days:
+        return None
+    last = days[max(days)]
+    return max(x["high"] for x in last), min(x["low"] for x in last)
+
+
+def htf_obstacles(provide, now):
+    """Niveaux et zones majeurs H4 / H1 : {'sup': [(bas, haut, nom)], 'res': [...], 'atr': ATR H1} ; None si données insuffisantes.
+    Supports : creux H1/H4, plus bas de la veille, zones de demande. Résistances : sommets, plus haut de la veille, zones d'offre."""
+    h1, h4 = provide("H1"), provide("H4")
+    if not h1 or not h4:
+        return None
+    h1c, h4c = h1[:-1], h4[:-1]
+    if len(h1c) < 40 or len(h4c) < 20:
+        return None
+    a = atr(h1c)
+    if a <= 0:
+        return None
+    sup, res = [], []
+    for tf, cs in (("H4", h4c), ("H1", h1c)):
+        win = cs[-OBST_BARS[tf]:]
+        sup += [(win[i]["low"], win[i]["low"], f"creux {tf}") for i in swings(win, "low", OBST_SWING_N[tf])]
+        res += [(win[i]["high"], win[i]["high"], f"sommet {tf}") for i in swings(win, "high", OBST_SWING_N[tf])]
+        for d, bucket in (("BUY", sup), ("SELL", res)):
+            for z in htf_zones(cs, d, tf, now, untouched=False):
+                bucket.append((z["lo"], z["hi"], f"{'bloc d\'ordre' if z['kind'] == 'OB' else 'FVG'} {tf}"))
+    pdr = prev_day_range(h1c, now)
+    if pdr:
+        res.append((pdr[0], pdr[0], "plus haut de la veille"))
+        sup.append((pdr[1], pdr[1], "plus bas de la veille"))
+    return {"sup": sup, "res": res, "atr": a}
+
+
+def obstacle_filter(sig, provide, now):
+    """Cadre intraday. (a) Les stratégies de OBST_ENTRY_STRATS n'entrent que sur réaction à un niveau ou une zone H4/H1 du bon côté
+    (confirmée par leur déclencheur M15). (b) TP1 ne dépasse jamais le prochain obstacle opposé : s'il est à moins de OBST_MIN_RR R,
+    le signal est écarté ; sinon TP1 est ramené juste avant lui. Retourne None si le signal passe (TP1 éventuellement modifié),
+    sinon la clé d'entonnoir du refus : 'obst_entree' ou 'obst_cible'. Sans données H1/H4 suffisantes, le signal passe."""
+    obs = htf_obstacles(provide, now)
+    if obs is None:
+        return None
+    d, e, sl, a = sig["dir"], sig["entry"], sig["sl"], obs["atr"]
+    risk, dec = abs(e - sl), sig.get("dec", 2)
+    if sig["strat"] in OBST_ENTRY_STRATS:
+        mine = obs["sup"] if d == "BUY" else obs["res"]
+        tol = OBST_TOL_ATR * a
+        hit = [nm for lo, hi, nm in mine if lo - tol <= e <= hi + tol]
+        if not hit:
+            return "obst_entree"
+        sig["details"] = list(sig["details"]) + [f"✅ Entrée sur {hit[0]}"]
+    eps = 0.05 * a                                   # un obstacle qui contient déjà l'entrée n'est pas devant
+    if d == "BUY":
+        ahead = [(lo, nm) for lo, hi, nm in obs["res"] if e + eps < lo < sig["tp1"]]
+        o = min(ahead) if ahead else None
+    else:
+        ahead = [(hi, nm) for lo, hi, nm in obs["sup"] if sig["tp1"] < hi < e - eps]
+        o = max(ahead) if ahead else None
+    if o is not None:
+        px, nm = o
+        new = px - OBST_BUF_ATR * a if d == "BUY" else px + OBST_BUF_ATR * a
+        if abs(px - e) < OBST_MIN_RR * risk or abs(new - e) < 0.8 * risk:
+            return "obst_cible"
+        sig["tp1"] = new
+        sig["details"] = list(sig["details"]) + [f"🧱 Obstacle {nm} à {px:.{dec}f} : TP1 ramené à {new:.{dec}f}"]
+    return None
 
 
 # ==========================================================================
@@ -1062,7 +1165,7 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
     haute en premier ; le garde-fou « un trade par actif, stratégie et sens » écarte les doublons d'un même mouvement.
     Pas de filtre de killzone : l'impulsion se juge sur la structure, pas sur l'heure (kz est ignoré)."""
     out = []
-    for htf_n, mtf_n, ltf_n in S5_CASCADES:
+    for htf_n, mtf_n, ltf_n in (S5_CASCADES_INTRADAY if INTRADAY else S5_CASCADES):
         htf, mtf = provide(htf_n), provide(mtf_n)
         if not htf or not mtf:
             continue

@@ -185,11 +185,11 @@ def run(m5, sym, spread_pct=0.0, warmup_days=25, progress=True, split=None):
             if gold.is_limit(sig):
                 stats["placed"] += 1
             extra = dict(sig["extra"], session=sig["session"], strat=sig["strat"],
-                         fill_buf=round(spread_pct / 100 * sig["entry"] / 2, 8))
+                         fill_buf=round(spread_pct / 100 * sig["entry"] / 2, 8), eod=T.intraday_deadline(now))
             tr["active"][sig["key"]] = T.new_trade(
                 gold.BOT, sig["key"], sym, sig["name"], sig["dir"], sig["otype"], sig["entry"], sig["sl"],
                 sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], M5, sig["dec"], sig["label"], now,
-                sig["ttl"] or gold.TRADE_TTL, extra=extra, inval=sig["inval"], bar_secs=sig["gran"])
+                T.intraday_ttl(sig["ttl"] or gold.TRADE_TTL, now), extra=extra, inval=sig["inval"], bar_secs=sig["gran"])
         if progress and (t - warm) % 5000 == 0:
             print(f"  {gold.name_of(sym)} · pas {t - warm}/{len(m5) - warm - 1} · {funnel['alert']} alertes · "
                   f"{time.time() - t_start:.0f}s", flush=True)
@@ -415,6 +415,8 @@ def main():
     ap.add_argument("--set", action="append", help="grille : module.NOM=v1,v2 (répétable)")
     ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S4\" (défaut : celles de la classe de l'actif)")
     ap.add_argument("--tier-max", type=int, choices=[1, 2, 3], help="niveau maximal : 1 principales, 2 + secondaires, 3 + à tester (défaut : 3)")
+    ap.add_argument("--no-intraday", action="store_true",
+                    help="désactive le cadre intraday (cascades M5, confirmation S3 en M5, pas de clôture de fin de séance, pas de filtre d'obstacles)")
     ap.add_argument("--class-filter", action="store_true",
                     help="restreint chaque actif aux stratégies de sa classe (défaut : toutes les stratégies sur chaque actif)")
     ap.add_argument("--class-strats", help="stratégies par classe, ex. \"or:S3/S1,S5/S2;forex_jpy:S1/S5/\" (principales/secondaires/à tester)")
@@ -426,6 +428,8 @@ def main():
         sys.exit("--split doit être compris entre 0.2 et 0.8")
     if a.sym_strats:
         gold.SYMBOL_OVERRIDES = gold.parse_sym_strats(a.sym_strats)
+    if a.no_intraday:
+        S.INTRADAY = T.INTRADAY = False
     if a.class_filter:
         gold.CLASS_FILTER = True
     if a.tier_max:

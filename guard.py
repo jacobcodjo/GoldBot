@@ -2,6 +2,7 @@
 un seul trade actif par actif, stratégie et sens, exposition corrélée par devise, surveillance du bot, entonnoir de filtres et bilan hebdomadaire.
 Autonome : aucun import de bot.py (les fonctions d'envoi sont passées en argument)."""
 import json, math, os, re
+from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -41,12 +42,12 @@ FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée 
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
 FUNNEL_ORDER = ["data", "S1_tendance", "S1_repli", "S1_signal", "S2_range", "S2_signal", "S3_niveau", "S3_sweep",
-                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "S5_regime", "S5_tendance", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "blackout", "dedupe", "risk", "alert"]
+                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "S5_regime", "S5_tendance", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "blackout", "dedupe", "risk", "alert"]
 FUNNEL_LABEL = {"data": "données", "S1_tendance": "Trend Pullback : tendance H4", "S1_repli": "repli H1", "S1_signal": "signal Trend Pullback",
                 "S2_range": "Asian Breakout : plage", "S2_signal": "signal Asian Breakout", "S3_niveau": "Sweep + CHoCH : niveaux",
                 "S3_sweep": "sweep (niveau intact)", "S3_biais": "sens du biais H4/H1", "S3_zone": "sur zone H1/H4", "S3_signal": "signal Sweep + CHoCH", "S4_regime": "Mean Reversion : range H1", "S4_signal": "signal Mean Reversion",
                 "S5_regime": "Impulsion : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_impulsion": "impulsion + Fibonacci", "S5_signal": "signal Impulsion",
-                "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "blackout": "bloqués (news/horaire)",
+                "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "obst_entree": "écartés (hors niveau H4/H1)", "obst_cible": "écartés (obstacle avant l'objectif)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 
 
@@ -304,13 +305,50 @@ def report_due(g, now):
     return now - g["last_report"] >= REPORT_EVERY
 
 
+def _short(label, s):
+    return f"· {label} : {s['n']} tr. · {s['win']:.0f} % · {s['total']:+.1f} R"
+
+
+REPORT_VALID_TRADES = 100
+REPORT_FILTERS = (("stale", "tardifs"), ("obst_entree", "hors niveau H4/H1"), ("obst_cible", "obstacle devant l'objectif"), ("vol", "volatilité faible"), ("blackout", "news/horaire"),
+                  ("dedupe", "doublons"), ("risk", "risque"))
+
+
 def build_report(g, tr, now):
-    lines = ["📊 Bilan hebdomadaire", T.stats_text(tr, now, days=7), ""]
-    lines.append(T.stats_text(tr, now, days=30))
-    act = T.active_list(tr)
-    lines += ["", f"Trades actifs : {len(act)}"]
-    for bot, counts in sorted(g["funnel"].items()):
-        lines.append(f"Entonnoir {bot} : {funnel_text(counts)}")
+    """Bilan hebdomadaire condensé : total 7 j, 30 j (une ligne si identique), par stratégie, par actif, filtres."""
+    def window(days):
+        return [t for t in tr["closed"] if t.get("t_close", 0) >= now - days * 86400 and t.get("r") is not None]
+    t7, t30 = window(7), window(30)
+    s7, s30 = T.summarize(t7), T.summarize(t30)
+    lines = ["📊 Bilan hebdomadaire", T.fmt_summary("7 j", s7) if s7 else "7 j : aucun trade clôturé"]
+    if s30:
+        lines.append("30 j : identique" if s30 == s7 else T.fmt_summary("30 j", s30))
+    if t7:
+        lines.append("Par stratégie (7 j) :")
+        strats = sorted({t.get("cascade") for t in t7 if t.get("cascade")},
+                        key=lambda v: -sum(t["r"] for t in t7 if t.get("cascade") == v))
+        for val in strats:
+            lines.append(_short(val, T.summarize([t for t in t7 if t.get("cascade") == val])))
+        names = sorted({t["name"] for t in t7 if t.get("name")},
+                       key=lambda n: -sum(t["r"] for t in t7 if t.get("name") == n))
+        if len(names) > 1:
+            parts = [f"{n} {sum(t['r'] for t in t7 if t.get('name') == n):+.1f} R "
+                     f"({sum(1 for t in t7 if t.get('name') == n)})" for n in names[:6]]
+            lines.append("Par actif : " + " · ".join(parts) + (f" · +{len(names) - 6} autres" if len(names) > 6 else ""))
+        own = [t for t in t7 if t.get("own_r") is not None]
+        if own:
+            lines.append(f"Mes résultats réels : {len(own)} trades · {sum(t['own_r'] for t in own):+.1f} R "
+                         f"(simulé : {sum(t['r'] for t in own):+.1f} R)")
+    counts = Counter()
+    for c in g["funnel"].values():
+        counts.update(c)
+    lines.append(f"Trades actifs : {len(T.active_list(tr))} · alertes : {counts.get('alert', 0)}")
+    n_all = sum(1 for t in tr["closed"] if t.get("r") is not None)
+    if n_all < REPORT_VALID_TRADES:
+        lines.append(f"Validation : {n_all} trades clôturés sur ~{REPORT_VALID_TRADES} pour juger (en dessous, tout reste du bruit).")
+    flt = [f"{label} {counts[k]}" for k, label in REPORT_FILTERS if counts.get(k)]
+    if flt:
+        lines.append("Écartés (passages de scan) : " + " · ".join(flt))
     return "\n".join(lines)
 
 

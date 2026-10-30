@@ -13,6 +13,7 @@ Gestion appliquée au suivi et au backtest (tout est réglable ci-dessous) :
   - si le stop et une cible sont touchés dans la même bougie, le stop est supposé touché en premier.
 """
 import json
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -22,6 +23,36 @@ PARTIAL_AT_TP2 = 0.25     # part clôturée à TP2 ; le reste (25 %) vise TP3. 0
 BE_AT_TP1 = True          # stop remonté à l'entrée une fois TP1 atteint
 LOCK_AT_TP2 = True        # stop remonté à TP1 une fois TP2 atteint
 STRUCT_EXIT = True        # sortie si la structure casse contre le trade avant TP1
+def _flag(name, default=True):
+    v = (os.getenv(name) or "").strip().lower()
+    return default if v == "" else v not in ("0", "false", "non", "off", "no")
+
+
+INTRADAY = _flag("INTRADAY", True)      # trades de la journée : clôture de fin de séance (INTRADAY=0 pour désactiver)
+INTRADAY_CLOSE = (16, 45)               # heure de New York (avant le rollover de 17h) à laquelle tout est clôturé
+INTRADAY_MAX_HOURS = 10                 # durée maximale d'un trade ou d'un ordre intraday
+INTRADAY_RUNNERS = _flag("INTRADAY_RUNNERS", True)   # après TP1 (stop à l'entrée), le reste court jusqu'à TP2/TP3 même après la fin de séance
+NY = ZoneInfo("America/New_York")
+
+
+def intraday_deadline(ts):
+    """Epoch de la fin de séance du trade ouvert à `ts` : le plus proche entre `ts` + INTRADAY_MAX_HOURS et la prochaine
+    clôture intraday (16h45 New York). None si INTRADAY est désactivé."""
+    if not INTRADAY:
+        return None
+    dt = datetime.fromtimestamp(ts, NY)
+    close = dt.replace(hour=INTRADAY_CLOSE[0], minute=INTRADAY_CLOSE[1], second=0, microsecond=0)
+    if close <= dt:
+        close += timedelta(days=1)
+    return int(min(ts + INTRADAY_MAX_HOURS * 3600, close.timestamp()))
+
+
+def intraday_ttl(ttl, now):
+    """Un ordre en attente n'est jamais conservé au-delà de la fin de séance."""
+    dl = intraday_deadline(now)
+    return ttl if dl is None else min(ttl, max(300, dl - int(now)))
+
+
 TIME_STOP_BARS = 150      # sortie si TP1 n'est pas atteint après 150 bougies LTF (0 = désactivé)
 KEEP_CLOSED = 1000        # nombre de trades clôturés conservés
 ACTIVE = ("pending", "open")
@@ -114,7 +145,7 @@ def force_close(t, price, result, now):
 
 def advance(t, candles, now):
     """Fait avancer le trade avec les bougies récentes. Retourne la liste des événements :
-    'filled', 'tp1', 'tp2', 'tp3', 'sl', 'be', 'lock', 'struct', 'time', 'cancel_tp', 'cancel_sl', 'expired'."""
+    'filled', 'tp1', 'tp2', 'tp3', 'sl', 'be', 'lock', 'struct', 'time', 'eod', 'cancel_tp', 'cancel_sl', 'expired'."""
     ev = []
     if t["status"] not in ACTIVE:
         return ev
@@ -167,6 +198,10 @@ def advance(t, candles, now):
                 _close(t, r_of(t, c["close"]), "time", now)
                 ev.append("time")
                 break
+        if closed and t.get("eod") and c["epoch"] + g >= t["eod"] and not (INTRADAY_RUNNERS and t["stage"] > 0):
+            _close(t, t["r_acc"] + t["rem"] * r_of(t, c["close"]), "eod", now)     # fin de séance : tout est clôturé
+            ev.append("eod")
+            break
         if just_filled:
             # ordre rempli dans cette bougie : l'ordre des extrêmes est inconnu, donc aucun objectif n'est compté
             # avant la bougie suivante (le stop, lui, reste évalué : hypothèse prudente)

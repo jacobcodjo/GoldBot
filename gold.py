@@ -17,7 +17,7 @@ import strategies as S
 import tracker as T
 import trend as TR
 
-APP_ID = os.getenv("DERIV_APP_ID", "1089")
+APP_ID = os.getenv("DERIV_APP_ID") or "1089"
 # 1) endpoint public Deriv (sans authentification), 2) ancien endpoint en secours.
 # On peut forcer un endpoint avec la variable d'environnement DERIV_WS_URL.
 WS_URLS = [u for u in (
@@ -702,6 +702,8 @@ def trade_event_message(t, e, now=None):
     if e == "weekend":
         return (f"🕓 Fermeture avant le week-end · {head}\nLe marché ferme bientôt : ferme la position "
                 f"(les gaps d'ouverture ne sont pas maîtrisables).{res}")
+    if e == "eod":
+        return (f"🕓 Fin de séance · {head}\nTrade intraday : ferme la position avant la clôture.{res}")
     if e == "time":
         return (f"⏱ Sortie au temps · {head}\nTP1 non atteint en {T.TIME_STOP_BARS} bougies. "
                 f"Ferme la position.{res}")
@@ -821,11 +823,11 @@ def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
     if not delivered:
         notify(text, html=True, buttons=buttons)
     extra = dict(sig["extra"], session=sig["session"], id=tid, strat=sig["strat"],
-                 fill_buf=round(spread_pct(sig["sym"]) / 100 * sig["entry"] / 2, 8))
+                 fill_buf=round(spread_pct(sig["sym"]) / 100 * sig["entry"] / 2, 8), eod=T.intraday_deadline(now))
     tr["active"][sig["key"]] = T.new_trade(
         BOT, sig["key"], sig["sym"], sig["name"], sig["dir"], sig["otype"], sig["entry"], sig["sl"],
         sig["tp1"], sig["tp2"], sig["tp3"], sig["ltf"], sig["gran"], sig["dec"], sig["label"], now,
-        sig["ttl"] or TRADE_TTL,
+        T.intraday_ttl(sig["ttl"] or TRADE_TTL, now),
         extra=extra, inval=sig["inval"], bar_secs=sig["gran"])
     return True
 
@@ -1155,6 +1157,12 @@ def scan(sym, provide, now, sent, funnel, news=()):
                 funnel["vol"] += 1
                 sent[sig["key"]] = int(now)
                 continue
+        if S.INTRADAY:
+            why = S.obstacle_filter(sig, provide, now)
+            if why:
+                funnel[why] += 1       # entrée hors niveau H4/H1, ou obstacle trop proche devant l'objectif
+                sent[sig["key"]] = int(now)
+                continue
         infos = {tf: TR.trend_info(provide(tf) or [], tf) for tf in TR.ALERT_TFS}
         tl, te = TR.alert_lines(sig["dir"], infos, now)
         sig.update(trend_lines=tl, trend_short=TR.alert_short(sig["dir"], infos, now))
@@ -1241,5 +1249,20 @@ def main():
         G.save_guard(g)
 
 
+def ping_heartbeat():
+    """Ping de surveillance : si HEARTBEAT_URL est définie (ex. healthchecks.io), on l'appelle à la fin de chaque passage
+    réussi. Si les pings s'arrêtent, le service t'alerte : c'est la seule façon de savoir que le cron externe est tombé."""
+    url = (os.getenv("HEARTBEAT_URL") or "").strip()
+    if not url:
+        return False
+    try:
+        requests.get(url, timeout=10)
+        return True
+    except Exception as e:                      # le ping ne doit jamais faire échouer le bot
+        print(f"Ping de surveillance impossible : {e}")
+        return False
+
+
 if __name__ == "__main__":
     main()
+    ping_heartbeat()

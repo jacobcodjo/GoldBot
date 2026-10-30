@@ -13,7 +13,7 @@ paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --se
 
 L'or (`frxXAUUSD`), les 7 majeures contre USD (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD, NZDUSD), les 8 autres
 paires classées « Forex majeures » par Deriv (AUDJPY, EURAUD, EURCAD, EURCHF, EURGBP, EURJPY, GBPAUD, GBPJPY) deux cryptos
-(`cryBTCUSD`, `cryETHUSD`) et les 10 indices synthétiques Volatility de Deriv (V10 à V100 et variantes 1s), classés par **classe d'actifs** (voir plus bas : chaque classe a ses stratégies principale, secondaires et à tester). Les règles sont
+(`cryBTCUSD`, `cryETHUSD`) et les 10 indices synthétiques Volatility de Deriv (V10 à V100 et variantes 1s), rangés par **classe d'actifs** (voir plus bas ; par défaut, **toutes les stratégies actives tournent sur chaque actif**, les classes ne filtrent que si `CLASS_FILTER=1`). Les règles sont
 identiques pour tous : seuils en ATR, heures de New York, D1/H4 à 17h. Les stratégies ont été conçues pour l'or ;
 leur comportement sur chaque paire est à vérifier au backtest (`--sym all`), actif par actif. Les cryptos ont une volatilité et des spreads très différents de l'or : ne
 les juge pas sur les résultats des autres actifs. Exposition **par devise** : un trade est long ou short
@@ -53,7 +53,9 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Objectifs** (S1, S2) : TP1 = 1 R, TP2 = 2 R, TP3 = 3 R (R = distance entrée-stop). S3 : TP1 = 1 R, TP2 et TP3 sur la liquidité opposée (voir S3).
 - **Gestion** (`tracker.py`) : 50 % clôturés à TP1 et stop à l'entrée ; 25 % à TP2 et stop à TP1 ; 25 % vers
   TP3. Sortie avant TP1 si une bougie clôture au-delà du niveau d'invalidation, ou après 150 bougies sans TP1.
-  Si stop et cible sont touchés dans la même bougie, le stop est supposé touché en premier.
+  Si stop et cible sont touchés dans la même bougie, le stop est supposé touché en premier. Hypothèses prudentes : un ordre limite n'est rempli que si le prix
+  traverse le niveau d'au moins un demi-spread ; aucun objectif n'est compté dans la bougie de remplissage ; si une bougie atteint TP1 puis revient à l'entrée
+  (ou TP2 puis revient à TP1), le trade ferme à ce stop.
 - **Signal tardif** : écarté si la clôture de la bougie de déclenchement date de plus de 20 minutes (`MAX_AGE_MIN`).
 - **Volatilité** : signal écarté si l'ATR H1 est sous 0,5 x sa médiane des ~240 dernières bougies H1 (`VOL_MIN_RATIO`).
 - **Week-end** (or et forex) : trades encore ouverts clôturés le vendredi à 16h30 New York ; pas d'alerte le week-end.
@@ -248,7 +250,7 @@ Gestion habituelle (50 % à TP1, 25 % à TP2, 25 % vers TP3).
   crt-bot (`LIMIT_TTL`), et `ENTRY_MODE=market` qui supprime l'étape 1.
 - Pas de filtre de killzone (comme dans le crt-bot).
 - Pas de plafond de risque (`S5_RISK_CAP_H1 = 0`, comme dans le crt-bot) ; le mettre à 2, par exemple, rejette les stops de plus de 2 ATR H1.
-- **Actifs** : selon la classe (voir « Classes d'actifs et niveaux ») : secondaire sur l'or, les cryptos, le forex JPY et les indices synthétiques,
+- **Actifs** : tous par défaut. Avec `CLASS_FILTER=1` (voir « Classes d'actifs et niveaux ») : secondaire sur l'or, les cryptos, le forex JPY et les indices synthétiques,
   à tester sur le forex de session, absente du forex calme. `TIER_MAX=2` la coupe sur le forex de session, `TIER_MAX=1` partout.
 - Réglages testables : `python backtest.py --only S5 --split 0.6 --set strategies.S5_IMPULSE_ATR=1.5,2,2.5`.
 
@@ -263,8 +265,9 @@ aucun avantage statistique n'est démontré : à valider sur de l'historique ré
 
 ## Classes d'actifs et niveaux (quelle stratégie sur quel actif)
 
+**Cette section ne s'applique que si la variable `CLASS_FILTER=1`.** Par défaut, toutes les stratégies actives tournent sur chaque actif, sans niveau ni marquage « 🧪 ».
 Chaque actif a une classe ; chaque classe classe les stratégies en trois niveaux : **1 principale**, **2 secondaires**, **3 à tester**.
-Le bot ne lance sur un actif que les stratégies de sa classe jusqu'au niveau `TIER_MAX` (3 par défaut), dans l'ordre principale,
+Avec `CLASS_FILTER=1`, le bot ne lance sur un actif que les stratégies de sa classe jusqu'au niveau `TIER_MAX` (3 par défaut), dans l'ordre principale,
 secondaires, à tester. La logique :
 
 - **Or** (sessions, tendance par vagues, liquidité réelle PDH/PDL et plage asiatique) : S3 principale ; S1 et S5 secondaires.
@@ -277,13 +280,13 @@ secondaires, à tester. La logique :
 - **Indices synthétiques** (prix généré par un algorithme, aucune liquidité réelle) : S3 principale ; S5 secondaire. Aucune stratégie n'y a de base
   logique : à traiter comme une expérience.
 
-**Ces classements sont des hypothèses, pas des résultats.** Une stratégie absente d'une classe n'y tourne pas (S2 et S4 sur l'or, par exemple) ;
-pour les y remettre : `CLASS_STRATEGIES="or:S3/S1,S5/S2,S4"`. Réglages : `TIER_MAX`, `CLASS_STRATEGIES`, et `SYMBOL_STRATEGIES` (prioritaire, actif par actif).
+**Ces classements sont des hypothèses, pas des résultats.** Avec `CLASS_FILTER=1`, une stratégie absente d'une classe n'y tourne pas (S2 et S4 sur l'or, par exemple) ;
+pour les y remettre : `CLASS_STRATEGIES="or:S3/S1,S5/S2,S4"`. Réglages : `CLASS_FILTER`, `TIER_MAX`, `CLASS_STRATEGIES`, et `SYMBOL_STRATEGIES` (prioritaire sur tout, actif par actif).
 
 **Marquage** : l'alerte porte une ligne « 🏷️ <classe> · stratégie principale (ou secondaire) » ; une stratégie à tester est marquée « 🧪 À tester »
 (en-tête du format minimal, résumé des formats compact et contexte). Chaque trade enregistre `classe` et `tier`.
 
-**Valider** : `python backtest.py --sym forex_jpy --split 0.6` (classes : `or`, `forex`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`).
+**Valider** : `python backtest.py --sym forex_jpy --split 0.6 --class-filter` (classes : `or`, `forex`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`).
 Le rapport détaille les lignes `classe` et `tier` ; compare les niveaux avec `--set gold.TIER_MAX=1,2,3`. Garde une stratégie sur une classe
 seulement si elle est positive sur les deux périodes avec au moins 30 trades, sinon change-la de niveau avec `CLASS_STRATEGIES`.
 
@@ -320,3 +323,9 @@ Trend Pullback (EMA 50/200 du H4) : les deux lectures peuvent différer.
 - Il ne passe aucun ordre : il envoie des alertes et suit leur résultat théorique en R.
 - Il ne prédit rien : chaque signal est un scénario, pas une certitude.
 - Le suivi suppose un remplissage au prix du signal, sans glissement. Le backtest applique un spread constant.
+
+## Cadre intraday (par défaut)
+
+Toutes les stratégies sont des stratégies de la journée : obstacles majeurs en H4 / H1, confirmation en M15 (S5 : cascade H4>H1>M15 uniquement ; S3 : CHoCH, bloc d'ordre et FVG en M15), puis clôture de fin de séance (16h45 New York, ou 10 h après l'ouverture) pour les trades dont TP1 n'est pas atteint : après TP1 (stop à l'entrée), le reste court jusqu'à TP2 ou TP3 même après la fin de séance (`INTRADAY_RUNNERS=0` pour tout clôturer).
+S1, S3 et S5 n'entrent que sur réaction à un niveau ou une zone H4/H1 (tolérance 0,5 ATR H1) ; S2 et S4 en sont exemptées. Pour toutes, TP1 ne dépasse jamais le prochain obstacle opposé : à moins de 1 R, le signal est écarté ; sinon TP1 est ramené 0,1 ATR H1 avant lui.
+`INTRADAY=0` restaure l'ancien comportement (cascades M5, confirmation S3 en M5, pas de filtre d'obstacles, pas de clôture de fin de séance). Les seuils sont des choix de départ, non validés par un backtest.
