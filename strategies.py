@@ -1,13 +1,13 @@
-"""Cinq stratégies pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
+"""Quatre stratégies pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
 
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
 
-  S1  Trend Pullback              H4 (tendance) > H1 (repli 50-79 %) > M15 (cassure de structure)
+  S1  Pullback                    H4 (tendance) > H1 (repli 50-79 %) > M15 ; deux variantes (PULLBACK_VARIANT) : « classique » (EMA/ADX,
+                                  cassure M15, objectifs 1-2-3 R) et « structure » (structure H4, sweep, FVG/bloc d'ordre, objectifs sur extensions)
   S2  Asian Breakout                  M15, fenêtre 02h00-07h00 New York
   S3  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
   S4  Mean Reversion                  H1 (régime) > M15 (rejet des bandes de Bollinger)
-  S5  Impulsion + Fibonacci           HTF (tendance) > MTF (impulsion, retracement 50-79 %) > LTF (sweep, MSS, FVG, bloc d'ordre)
 
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
@@ -39,7 +39,7 @@ S1_SWING_H4 = 2                        # fractale H4 : 2 bougies de chaque côt�
 S1_SWING_H1 = 3                        # fractale H1 : 3 bougies de chaque côté
 S1_LEG_BARS = 24                       # la jambe démarre au plus bas (haut) des 24 H1 qui précèdent le sommet (creux)
 S1_LEG_MIN_ATR, S1_LEG_MAX_ATR = 1.5, 5.0   # taille de la jambe impulsive H1, en ATR H1
-S1_FIB_MIN, S1_FIB_MAX = 0.50, 0.85    # le repli doit atteindre 50 % et ne pas dépasser 85 % de la jambe
+S1_FIB_MIN, S1_FIB_MAX = 0.50, 0.79    # le repli doit atteindre 50 % et ne pas dépasser 79 % de la jambe (comme S5 et la zone dessinée)
 S1_ZONE = (0.50, 0.79)                 # zone de repli affichée (50 % - 79 %)
 S1_RISK_CAP_H1 = 1.5                   # risque maximal : 1,5 x ATR H1
 
@@ -67,7 +67,22 @@ S4_HOURS = [(20, 26), (11, 15)]        # 20h-02h et 11h-15h New York (26 = 02h d
 S4_MIN_RR1, S4_MIN_RR2 = 0.8, 1.5      # ratios minimaux vers TP1 et TP2
 S4_RISK_CAP_H1 = 1.0
 
-# --- S5 Impulsion + retracement Fibonacci (portée du crt-bot : impulse.py) ---
+# --- Pullback, variante « structure » (ex-S5 Impulsion + retracement Fibonacci, portée du crt-bot : impulse.py) ---
+PULLBACK_VARIANTS = ("classique", "structure", "auto")
+
+
+def parse_variant(text, default="auto"):
+    """'classique' (ex-S1 : EMA 50/200 + ADX, cassure M15, objectifs 1-2-3 R), 'structure' (ex-S5 : structure H4, sweep, FVG / bloc
+    d'ordre, objectifs sur l'impulsion) ou 'auto' (les deux, la variante structure d'abord). Vide ou invalide -> auto."""
+    v = (text or "").strip().lower()
+    return v if v in PULLBACK_VARIANTS else default
+
+
+PULLBACK_VARIANT = parse_variant(os.getenv("PULLBACK_VARIANT"))
+try:
+    S5_ADX_MIN = float(os.getenv("PULLBACK_ADX_MIN") or 0)   # ADX(14) H4 minimal de la variante structure (0 = désactivé, comme avant)
+except ValueError:
+    S5_ADX_MIN = 0.0
 S5_CASCADES = [("D1", "H4", "H1"), ("H4", "H1", "M15"), ("H1", "M15", "M5")]   # (tendance, impulsion + Fibonacci, entrée)
 
 
@@ -96,8 +111,7 @@ S5_MAX_PROGRESS = 0.5                  # ordre limite écarté si le prix a déj
 S5_LATE_CANDLES, S5_LATE_DIST, S5_LATE_PROGRESS = 2, 0.5, 0.25   # entrée tardive (le prix vient de quitter le bloc d'ordre)
 S5_FVG_DISP = 1.5                      # bougie centrale du FVG >= 1,5 x corps moyen
 S5_FVG_MIN_ATR = 0.1                   # taille minimale du FVG (x ATR du timeframe d'entrée)
-S5_BOS_BY_CLOSE = True                 # tendance : le dernier sommet (creux) doit être dépassé par une clôture, pas une mèche
-S5_AGE_ESTABLISHED, S5_AGE_MATURE = 2, 4   # jambes consécutives : 1 = naissante, 2-3 = établie, 4 et plus = mûre
+# Tendance de S5 : définition unique de trend.py (BOS par clôture, âge en jambes), partagée avec S3 et les alertes.
 S5_TREND_AGES_OK = ("naissante", "établie")   # âges acceptés (ajouter "mûre" pour tout accepter)
 S5_VOL_FAST, S5_VOL_SLOW = 14, 100     # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
 S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0      # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
@@ -687,7 +701,7 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     if not levels:
         return None
     funnel["S3_niveau"] += 1
-    best = None
+    cands = []
     for name, px, kind, t0 in levels:
         for i in range(max(0, len(m15c) - S3_SWEEP_BARS), len(m15c)):
             c = m15c[i]
@@ -701,17 +715,30 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
                 continue                              # le niveau a été franchi pour de bon
             if S3_FRESH_LEVELS and level_taken(m15c, px, kind, t0, upto=i):
                 continue                              # liquidité déjà prise avant cette bougie : plus de stops à balayer
-            if best is None or c["epoch"] > best[0]["epoch"]:
-                best = (c, name, px, kind)
-    if best is None:
+            cands.append((c, name, px, kind))
+    if not cands:
         return None
     funnel["S3_sweep"] += 1
-    sc, name, px, kind = best
-    d = "SELL" if kind == "high" else "BUY"
     bias, bias_tf = s3_bias(h4, h1)
-    if S3_BIAS_FILTER and bias != d:
-        return None                                   # contre le biais de structure (ou aucun biais clair)
+    if S3_BIAS_FILTER:
+        # le filtre de biais s'applique AVANT le choix : un sweep récent contre le biais ne masque plus un sweep valide plus ancien
+        cands = [x for x in cands if ("SELL" if x[3] == "high" else "BUY") == bias]
+        if not cands:
+            return None                               # contre le biais de structure (ou aucun biais clair)
     funnel["S3_biais"] += 1
+    # du plus récent au plus ancien : le premier sweep qui mène à un signal complet est retenu
+    for cand in sorted(cands, key=lambda x: -x[0]["epoch"]):
+        sig = _s3_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_h1, a_m15, a_cf, pivot_bars,
+                        funnel, dec, kz, mode)
+        if sig is not None:
+            return sig
+    return None
+
+
+def _s3_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_h1, a_m15, a_cf, pivot_bars, funnel, dec, kz, mode):
+    """Suite de Sweep + CHoCH pour un sweep donné : CHoCH, killzone, zone H4/H1, entrée, stop et objectifs. None si le sweep n'aboutit pas."""
+    sc, name, px, kind = cand
+    d = "SELL" if kind == "high" else "BUY"
     after = [(i, c) for i, c in enumerate(cfc) if c["epoch"] >= sc["epoch"]]
     if len(after) < 3:
         return None
@@ -805,7 +832,7 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
 # ==========================================================================
 # Cadre intraday : obstacles majeurs H4 / H1
 # ==========================================================================
-OBST_ENTRY_STRATS = ("S1", "S3", "S5")  # entrent sur réaction à un niveau ; S2 (cassure de plage) et S4 (range H1) en sont exemptées
+OBST_ENTRY_STRATS = ("S1", "S3")  # entrent sur réaction à un niveau ; S2 (cassure de plage) et S4 (range H1) en sont exemptées
 OBST_TOL_ATR = 0.5                      # l'entrée doit être à moins de 0,5 ATR H1 d'un niveau (ou dans une zone) du bon côté
 OBST_MIN_RR = 1.0                       # obstacle opposé à moins de 1 R de l'entrée : signal écarté
 OBST_BUF_ATR = 0.1                      # TP1 placé 0,1 ATR H1 avant l'obstacle
@@ -847,7 +874,11 @@ def htf_obstacles(provide, now):
         for d, bucket in (("BUY", sup), ("SELL", res)):
             for z in htf_zones(cs, d, tf, now, untouched=False):
                 bucket.append((z["lo"], z["hi"], f"{'bloc d\'ordre' if z['kind'] == 'OB' else 'FVG'} {tf}"))
-    pdr = prev_day_range(h1c, now)
+    d1 = provide("D1")
+    if d1 and len(d1) >= 3:                           # même veille que les PDH/PDL de S3 : D1 17h-17h NY (00h GMT pour les synthétiques)
+        pdr = (d1[-2]["high"], d1[-2]["low"])
+    else:
+        pdr = prev_day_range(h1c, now)                # repli : jour calendaire New York
     if pdr:
         res.append((pdr[0], pdr[0], "plus haut de la veille"))
         sup.append((pdr[1], pdr[1], "plus bas de la veille"))
@@ -864,7 +895,8 @@ def obstacle_filter(sig, provide, now):
         return None
     d, e, sl, a = sig["dir"], sig["entry"], sig["sl"], obs["atr"]
     risk, dec = abs(e - sl), sig.get("dec", 2)
-    if sig["strat"] in OBST_ENTRY_STRATS:
+    s3_on_zone = sig["strat"] == "S3" and S3_HTF_ZONE      # S3 a déjà exigé une zone H4/H1 au sweep : pas de second contrôle
+    if sig["strat"] in OBST_ENTRY_STRATS and not s3_on_zone:
         mine = obs["sup"] if d == "BUY" else obs["res"]
         tol = OBST_TOL_ATR * a
         hit = [nm for lo, hi, nm in mine if lo - tol <= e <= hi + tol]
@@ -872,19 +904,29 @@ def obstacle_filter(sig, provide, now):
             return "obst_entree"
         sig["details"] = list(sig["details"]) + [f"✅ Entrée sur {hit[0]}"]
     eps = 0.05 * a                                   # un obstacle qui contient déjà l'entrée n'est pas devant
+    tps = [t for t in (sig.get("tp1"), sig.get("tp2"), sig.get("tp3")) if t is not None]
+    far = max(tps) if d == "BUY" else min(tps)       # objectif le plus lointain
     if d == "BUY":
-        ahead = [(lo, nm) for lo, hi, nm in obs["res"] if e + eps < lo < sig["tp1"]]
+        ahead = [(lo, nm) for lo, hi, nm in obs["res"] if e + eps < lo < far]
         o = min(ahead) if ahead else None
     else:
-        ahead = [(hi, nm) for lo, hi, nm in obs["sup"] if sig["tp1"] < hi < e - eps]
+        ahead = [(hi, nm) for lo, hi, nm in obs["sup"] if far < hi < e - eps]
         o = max(ahead) if ahead else None
     if o is not None:
         px, nm = o
         new = px - OBST_BUF_ATR * a if d == "BUY" else px + OBST_BUF_ATR * a
-        if abs(px - e) < OBST_MIN_RR * risk or abs(new - e) < 0.8 * risk:
-            return "obst_cible"
-        sig["tp1"] = new
-        sig["details"] = list(sig["details"]) + [f"🧱 Obstacle {nm} à {px:.{dec}f} : TP1 ramené à {new:.{dec}f}"]
+        before = lambda t, lim: (t < lim) if d == "BUY" else (t > lim)
+        if not before(tps[0], px):                                  # l'obstacle est devant TP1 : règle des 1 R / 0,8 R
+            if abs(px - e) < OBST_MIN_RR * risk or abs(new - e) < 0.8 * risk:
+                return "obst_cible"
+        # Un obstacle qui arrête le prix à TP1 l'arrête aussi pour TP2 et TP3 : les objectifs situés au-delà sont ramenés à
+        # l'obstacle (le reste de la position sort à ce niveau) au lieu de traverser un niveau supposé infranchissable.
+        kept = [t for t in tps if before(t, new)]
+        seq = kept + [new]
+        sig["tp1"] = seq[0]
+        sig["tp2"] = seq[1] if len(seq) > 1 else seq[0]
+        sig["tp3"] = seq[2] if len(seq) > 2 else None
+        sig["details"] = list(sig["details"]) + [f"🧱 Obstacle {nm} à {px:.{dec}f} : objectifs ramenés avant ce niveau (TP final {new:.{dec}f})"]
     return None
 
 
@@ -971,37 +1013,12 @@ def _s5_bavg(cs):
     return sum(body(c) for c in cs) / len(cs) if cs else 0.0
 
 
-def _s5_run(vals):
-    """Nombre de hausses successives à la fin de la liste (ex : 1, 2, 3 -> 2)."""
-    n = 0
-    for a, b in zip(vals[-2::-1], vals[:0:-1]):
-        if b > a:
-            n += 1
-        else:
-            break
-    return n
-
-
 def s5_trend(htf):
-    """Tendance haussière (écrite pour un achat) : {'age', 'legs'} ou None. Dernier sommet et dernier creux plus hauts que
-    les précédents (2 swings suffisent), structure intacte (aucune clôture sous le dernier creux), dernier sommet dépassé
-    par une clôture. Âge = jambes consécutives : 1 naissante, 2-3 établie, 4 et plus mûre."""
-    h = htf[:-1]
-    if len(h) < 12:
-        return None
-    sh, sl = swings(h, "high", 2), swings(h, "low", 2)
-    if len(sh) < 2 or len(sl) < 2:
-        return None
-    highs, lows = [h[i]["high"] for i in sh], [h[i]["low"] for i in sl]
-    if not (highs[-1] > highs[-2] and lows[-1] > lows[-2]):
-        return None
-    if any(c["close"] < lows[-1] for c in h[sl[-1] + 1:]):
-        return None                                   # structure cassée : le dernier creux a été clôturé en dessous
-    if S5_BOS_BY_CLOSE and not any(c["close"] > highs[-2] for c in h[sh[-2] + 1:]):
-        return None                                   # sommet dépassé seulement par une mèche
-    legs = max(1, min(_s5_run(highs), _s5_run(lows)))
-    age = "naissante" if legs < S5_AGE_ESTABLISHED else "établie" if legs < S5_AGE_MATURE else "mûre"
-    return {"age": age, "legs": legs}
+    """Tendance haussière (écrite pour un achat) : {'age', 'legs'} ou None. Même définition que S3 (biais) et que les
+    alertes : trend.py (dernier sommet et dernier creux plus hauts, structure intacte, sommet cassé par une clôture)."""
+    import trend as TR                   # import tardif : trend.py importe ce module
+    info = TR._up(htf[:-1], TR.SWING_N)
+    return {"age": info["age"], "legs": info["legs"]} if info else None
 
 
 def s5_vol_ok(mtf):
@@ -1180,6 +1197,11 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
             if not trend or trend["age"] not in S5_TREND_AGES_OK:
                 continue
             funnel["S5_tendance"] += 1
+            if S5_ADX_MIN:                            # option : même filtre de force de tendance que la variante classique
+                a_htf = adx(H[:-1])
+                if a_htf is None or a_htf < S5_ADX_MIN:
+                    continue
+                funnel["S5_adx"] += 1
             imp = s5_find_impulse(M)
             if not imp:
                 continue
@@ -1210,7 +1232,7 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
             if r["how"] == "tardive":
                 details.append("⏱ Entrée tardive : le prix vient de quitter le bloc d'ordre")
             sig = _signal(
-                "S5", "Impulsion", d, r["entry"], lv, ltf, ltf_n, f"{htf_n}>{mtf_n}>{ltf_n}|{imp['o_epoch']}|{imp['ext_epoch']}",
+                "S5", "Impulsion", d, r["entry"], lv, ltf, ltf_n, f"{htf_n}>{mtf_n}>{ltf_n}|{imp['o_epoch']}|{imp['ext_epoch']}|{r['trig']}",
                 details,
                 lines=[{"y": r["sweep"], "label": "Sweep", "kind": "sweep"},
                        {"y": origin, "label": "Origine", "kind": "range"}, {"y": extreme, "label": "Extrême", "kind": "range"}],
@@ -1227,21 +1249,51 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
     return out or None
 
 
-STRAT_LABELS = {"S1": "Trend Pullback", "S2": "Asian Breakout", "S3": "Sweep + CHoCH", "S4": "Mean Reversion", "S5": "Impulsion"}
-STRATEGIES = [("S1", scan_s1), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4), ("S5", scan_s5)]
 
 
-def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
+STRAT_LABELS = {"S1": "Pullback", "S2": "Asian Breakout", "S3": "Sweep + CHoCH", "S4": "Mean Reversion"}
+# Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback ». Les anciens codes, libellés et
+# trades enregistrés restent reconnus (configuration GitHub, trades en cours dans trades.json).
+STRAT_ALIAS = {"S5": "S1"}
+STRAT_FAMILY = dict(STRAT_ALIAS)
+LABEL_FAMILY = {"Trend Pullback": "Pullback", "Impulsion": "Pullback"}
+
+
+def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market", variant=None):
+    """S1 Pullback : tendance H4, repli de 50-79 % d'une jambe H1, confirmation M15. Deux variantes (PULLBACK_VARIANT) :
+    'structure' (ex-S5), 'classique' (ex-S1), 'auto' (les deux : la variante structure d'abord ; le garde-fou « un trade par actif,
+    sens et stratégie » écarte le second signal d'un même mouvement). `variant` force la variante pour un actif donné."""
+    v = parse_variant(variant, PULLBACK_VARIANT)
+    out = []
+    if v in ("structure", "auto"):
+        for sig in scan_s5(provide, now, funnel, dec, kz, mode) or []:
+            sig["extra"] = dict(sig["extra"], variante="structure")
+            out.append(sig)
+    if v in ("classique", "auto"):
+        sig = scan_s1(provide, now, funnel, dec, kz, mode)
+        if sig:
+            sig["extra"] = dict(sig["extra"], variante="classique")
+            out.append(sig)
+    for sig in out:
+        sig.update(strat="S1", label="Pullback")
+    return out
+
+
+STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4)]
+
+
+def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None, variants=None):
     """Évalue les stratégies (toutes, ou celles de `only`) et renvoie les signaux trouvés.
     dec : décimales du prix de l'actif (affichage uniquement).
-    modes : {"S1": "limit"|"market", ...} (défaut : marché).
+    modes : {"S1": "limit"|"market", ...} (défaut : marché). variants : {"S1": "classique"|"structure"|"auto"} (variante de Pullback).
     kz : False pour un actif 24/7 (cryptos) : S3 et S4 ne sont alors pas limitées aux heures de session."""
     out = []
     for name, fn in STRATEGIES:
         if only and name not in only:
             continue
-        sig = fn(provide, now, funnel, dec, kz, (modes or {}).get(name, "market"))
-        for one in (sig if isinstance(sig, list) else [sig] if sig else []):   # S5 renvoie une liste (une par cascade et sens)
+        extra = {"variant": variants.get(name)} if variants and name == "S1" else {}
+        sig = fn(provide, now, funnel, dec, kz, (modes or {}).get(name, "market"), **extra)
+        for one in (sig if isinstance(sig, list) else [sig] if sig else []):   # Pullback renvoie une liste (une par cascade et sens)
             funnel["signal"] += 1
             out.append(one)
     return out

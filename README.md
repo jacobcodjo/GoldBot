@@ -2,15 +2,14 @@
 
 Bot d'alertes Telegram pour l'or, les paires forex majeures (7 contre USD et 8 croisements majeurs de Deriv), le BTC, l'ETH et les 10 indices Volatility de Deriv, avec cinq stratégies (détail précis dans
 [STRATEGIES.md](STRATEGIES.md)). Il reprend l'architecture du bot CRT/Impulsion (client Deriv robuste, suivi
-des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune de ses stratégies d'origine**, sauf la S5, portée depuis son module Impulsion.
+des trades, garde-fous, graphique et boutons Telegram, backtest) mais **aucune de ses stratégies d'origine**, sauf la variante « structure » de Pullback (ex-S5), portée depuis son module Impulsion.
 
 | Code (réglages) | Stratégie | Unités de temps |
 |---|---|---|
-| S1 | Trend Pullback | H4 > H1 > M15 |
+| S1 | Pullback (variantes « classique » et « structure », voir ci-dessous) | H4 > H1 > M15 |
 | S2 | Asian Breakout | M15 |
 | S3 | Sweep + CHoCH (SMC) | H4/H1 > M15 > M5 |
 | S4 | Mean Reversion | H1 > M15 |
-| S5 | Impulsion + Fibonacci (portée du crt-bot) | D1 > H4 > H1, H4 > H1 > M15 ou H1 > M15 > M5 |
 
 Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à TP3 avec ratio,
 graphique) et suit leur résultat en R. Aucune stratégie n'est garantie ; les paramètres sont des points de
@@ -43,12 +42,12 @@ stratégies **à tester** (niveau 3). Ce sont des hypothèses de départ tirées
 
 | Classe | Actifs | Principale | Secondaires | À tester |
 |---|---|---|---|---|
-| Or | `frxXAUUSD` | S3 | S1, S5 | |
-| Forex de session | EURUSD, GBPUSD, USDCAD, EURGBP, EURAUD, EURCAD, GBPAUD | S3 | S2 | S1, S5 |
-| Forex JPY | USDJPY, EURJPY, GBPJPY, AUDJPY | S1 | S5 | |
+| Or | `frxXAUUSD` | S3 | S1 | |
+| Forex de session | EURUSD, GBPUSD, USDCAD, EURGBP, EURAUD, EURCAD, GBPAUD | S3 | S2 | S1 |
+| Forex JPY | USDJPY, EURJPY, GBPJPY, AUDJPY | S1 | | |
 | Forex calme | USDCHF, EURCHF, AUDUSD, NZDUSD | S4 | S3 | |
-| Cryptos | BTC, ETH | S1 | S3, S5 | |
-| Indices synthétiques | les 10 Volatility | S3 | S5 | |
+| Cryptos | BTC, ETH | S1 | S3 | |
+| Indices synthétiques | les 10 Volatility | S3 | S1 (variante structure imposée) | |
 
 Avec `CLASS_FILTER=1`, une stratégie absente de la ligne d'une classe n'y tourne pas (par exemple S2 et S4 sur l'or). L'alerte indique alors la classe et le niveau
 (« 🏷️ Or · stratégie principale ») ; une stratégie à tester est marquée « 🧪 À tester ». Le backtest ajoute les lignes `classe` et `tier` à son rapport (le niveau vaut « toutes » quand `CLASS_FILTER` est vide).
@@ -57,7 +56,7 @@ Réglages (onglet Variables) :
 - `CLASS_FILTER` : `1` pour restreindre chaque actif aux stratégies de sa classe (défaut : vide = toutes les stratégies sur chaque actif).
   Le backtest accepte `--class-filter` et lit aussi les variables `CLASS_FILTER`, `CLASS_STRATEGIES`, `SYMBOL_STRATEGIES` et `TIER_MAX`.
 - `TIER_MAX` (avec `CLASS_FILTER=1`) : niveau maximal actif, `1` (principales seules), `2` (+ secondaires) ou `3` (+ à tester, défaut).
-- `CLASS_STRATEGIES` (avec `CLASS_FILTER=1`) : change une classe, au format `classe:principales/secondaires/à tester`, ex. `or:S3/S1,S5/S2;forex_jpy:S1/S5/`
+- `CLASS_STRATEGIES` (avec `CLASS_FILTER=1`) : change une classe, au format `classe:principales/secondaires/à tester`, ex. `or:S3/S1/S2;forex_jpy:S1//` (l'ancien code S5 est lu comme S1)
   (classes : `or`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synthetique`).
 - `SYMBOL_STRATEGIES` reste **prioritaire** sur tout, actif par actif (alertes alors étiquetées « manuelle »). Attention : un actif absent de cette
   variable reçoit toutes les stratégies actives (ou celles de sa classe avec `CLASS_FILTER=1`).
@@ -65,7 +64,7 @@ Réglages (onglet Variables) :
   `--set gold.TIER_MAX=1,2,3` pour comparer les niveaux. Classes acceptées par `--sym` : `or`, `forex`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`.
 
 **Indices Volatility** : prix produit par un générateur aléatoire, marché 24h/24 et 7j/7, insensible aux news. Par défaut ils reçoivent toutes les
-stratégies actives (avec `CLASS_FILTER=1` : S3 principale et S5 secondaire, sa version d'origine étant faite pour ces indices ; `TIER_MAX=1` la coupe), sans killzone, sans filtre de week-end ni de news, sans
+stratégies actives (avec `CLASS_FILTER=1` : S3 principale et Pullback secondaire, en variante structure (la variante classique repose sur EMA et ADX, sans sens sur un prix généré) ; `TIER_MAX=1` la coupe), sans killzone, sans filtre de week-end ni de news, sans
 récapitulatif de tendance du matin ni limite d'exposition. **Rien ne garantit qu'une stratégie ait un avantage sur un prix aléatoire** : valide d'abord
 au backtest sur des mois de données réelles Deriv (`python backtest.py --sym synth --days 120 --split 0.6`) avant de te fier aux
 alertes. Spread par défaut 0,02 % (estimation, `SPREAD_TABLE` ou `SPREAD_PCT`) et décimales d'affichage à vérifier sur Deriv.
@@ -90,13 +89,13 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 | Fichier | Rôle |
 |---|---|
 | `gold.py` | Scan, client Deriv (limites de requêtes, reconnexion), alertes et commandes Telegram, suivi |
-| `strategies.py` | Les 5 stratégies, indicateurs (EMA, ATR, ADX, RSI, Bollinger, swings), sessions |
+| `strategies.py` | Les 4 stratégies, indicateurs (EMA, ATR, ADX, RSI, Bollinger, swings), sessions |
 | `trend.py` | Tendance et âge de la tendance (D1, H4, H1) pour le récapitulatif journalier |
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
 | `charts.py` | Graphique joint à l'alerte |
-| `tests.py` | 137 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
-| `backtest.py` | Rejeu M5 des 5 stratégies, par stratégie, avec deux périodes et grille de réglages |
+| `tests.py` | 138 tests automatisés (`python -m unittest tests -v`, aussi lancés par `.github/workflows/tests.yml`) |
+| `backtest.py` | Rejeu M5 des 4 stratégies, par stratégie, avec deux périodes et grille de réglages |
 | `STRATEGIES.md` | Règles précises de chaque stratégie |
 | `.github/workflows/gold.yml` | Scan (déclenché par un cron externe) + sauvegarde de l'état sur la branche `data` |
 | `.github/workflows/tests.yml` | Lance les tests à chaque modification du dépôt |
@@ -108,16 +107,17 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 2. **Settings > Secrets and variables > Actions** : secrets `TELEGRAM_TOKEN` et `TELEGRAM_CHAT_ID`.
 3. Variables facultatives (onglet Variables) :
    - `SYNTH_RECAP_HEURES` (défaut 4) : délai avant la clôture de la bougie daily pour le récapitulatif des indices synthétiques.
-   - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4,S5`).
+   - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4` ; l'ancien code `S5` est lu comme `S1`).
+   - `PULLBACK_VARIANT` : variante de S1 Pullback, `classique` (EMA 50/200 + ADX, cassure M15, objectifs 1-2-3 R), `structure` (structure H4, sweep, FVG / bloc d'ordre, objectifs sur l'impulsion, ratio mini 1:3) ou `auto` (défaut : les deux, la variante structure d'abord ; un seul trade par actif et par sens). `PULLBACK_ADX_MIN` : ADX H4 minimal de la variante structure (0 = désactivé). Pour comparer : `python backtest.py --split 0.6 --set strategies.PULLBACK_VARIANT=classique,structure,auto`.
    - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (prioritaire sur tout ; un actif
      absent reçoit toutes les stratégies actives, ou celles de sa classe avec `CLASS_FILTER=1`). Sert par exemple à couper Sweep + CHoCH sur les cryptos.
    - `HEARTBEAT_URL` (secret, pas variable) : URL de ping de surveillance (par exemple une vérification healthchecks.io). Le bot l'appelle à la fin de chaque passage réussi ; si les pings cessent, le service t'alerte, ce qui signale que le cron externe est tombé.
    - `DERIV_APP_ID`, `DERIV_WS_URL`, `CALENDAR_URL` : réglages techniques facultatifs (identifiant d'application Deriv, point d'accès forcé, source du calendrier économique).
-   - `INTRADAY` : `0` pour désactiver le cadre intraday (défaut : actif, voir « Cadre intraday »). `INTRADAY_RUNNERS` : `0` pour clôturer aussi, en fin de séance, les restes de trades dont TP1 est atteint.
+   - `INTRADAY` : `0` pour désactiver le cadre intraday (défaut : actif, voir « Cadre intraday »). `INTRADAY_RUNNERS` : `1` pour laisser courir, après la fin de séance, le reste d'un trade dont TP1 est atteint (forex, or, cryptos ; les indices synthétiques courent déjà).
    - `CLASS_FILTER` : `1` pour restreindre chaque actif aux stratégies de sa classe (défaut : vide, toutes les stratégies sur chaque actif).
    - `TIER_MAX` et `CLASS_STRATEGIES` : niveaux et stratégies par classe d'actifs, utiles seulement avec `CLASS_FILTER=1` (voir « Classes d'actifs et niveaux »).
    - `CONFLUENCE_MIN` : fenêtre de confluence en minutes (défaut 60, `0` pour désactiver) : voir STRATEGIES.md.
-   - `ENTRY_MODE` : `auto` (défaut : ordres limites pour les 5 stratégies), `market` ou `limit` pour tout forcer ;
+   - `ENTRY_MODE` : `auto` (défaut : ordres limites pour les 4 stratégies), `market` ou `limit` pour tout forcer ;
      `ENTRY_MODES` : par stratégie, ex. `S3:market,S4:market`.
    - `SPREAD_PCT` : spread supposé en % du prix, pour tous les actifs (défaut : or 0,015, majeures 0,006, BTC/ETH 0,05).
    - `SPREAD_TABLE` : spreads par actif, en % du prix, ex. `frxXAUUSD=0.02,frxEURUSD=0.008,cryBTCUSD=0.04` (prioritaire sur `SPREAD_PCT` ;
@@ -185,7 +185,7 @@ si aucun bloc d'ordre) :
 
 | Stratégie | Zone d'entrée | Validité |
 |---|---|---|
-| Trend Pullback | bord proche du bloc d'ordre M15 (sinon milieu du FVG M15) | 2 h |
+| Pullback | bord proche du bloc d'ordre M15 (sinon milieu du FVG M15) | 2 h |
 | Asian Breakout | bord de plage cassé (retest) | 3 h |
 | Sweep + CHoCH | bord proche du bloc d'ordre M5 (sinon milieu du FVG M5) | 1 h |
 | Mean Reversion | bande de Bollinger rejetée | 1 h 30 |
@@ -193,7 +193,7 @@ si aucun bloc d'ordre) :
 Exemple (`compact`) :
 
 ```
-🟢 BUY · XAUUSD · M15 · Trend Pullback · New York
+🟢 BUY · XAUUSD · M15 · Pullback · New York
 
 Entrée  BUY LIMIT 2650.10 (prix 2652.40)
 SL  2646.10
@@ -243,10 +243,10 @@ limite indique sa fin de validité (« valable jusqu'à 10h15 Bénin »). Variab
 
 Toutes les stratégies suivent le même cadre : contexte et obstacles majeurs en H4 / H1, confirmation en M15, trade de la journée.
 
-- **Confirmation en M15** : S5 ne garde que la cascade H4>H1>M15 (plus de D1>H4>H1 ni de H1>M15>M5). S3 confirme (CHoCH, bloc d'ordre, FVG) en M15 au lieu de M5.
-- **Entrée sur réaction à un niveau** (S1, S3, S5) : l'entrée doit être à moins de 0,5 ATR H1 d'un niveau ou dans une zone H4/H1 du bon côté (creux ou sommet H1/H4, plus haut ou bas de la veille, bloc d'ordre ou FVG non invalidé par une clôture). Sinon le signal est écarté (« hors niveau H4/H1 »). S2 (cassure de plage) et S4 (range H1) en sont exemptées.
-- **Objectif avant le prochain obstacle** (toutes les stratégies) : TP1 ne dépasse jamais le prochain obstacle opposé (sommet ou creux H1/H4, plus haut ou bas de la veille, zone d'offre ou de demande). S'il est à moins de 1 R de l'entrée, le signal est écarté (« obstacle devant l'objectif ») ; sinon TP1 est ramené 0,1 ATR H1 avant lui. TP2 et TP3 ne sont pas modifiés : après TP1, le stop est à l'entrée.
-- **Fin de séance** : un trade dont TP1 n'est pas atteint est clôturé au plus tard à 16h45 (New York) ou 10 heures après son ouverture, le plus proche des deux ; un ordre en attente est annulé au même moment. Le message de suivi s'appelle « Fin de séance » et le résultat `eod`. **Après TP1** (stop à l'entrée), le reste continue jusqu'à TP2 ou TP3 même après la fin de séance ; seule la fermeture avant le week-end l'arrête. `INTRADAY_RUNNERS=0` clôture aussi ces restes en fin de séance.
+- **Confirmation en M15** : la variante structure de Pullback ne garde que la cascade H4>H1>M15 (plus de D1>H4>H1 ni de H1>M15>M5). S3 confirme (CHoCH, bloc d'ordre, FVG) en M15 au lieu de M5.
+- **Entrée sur réaction à un niveau** (S1 Pullback, S3) : l'entrée doit être à moins de 0,5 ATR H1 d'un niveau ou dans une zone H4/H1 du bon côté (creux ou sommet H1/H4, plus haut ou bas de la veille, bloc d'ordre ou FVG non invalidé par une clôture). Sinon le signal est écarté (« hors niveau H4/H1 »). S2 (cassure de plage) et S4 (range H1) en sont exemptées.
+- **Objectif avant le prochain obstacle** (toutes les stratégies) : TP1 ne dépasse jamais le prochain obstacle opposé (sommet ou creux H1/H4, plus haut ou bas de la veille, zone d'offre ou de demande). S'il est à moins de 1 R de l'entrée, le signal est écarté (« obstacle devant l'objectif ») ; sinon TP1 est ramené 0,1 ATR H1 avant lui. Un obstacle qui arrête TP1 arrête aussi TP2 et TP3 : les objectifs situés au-delà sont ramenés à l'obstacle (le reste de la position sort à ce niveau) ; un obstacle entre TP1 et TP2, ou après TP2, ne ramène que les objectifs suivants. Après TP1, le stop est à l'entrée. S3 déjà entrée sur une zone H4/H1 n'est pas soumise au second contrôle d'entrée.
+- **Fin de séance** : forex et or : tout trade est clôturé au plus tard à 16h45 (New York) ou 10 heures après son ouverture, le plus proche des deux, **même après TP1** ; un ordre en attente est annulé au même moment. Le message de suivi s'appelle « Fin de séance » et le résultat `eod`. **Cryptos et indices synthétiques** (24h/24) : aucune fin de séance (`CRYPTO_INTRADAY=1` y soumet aussi les cryptos), les trades et leurs ordres courent jusqu'au TP final (ou au stop, ou à la sortie au temps avant TP1). `INTRADAY_RUNNERS=1` laisse aussi courir, pour le forex et l'or, le reste d'un trade dont TP1 est atteint.
 - Les seuils (0,5 ATR, 1 R, 0,1 ATR, 16h45, 10 h) sont des choix de départ, pas des résultats de backtest. Pour comparer : lance le backtest avec la variable `INTRADAY` vide, puis à `0` (ou `--no-intraday` en ligne de commande).
 
 ## Hypothèses du suivi et du backtest
@@ -339,7 +339,7 @@ trades n'est pas évaluable.
 
 ## Ce qui a été vérifié, et ce qui ne l'a pas été
 
-Vérifié (données simulées, sans accès réseau) : le code s'exécute de bout en bout, les 5 stratégies produisent des
+Vérifié (données simulées, sans accès réseau) : le code s'exécute de bout en bout, les 4 stratégies produisent des
 signaux, le suivi (TP1/TP2/TP3, stop, doublons), le message et le graphique fonctionnent, et sur une marche
 aléatoire l'espérance est proche de zéro (pas de gain « gratuit » dans le code).
 

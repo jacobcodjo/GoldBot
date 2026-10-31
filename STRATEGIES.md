@@ -1,7 +1,7 @@
 # Stratégies du bot (or, paires majeures, BTC et ETH)
 
 Cinq stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
-alertes Telegram (le code S1 à S5 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
+alertes Telegram (le code S1 à S4 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
 paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --set`).
 
 > **Important.** Aucune stratégie n'a un taux de réussite élevé garanti. Les valeurs ci-dessous sont des
@@ -32,7 +32,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Déclenchement récent** : la bougie de déclenchement doit être l'une des 2 dernières clôturées (`FRESH`).
 - **Tendance dans l'alerte** : chaque alerte indique la tendance D1 et H4 avec son âge (règles de `trend.py`,
   voir plus bas), ✅ dans le sens du trade, ⚠️ à contre-sens. Information seulement, jamais un filtre (seule exception : le biais de structure de Sweep + CHoCH, voir S3).
-- **Zones d'entrée de Trend Pullback et Sweep + CHoCH** : 1) le **bloc d'ordre** (dernière bougie de sens opposé entre
+- **Zones d'entrée de Pullback (variante classique) et Sweep + CHoCH** : 1) le **bloc d'ordre** (dernière bougie de sens opposé entre
   l'extrême du repli ou du sweep et la bougie de cassure) avec entrée à son **bord proche** (le haut pour un achat, le
   bas pour une vente ; `LIMIT_OB_FRACTION = 0`, 1 = bord lointain) ; 2) à défaut, le **FVG** non comblé créé par le
   déplacement (3 bougies, la bougie du milieu doit être un déplacement : corps >= 1,2 x le corps moyen) avec entrée
@@ -41,7 +41,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Ordres limites** (défaut, `ENTRY_MODE=auto`) : l'entrée est un ordre limite au retest d'une zone propre à chaque
   stratégie, à condition que la zone soit entre le stop et le prix actuel, sinon l'ordre est au marché.
   L'ordre est **annulé** si TP1 est atteint avant l'entrée, si une bougie clôture au-delà du stop, si le marché ferme pour
-  le week-end, ou après sa durée de validité (S1 2 h, S2 3 h, S3 1 h, S4 1 h 30, S5 24 h : `LIMIT_TTL`). Une zone à plus de
+  le week-end, ou après sa durée de validité (S1 classique 2 h, S2 3 h, S3 1 h, S4 1 h 30, S1 structure 24 h : `LIMIT_TTL`). Une zone à plus de
   1,5 x ATR du prix écarte le signal (`LIMIT_MAX_ATR`). Les ordres limites améliorent le prix d'entrée mais manquent
   les mouvements qui ne reviennent pas : compare les rendements **totaux** au backtest, pas seulement par trade.
   Le suivi ne considère l'ordre posé qu'à partir de la bougie suivant l'alerte.
@@ -70,9 +70,27 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 
 ---
 
-## Trend Pullback (code S1) · H4 > H1 > M15
+## Pullback (code S1) : deux variantes
 
-**Idée** : trader dans le sens de la tendance H4, en entrant à la fin d'un repli de 50 à 85 % de la dernière
+S1 est la fusion de l'ancienne Trend Pullback (S1) et de l'ancienne Impulsion + Fibonacci (S5) : même idée (tendance H4, repli de
+50-79 % d'une jambe H1, confirmation M15), deux manières de la lire. `PULLBACK_VARIANT` choisit :
+
+| | classique (ex-S1) | structure (ex-S5) |
+|---|---|---|
+| Tendance H4 | EMA 50/200 + ADX >= 18 | structure (sommets et creux, BOS par clôture) ; ADX en option (`PULLBACK_ADX_MIN`) |
+| Entrée | cassure de structure M15, zone d'entrée sur bloc d'ordre / FVG | sweep + cassure + FVG + bloc d'ordre |
+| Stop | au-delà du creux du repli | sous le sweep |
+| Objectifs | 1 R, 2 R, 3 R | extrême de l'impulsion, extensions 1,272 et 1,618 ; ratio mini 1:3 |
+| Ordre limite valable | 2 h | 24 h (plafonné par la fin de séance) |
+
+`auto` (défaut) évalue les deux, la variante structure d'abord ; un seul trade par actif et par sens (même libellé « Pullback »), donc
+jamais deux positions sur le même repli. Chaque trade enregistre `variante` (ligne dédiée dans le rapport du backtest). Sur les indices
+synthétiques, seule la variante structure tourne. Comparaison : `python backtest.py --split 0.6 --set strategies.PULLBACK_VARIANT=classique,structure,auto`.
+Les anciens codes (`S5` dans `STRATEGIES`, `CLASS_STRATEGIES`, `SYMBOL_STRATEGIES`, `ENTRY_MODES`) sont lus comme `S1`.
+
+### Variante classique · H4 > H1 > M15
+
+**Idée** : trader dans le sens de la tendance H4, en entrant à la fin d'un repli de 50 à 79 % de la dernière
 jambe impulsive H1, quand le M15 confirme la reprise.
 
 **1. Tendance H4** (bougies H4 clôturées)
@@ -90,7 +108,7 @@ jambe impulsive H1, quand le M15 confirme la reprise.
 
 **3. Repli**
 - Extrême du repli : plus bas M15 depuis la clôture de la bougie H1 du sommet.
-- Le repli doit atteindre **50 %** de la jambe et ne pas dépasser **85 %** (`S1_FIB_MIN/MAX`). La zone
+- Le repli doit atteindre **50 %** de la jambe et ne pas dépasser **79 %** (`S1_FIB_MIN/MAX`, comme S5). La zone
   50-79 % est dessinée sur le graphique.
 
 **4. Déclencheur M15**
@@ -205,7 +223,7 @@ moyenne. C'est la stratégie la plus risquée si une tendance démarre : le rég
 
 ---
 
-## Impulsion + Fibonacci (code S5) · HTF > MTF > LTF
+### Variante structure (ex-S5, Impulsion + Fibonacci) · HTF > MTF > LTF
 
 **Origine** : stratégie du module `impulse.py` du crt-bot, portée telle quelle (mêmes règles et mêmes valeurs), avec les
 adaptations listées en bas de section. Elle est faite pour être comparée à S1 (même idée de repli à 50-79 %) et S3.
@@ -252,7 +270,7 @@ Gestion habituelle (50 % à TP1, 25 % à TP2, 25 % vers TP3).
 - Pas de plafond de risque (`S5_RISK_CAP_H1 = 0`, comme dans le crt-bot) ; le mettre à 2, par exemple, rejette les stops de plus de 2 ATR H1.
 - **Actifs** : tous par défaut. Avec `CLASS_FILTER=1` (voir « Classes d'actifs et niveaux ») : secondaire sur l'or, les cryptos, le forex JPY et les indices synthétiques,
   à tester sur le forex de session, absente du forex calme. `TIER_MAX=2` la coupe sur le forex de session, `TIER_MAX=1` partout.
-- Réglages testables : `python backtest.py --only S5 --split 0.6 --set strategies.S5_IMPULSE_ATR=1.5,2,2.5`.
+- Réglages testables : `python backtest.py --only S1 --split 0.6 --set strategies.PULLBACK_VARIANT=structure --set strategies.S5_IMPULSE_ATR=1.5,2,2.5`.
 
 **Vérification du portage** : sur 12 séries simulées (plus de 20 000 évaluations par fonction), `s5_trend`, `s5_find_impulse` et
 `s5_find_entry` donnent des résultats identiques à ceux de `impulse.py` (tendance, impulsion, entrée limite FVG, limite bloc d'ordre,
@@ -270,18 +288,18 @@ Chaque actif a une classe ; chaque classe classe les stratégies en trois niveau
 Avec `CLASS_FILTER=1`, le bot ne lance sur un actif que les stratégies de sa classe jusqu'au niveau `TIER_MAX` (3 par défaut), dans l'ordre principale,
 secondaires, à tester. La logique :
 
-- **Or** (sessions, tendance par vagues, liquidité réelle PDH/PDL et plage asiatique) : S3 principale ; S1 et S5 secondaires.
+- **Or** (sessions, tendance par vagues, liquidité réelle PDH/PDL et plage asiatique) : S3 principale ; S1 secondaire.
 - **Forex de session** (paires EUR, GBP, USD : les cassures de l'ouverture de Londres et les killzones y ont un sens) : S3 principale ; S2
   secondaire ; S1 et S5 à tester. USDCAD, EURCAD et GBPAUD y sont rangées par choix, faute de meilleure classe.
-- **Forex JPY** (tendances longues, Asie active donc plage asiatique peu significative) : S1 principale ; S5 secondaire.
+- **Forex JPY** (tendances longues, Asie active donc plage asiatique peu significative) : S1 principale.
 - **Forex calme** (USDCHF, EURCHF, AUDUSD, NZDUSD : peu directionnelles) : S4 principale ; S3 secondaire.
 - **Cryptos** (24h/24, tendances fortes ; S2 et S4 reposent sur des horaires ou un range que le 24h/24 rend peu pertinents) : S1 principale ;
   S3 et S5 secondaires.
-- **Indices synthétiques** (prix généré par un algorithme, aucune liquidité réelle) : S3 principale ; S5 secondaire. Aucune stratégie n'y a de base
+- **Indices synthétiques** (prix généré par un algorithme, aucune liquidité réelle) : S3 principale ; Pullback secondaire (variante structure). Aucune stratégie n'y a de base
   logique : à traiter comme une expérience.
 
 **Ces classements sont des hypothèses, pas des résultats.** Avec `CLASS_FILTER=1`, une stratégie absente d'une classe n'y tourne pas (S2 et S4 sur l'or, par exemple) ;
-pour les y remettre : `CLASS_STRATEGIES="or:S3/S1,S5/S2,S4"`. Réglages : `CLASS_FILTER`, `TIER_MAX`, `CLASS_STRATEGIES`, et `SYMBOL_STRATEGIES` (prioritaire sur tout, actif par actif).
+pour les y remettre : `CLASS_STRATEGIES="or:S3/S1/S2,S4"`. Réglages : `CLASS_FILTER`, `TIER_MAX`, `CLASS_STRATEGIES`, et `SYMBOL_STRATEGIES` (prioritaire sur tout, actif par actif).
 
 **Marquage** : l'alerte porte une ligne « 🏷️ <classe> · stratégie principale (ou secondaire) » ; une stratégie à tester est marquée « 🧪 À tester »
 (en-tête du format minimal, résumé des formats compact et contexte). Chaque trade enregistre `classe` et `tier`.
@@ -295,15 +313,15 @@ seulement si elle est positive sur les deux périodes avec au moins 30 trades, s
 ## Confluence (étiquette, hors stratégies)
 
 Quand deux stratégies ou plus signalent **le même actif dans le même sens** à moins de `CONFLUENCE_MIN` minutes d'écart
-(60 par défaut ; `0` pour désactiver), l'alerte le dit : une ligne « ⚡ Confluence : S5 Impulsion (il y a 10 min) »
-(format complet), « confluence S5 » dans le résumé (formats compact et contexte), « ⚡S5 » dans l'en-tête (format minimal).
+(60 par défaut ; `0` pour désactiver), l'alerte le dit : une ligne « ⚡ Confluence : S4 Mean Reversion (il y a 10 min) »
+(format complet), « confluence S4 » dans le résumé (formats compact et contexte), « ⚡S4 » dans l'en-tête (format minimal).
 
 - **Information seulement** : rien n'est filtré, chaque stratégie alerte comme avant, avec ses propres niveaux.
 - **Qui compte** : les trades des autres stratégies encore en attente ou ouverts, alertés dans la fenêtre, et les signaux trouvés au même
-  scan. Un trade clôturé, annulé ou expiré ne compte pas. Une même stratégie ne se compte pas elle-même (S5 sur deux cascades = une seule).
-- **Une seule étiquette, sur la seconde alerte** : si S3 alerte à 10h00 puis S5 à 10h20, c'est l'alerte de S5 qui porte la confluence ;
+  scan. Un trade clôturé, annulé ou expiré ne compte pas. Une même stratégie ne se compte pas elle-même (Pullback en deux variantes = une seule).
+- **Une seule étiquette, sur la seconde alerte** : si S3 alerte à 10h00 puis S4 à 10h20, c'est l'alerte de S4 qui porte la confluence ;
   celle de S3, déjà envoyée, n'est pas modifiée. Au même scan, les deux alertes la portent.
-- **Mesure au backtest** : chaque trade enregistre `confluence` (ex. `S3+S5`, ou `aucune`) et le rapport ajoute une ligne par valeur.
+- **Mesure au backtest** : chaque trade enregistre `confluence` (ex. `S3+S4`, ou `aucune`) et le rapport ajoute une ligne par valeur.
   Pour comparer les fenêtres : `python backtest.py --sym all --split 0.6 --set gold.CONFLUENCE_MIN=0,30,60,120`.
   Compare le rendement par trade de `aucune` et des confluences, **sur les deux périodes** (`--split 0.6`) : il faut au moins
   30 trades par ligne, et une confluence qui ne tient que sur une période est du sur-ajustement.
@@ -326,6 +344,18 @@ Trend Pullback (EMA 50/200 du H4) : les deux lectures peuvent différer.
 
 ## Cadre intraday (par défaut)
 
-Toutes les stratégies sont des stratégies de la journée : obstacles majeurs en H4 / H1, confirmation en M15 (S5 : cascade H4>H1>M15 uniquement ; S3 : CHoCH, bloc d'ordre et FVG en M15), puis clôture de fin de séance (16h45 New York, ou 10 h après l'ouverture) pour les trades dont TP1 n'est pas atteint : après TP1 (stop à l'entrée), le reste court jusqu'à TP2 ou TP3 même après la fin de séance (`INTRADAY_RUNNERS=0` pour tout clôturer).
-S1, S3 et S5 n'entrent que sur réaction à un niveau ou une zone H4/H1 (tolérance 0,5 ATR H1) ; S2 et S4 en sont exemptées. Pour toutes, TP1 ne dépasse jamais le prochain obstacle opposé : à moins de 1 R, le signal est écarté ; sinon TP1 est ramené 0,1 ATR H1 avant lui.
+Toutes les stratégies sont des stratégies de la journée : obstacles majeurs en H4 / H1, confirmation en M15 (Pullback structure : cascade H4>H1>M15 uniquement ; S3 : CHoCH, bloc d'ordre et FVG en M15), puis clôture de fin de séance (16h45 New York, ou 10 h après l'ouverture) pour le forex et l'or, y compris le reste d'un trade dont TP1 est atteint (`INTRADAY_RUNNERS=1` le laisse courir). Les cryptos et les indices synthétiques, ouverts 24h/24, n'ont pas de fin de séance : ils courent jusqu'au TP final (`CRYPTO_INTRADAY=1` coupe aussi les cryptos).
+S1 (Pullback) et S3 n'entrent que sur réaction à un niveau ou une zone H4/H1 (tolérance 0,5 ATR H1) ; S2 et S4 en sont exemptées. Pour toutes, TP1 ne dépasse jamais le prochain obstacle opposé : à moins de 1 R, le signal est écarté ; sinon TP1 est ramené 0,1 ATR H1 avant lui.
 `INTRADAY=0` restaure l'ancien comportement (cascades M5, confirmation S3 en M5, pas de filtre d'obstacles, pas de clôture de fin de séance). Les seuils sont des choix de départ, non validés par un backtest.
+
+
+## Cohérence entre stratégies (v30)
+
+- **S1 et S5 fusionnées en Pullback** (deux variantes, voir plus haut) : un seul trade par actif et par sens, pas de confluence entre variantes. Repli maximal de la variante classique aligné sur la variante structure (79 %).
+- **Pas de sens opposé** sur un même actif (toutes stratégies, ordres en attente compris).
+- **Tendance** : la structure (S3, S5, alertes) vient d'une seule définition, `trend.py`. S1 et S2 gardent leur filtre EMA, qui définit ces stratégies.
+- **Objectifs et obstacles** : un obstacle ramène TP1, mais aussi TP2 et TP3 s'ils sont au-delà.
+- **S3** : le filtre de biais s'applique avant le choix du sweep ; les sweeps valides sont essayés du plus récent au plus ancien. Pas de second contrôle d'entrée sur niveau H4/H1 quand la zone est déjà exigée au sweep.
+- **La veille** : PDH/PDL de S3 et filtre d'obstacles utilisent la même bougie D1.
+- **Setups filtrés** (volatilité, obstacle, news) : refus transitoire, réexaminé jusqu'à `MAX_AGE_MIN` ; la clé de la variante structure inclut le déclencheur.
+- **Backtest** : trades suivis sur l'unité de temps du signal, comme en direct ; échauffement par défaut de 35 jours.

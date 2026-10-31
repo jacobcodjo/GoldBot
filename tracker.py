@@ -31,7 +31,7 @@ def _flag(name, default=True):
 INTRADAY = _flag("INTRADAY", True)      # trades de la journée : clôture de fin de séance (INTRADAY=0 pour désactiver)
 INTRADAY_CLOSE = (16, 45)               # heure de New York (avant le rollover de 17h) à laquelle tout est clôturé
 INTRADAY_MAX_HOURS = 10                 # durée maximale d'un trade ou d'un ordre intraday
-INTRADAY_RUNNERS = _flag("INTRADAY_RUNNERS", True)   # après TP1 (stop à l'entrée), le reste court jusqu'à TP2/TP3 même après la fin de séance
+INTRADAY_RUNNERS = _flag("INTRADAY_RUNNERS", False)  # 1 : après TP1 (stop à l'entrée), le reste court jusqu'à TP2/TP3 même après la fin de séance
 NY = ZoneInfo("America/New_York")
 
 

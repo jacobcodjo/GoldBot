@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import strategies as S
 import tracker as T
 
 NY = ZoneInfo("America/New_York")
@@ -42,11 +43,11 @@ FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée 
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
 FUNNEL_ORDER = ["data", "S1_tendance", "S1_repli", "S1_signal", "S2_range", "S2_signal", "S3_niveau", "S3_sweep",
-                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "S5_regime", "S5_tendance", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "blackout", "dedupe", "risk", "alert"]
-FUNNEL_LABEL = {"data": "données", "S1_tendance": "Trend Pullback : tendance H4", "S1_repli": "repli H1", "S1_signal": "signal Trend Pullback",
+                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "S5_regime", "S5_tendance", "S5_adx", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "blackout", "dedupe", "risk", "alert"]
+FUNNEL_LABEL = {"data": "données", "S1_tendance": "Pullback classique : tendance H4", "S1_repli": "repli H1", "S1_signal": "signal Pullback classique",
                 "S2_range": "Asian Breakout : plage", "S2_signal": "signal Asian Breakout", "S3_niveau": "Sweep + CHoCH : niveaux",
                 "S3_sweep": "sweep (niveau intact)", "S3_biais": "sens du biais H4/H1", "S3_zone": "sur zone H1/H4", "S3_signal": "signal Sweep + CHoCH", "S4_regime": "Mean Reversion : range H1", "S4_signal": "signal Mean Reversion",
-                "S5_regime": "Impulsion : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_impulsion": "impulsion + Fibonacci", "S5_signal": "signal Impulsion",
+                "S5_regime": "Pullback structure : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_adx": "ADX H4 suffisant", "S5_impulsion": "impulsion + Fibonacci", "S5_signal": "signal Pullback structure",
                 "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "obst_entree": "écartés (hors niveau H4/H1)", "obst_cible": "écartés (obstacle avant l'objectif)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 
@@ -244,11 +245,15 @@ def crypto_sign(sym, d):
 
 
 def risk_check(tr, sym, d, now, strat=None):
-    """Retourne (ok, motif). Contrôle : doublon (même actif, stratégie et sens),
-    exposition nette par devise et groupe crypto. Aucune limite sur le nombre total de trades ouverts. Aucun blocage lié aux pertes de la journée ou de la semaine."""
+    """Retourne (ok, motif). Contrôle : doublon (même actif, sens et stratégie ; les anciens libellés Trend Pullback / Impulsion comptent comme Pullback),
+    sens opposé sur le même actif (pas de couverture involontaire entre stratégies), exposition nette par devise et groupe
+    crypto. Aucune limite sur le nombre total de trades ouverts. Aucun blocage lié aux pertes de la journée ou de la semaine."""
     act = T.active_list(tr)
-    if any(t["sym"] == sym and t["dir"] == d and t.get("cascade") == strat for t in act):
+    fam = lambda lab: S.LABEL_FAMILY.get(lab, lab)
+    if any(t["sym"] == sym and t["dir"] == d and fam(t.get("cascade")) == fam(strat) for t in act):
         return False, "dedupe"
+    if any(t["sym"] == sym and t["dir"] != d for t in act):
+        return False, "sens opposé déjà en cours sur l'actif"
     signs = ccy_signs(sym, d)
     for ccy in sorted(signs, key=lambda c: c != "USD"):          # l'USD d'abord, puis les autres devises du trade
         net = sum(ccy_signs(t["sym"], t["dir"]).get(ccy, 0) for t in act)
