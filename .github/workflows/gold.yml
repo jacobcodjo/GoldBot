@@ -63,6 +63,9 @@ jobs:
           CLASS_FILTER: ${{ vars.CLASS_FILTER }}
           INTRADAY: ${{ vars.INTRADAY }}
           INTRADAY_RUNNERS: ${{ vars.INTRADAY_RUNNERS }}
+          CRYPTO_INTRADAY: ${{ vars.CRYPTO_INTRADAY }}
+          PULLBACK_VARIANT: ${{ vars.PULLBACK_VARIANT }}
+          PULLBACK_ADX_MIN: ${{ vars.PULLBACK_ADX_MIN }}
           CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
           TIER_MAX: ${{ vars.TIER_MAX }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
