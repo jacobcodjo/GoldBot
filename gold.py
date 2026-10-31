@@ -1005,6 +1005,9 @@ def recap_due(g, now):
     return recap_slot(g, now) is not None
 
 
+RECAP_FORMAT = "complet" if (os.getenv("RECAP_FORMAT") or "").strip().lower() in ("complet", "full", "long") else "compact"
+# compact (défaut) : une ligne par actif, en-tête et légende courts ; complet : trois lignes par actif avec durée et invalidation.
+RECAP_LEGEND_COMPACT = "Âge : naissante 1 jambe · établie 2-3 · mûre 4+ · ⚡ cassure impulsive"
 RECAP_CLASSES = (("Or", [GOLD]), ("Forex · paires contre USD", FOREX_MAJORS),
                  ("Forex · croisements majeurs", FOREX_CROSSES), ("Cryptos", CRYPTOS))   # un message par classe
 
@@ -1022,7 +1025,7 @@ def build_recap(api, cache, now, syms=None):
                 closed.append(name_of(sym))
                 continue
             infos = {tf: TR.trend_info(tf_candles(api, cache, sym, tf) or [], tf) for tf in TR.TIMEFRAMES}
-            blocks.append(TR.symbol_block(name_of(sym), infos, now, dec_of(sym)))
+            blocks.append((TR.symbol_line if RECAP_FORMAT == "compact" else TR.symbol_block)(name_of(sym), infos, now, dec_of(sym)))
         except Exception as ex:
             print(f"Récap {name_of(sym)} ignoré : {str(ex)[:80]}")
     return blocks, closed
@@ -1033,24 +1036,27 @@ def send_recap(api, cache, now):
     Les actifs fermés sont listés à la fin. Retourne False si aucun actif n'a de données."""
     day = datetime.fromtimestamp(now, NY).strftime("%d/%m")
     clock = alert_clock(now)
-    legend = ("Âge = jambes consécutives (sommet + creux plus hauts, ou plus bas) : naissante 1 · établie 2-3 · mûre 4 et plus. "
-              "⚡ = cassure impulsive.")
+    compact = RECAP_FORMAT == "compact"
+    legend = RECAP_LEGEND_COMPACT if compact else ("Âge = jambes consécutives (sommet + creux plus hauts, ou plus bas) : naissante 1 · établie 2-3 · mûre 4 et plus. "
+                                                  "⚡ = cassure impulsive.")
     sent, closed_all = False, []
     for title, syms in RECAP_CLASSES:
         blocks, closed = build_recap(api, cache, now, [s for s in syms if s in SYMBOLS])
         if not blocks:
             closed_all += closed
             continue
-        chunk = (f"📅 {title} · récapitulatif de tendance · {day}" + (f" · {clock}" if clock else "")
-                 + " (avant l'ouverture de Londres)" + ("" if sent else "\n" + legend))
+        head = (f"📅 {title} · tendance · {day}" + (f" · {clock}" if clock else "")) if compact else \
+            (f"📅 {title} · récapitulatif de tendance · {day}" + (f" · {clock}" if clock else "") + " (avant l'ouverture de Londres)")
+        chunk = head + ("" if sent else "\n" + legend)
         sent = True
+        sep = "\n" if compact else "\n\n"                 # une ligne par actif en compact, un bloc de cinq lignes sinon
         for b in blocks:
-            if len(chunk) + len(b) + 2 > 3800:
+            if len(chunk) + len(b) + len(sep) > 3800:
                 notify(chunk)
                 chunk = ""
-            chunk += ("\n\n" if chunk else "") + b
+            chunk += (sep if chunk else "") + b
         if closed:
-            chunk += f"\n\nMarché fermé : {', '.join(closed)}"
+            chunk += f"{sep}Marché fermé : {', '.join(closed)}"
         notify(chunk)
     if sent and closed_all:
         notify(f"Marché fermé : {', '.join(closed_all)}")
@@ -1094,6 +1100,15 @@ def synth_block(api, cache, sym, now):
         return None
     dec = dec_of(sym)
     infos = {tf: TR.trend_info(cs[tf], tf) for tf in TR.TIMEFRAMES}
+    if RECAP_FORMAT == "compact":                       # une ligne : tendances, biais S3, extrêmes de la bougie daily
+        line = TR.symbol_line(name_of(sym), infos, now, dec)
+        if S.S3_BIAS_FILTER:
+            bias, tf = S.s3_bias(cs["H4"], cs["H1"])
+            line += f" · biais S3 {('🟢' if bias == 'BUY' else '🔴') + ' ' + tf if bias else '⚪ aucun'}"
+        if cs["D1"]:
+            day = cs["D1"][-1]
+            line += f" · jour {day['low']:.{dec}f}–{day['high']:.{dec}f}"
+        return line
     lines = [TR.symbol_block(name_of(sym), infos, now, dec)]
     if S.S3_BIAS_FILTER:
         bias, tf = S.s3_bias(cs["H4"], cs["H1"])
@@ -1126,15 +1141,21 @@ def send_synth_recap(api, cache, now):
                 blocks.append(b)
         if not blocks:
             continue
-        chunk = (f"🎲 {title} · récapitulatif du soir · {day}\n"
-                 f"La bougie daily de Deriv (00h GMT) se clôture dans {left:.0f} h" + (f", à {clock}" if clock else "") + ". "
-                 "Tendance sur bougies clôturées (D1 = bougie daily de Deriv ; âge = jambes consécutives : naissante 1 · établie 2-3 · mûre 4 et plus). "
-                 "Marché aléatoire : aucun avantage garanti.")
+        compact = RECAP_FORMAT == "compact"
+        if compact:
+            chunk = (f"🎲 {title} · soir · {day} · clôture daily dans {left:.0f} h" + (f" ({clock})" if clock else "") + "\n"
+                     + RECAP_LEGEND_COMPACT + " · marché aléatoire")
+        else:
+            chunk = (f"🎲 {title} · récapitulatif du soir · {day}\n"
+                     f"La bougie daily de Deriv (00h GMT) se clôture dans {left:.0f} h" + (f", à {clock}" if clock else "") + ". "
+                     "Tendance sur bougies clôturées (D1 = bougie daily de Deriv ; âge = jambes consécutives : naissante 1 · établie 2-3 · mûre 4 et plus). "
+                     "Marché aléatoire : aucun avantage garanti.")
+        sep = "\n" if compact else "\n\n"
         for b in blocks:
-            if len(chunk) + len(b) + 2 > 3800:
+            if len(chunk) + len(b) + len(sep) > 3800:
                 sent = bool(notify(chunk)) or sent
                 chunk = ""
-            chunk += ("\n\n" if chunk else "") + b
+            chunk += (sep if chunk else "") + b
         sent = bool(notify(chunk)) or sent
     return sent
 
@@ -1152,6 +1173,9 @@ def check_symbols(api):
             print(f"Symboles Deriv : {len(names)} dispo, absents de ma liste : {missing or 'aucun'}")
     except Exception as e:
         print(f"check_symbols ignoré: {e}")
+
+
+_LOGGED_BLOCKS = set()      # setups bloqués déjà signalés dans le journal (le refus est réexaminé à chaque scan)
 
 
 def scan(sym, provide, now, sent, funnel, news=()):
@@ -1196,7 +1220,9 @@ def scan(sym, provide, now, sent, funnel, news=()):
         why = G.blackout(sym, now, news)
         if why:
             funnel["blackout"] += 1      # transitoire : si la fenêtre se termine avant MAX_AGE_MIN, le setup est encore valable
-            print(f"Alerte bloquée {sig['name']} {sig['label']} {sig['dir']} : {why}")
+            if sig["key"] not in _LOGGED_BLOCKS:         # un seul message de journal par setup bloqué
+                _LOGGED_BLOCKS.add(sig["key"])
+                print(f"Alerte bloquée {sig['name']} {sig['label']} {sig['dir']} : {why}")
             continue
         out.append((sig, provide(sig["ltf"])))
     return out

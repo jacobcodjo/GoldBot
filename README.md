@@ -106,6 +106,7 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 1. Crée un dépôt GitHub avec le contenu de ce dossier (le dossier `.github/workflows` inclus).
 2. **Settings > Secrets and variables > Actions** : secrets `TELEGRAM_TOKEN` et `TELEGRAM_CHAT_ID`.
 3. Variables facultatives (onglet Variables) :
+   - `RECAP_FORMAT` : `compact` (défaut, une ligne par actif pour le récapitulatif du matin et celui du soir des indices) ou `complet`.
    - `SYNTH_RECAP_HEURES` (défaut 4) : délai avant la clôture de la bougie daily pour le récapitulatif des indices synthétiques.
    - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4` ; l'ancien code `S5` est lu comme `S1`).
    - `PULLBACK_VARIANT` : variante de S1 Pullback, `classique` (EMA 50/200 + ADX, cassure M15, objectifs 1-2-3 R), `structure` (structure H4, sweep, FVG / bloc d'ordre, objectifs sur l'impulsion, ratio mini 1:3) ou `auto` (défaut : les deux, la variante structure d'abord ; un seul trade par actif et par sens). `PULLBACK_ADX_MIN` : ADX H4 minimal de la variante structure (0 = désactivé). Pour comparer : `python backtest.py --split 0.6 --set strategies.PULLBACK_VARIANT=classique,structure,auto`.
@@ -142,7 +143,15 @@ Pour les jours d'annonces non couverts par le calendrier automatique, copie `new
 
 Chaque matin du lundi au vendredi, à **01h00 New York** (une heure avant l'ouverture de Londres, qui ouvre à 02h00 New
 York ; environ 07h00 à Paris), à la première passe après cette heure, le bot envoie **un message par classe d'actif** (Or,
-Forex · paires contre USD, Forex · croisements majeurs, Cryptos ; la légende figure seulement dans le premier) avec, pour chaque actif, la tendance en **D1, H4 et H1**, son **âge** et une phrase de synthèse sur l'alignement :
+Forex · paires contre USD, Forex · croisements majeurs, Cryptos ; la légende figure seulement dans le premier) avec, pour chaque actif, **une ligne** : la tendance en **D1, H4 et H1** (🟢 haussière, 🔴 baissière, ⚪ pas de tendance claire) et son **âge** (⚡ = cassure impulsive). Un message par classe, légende courte dans le premier seulement :
+
+```
+📅 Or · tendance · 31/10 · 06h00 Bénin
+Âge : naissante 1 jambe · établie 2-3 · mûre 4+ · ⚡ cassure impulsive
+XAUUSD  🟢 D1 établie ⚡ · 🟢 H4 mûre · 🔴 H1 naissante
+```
+
+`RECAP_FORMAT=complet` rétablit l'ancien format, avec trois lignes par actif (durée de la tendance, niveau d'invalidation) et une phrase de synthèse sur l'alignement :
 
 ```
 XAUUSD

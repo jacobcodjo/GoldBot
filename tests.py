@@ -531,11 +531,11 @@ class SansLotNiLimite(unittest.TestCase):
 
 
 class RecapDuMatinParClasse(unittest.TestCase):
-    def run_recap(self, symbols=None, data=lambda sym, tf: None):
+    def run_recap(self, symbols=None, data=lambda sym, tf: None, fmt="complet"):
         from unittest import mock
         sent, cs = [], zigzag(3)
         fake = lambda api, cache, sym, tf: (data(sym, tf) if data(sym, tf) is not None else cs)
-        with mock.patch.object(gold, "tf_candles", fake), \
+        with mock.patch.object(gold, "tf_candles", fake), mock.patch.object(gold, "RECAP_FORMAT", fmt), \
                 mock.patch.object(gold, "SYMBOLS", symbols or gold.ALL_SYMBOLS), \
                 mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
             ok = gold.send_recap(None, {}, cs[-1]["epoch"] + 600)
@@ -635,6 +635,7 @@ class RecapIndices(unittest.TestCase):
         cs = zigzag(3)
         now = cs[-1]["epoch"] + 600
         with mock.patch.object(gold, "tf_candles", lambda api, cache, sym, tf: cs), \
+                mock.patch.object(gold, "RECAP_FORMAT", "complet"), \
                 mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
             ok = gold.send_synth_recap(None, {}, now)
         self.assertTrue(ok)
@@ -654,6 +655,7 @@ class RecapIndices(unittest.TestCase):
         sent = []
         cs = zigzag(3)
         with mock.patch.object(gold, "tf_candles", lambda api, cache, sym, tf: cs), \
+                mock.patch.object(gold, "RECAP_FORMAT", "complet"), \
                 mock.patch.object(gold, "SYMBOLS", ["frxEURUSD", "R_100"]), \
                 mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
             gold.send_synth_recap(None, {}, cs[-1]["epoch"] + 600)
@@ -1957,6 +1959,66 @@ class TestPullbackFusionne(unittest.TestCase):
         k = "old"
         tr["active"][k] = T.new_trade("OR", k, "frxEURUSD", "EURUSD", "BUY", "BUY", 1, .9, 1.1, 1.2, 1.3, "M15", 900, 2, "Impulsion", 1e9, 3600)
         self.assertEqual(G.risk_check(tr, "frxEURUSD", "BUY", 1e9, "Pullback"), (False, "dedupe"))
+
+
+class RecapCompact(unittest.TestCase):
+    """Récapitulatif réduit : une ligne par actif (RECAP_FORMAT=complet pour l'ancien format)."""
+
+    def test_ligne_compacte(self):
+        import trend as TR
+        cs = zigzag(3)
+        infos = {tf: TR.trend_info(cs, tf) for tf in TR.TIMEFRAMES}
+        line = TR.symbol_line("XAUUSD", infos, cs[-1]["epoch"] + 600, 2)
+        self.assertEqual(line.count("\n"), 0)
+        self.assertTrue(line.startswith("XAUUSD  "))
+        for tf in TR.TIMEFRAMES:
+            self.assertIn(tf, line)
+        self.assertNotIn("invalidation", line)
+        none = TR.symbol_line("EURUSD", {}, 0, 5)
+        self.assertEqual(none, "EURUSD  ⚪ D1 · ⚪ H4 · ⚪ H1")
+
+    def _run(self, fmt):
+        from unittest import mock
+        sent, cs = [], zigzag(3)
+        with mock.patch.object(gold, "tf_candles", lambda api, cache, sym, tf: cs), mock.patch.object(gold, "RECAP_FORMAT", fmt), \
+                mock.patch.object(gold, "SYMBOLS", gold.ALL_SYMBOLS), \
+                mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
+            ok = gold.send_recap(None, {}, cs[-1]["epoch"] + 600)
+        return ok, sent
+
+    def test_recap_du_matin_plus_court(self):
+        ok, short = self._run("compact")
+        _, full = self._run("complet")
+        self.assertTrue(ok)
+        self.assertEqual(len(short), 4)                                            # toujours un message par classe
+        self.assertLess(sum(map(len, short)), 0.5 * sum(map(len, full)))           # au moins deux fois plus court
+        self.assertIn("Or · tendance", short[0])
+        self.assertNotIn("avant l'ouverture de Londres", short[0])
+        self.assertIn("Âge : naissante", short[0])                                 # légende courte, dans le premier message seulement
+        self.assertTrue(all("Âge :" not in m for m in short[1:]))
+        self.assertEqual(len([l for l in short[1].split("\n") if "D1" in l]), 7)  # une ligne par paire contre USD
+        self.assertTrue(all("invalidation" not in m for m in short))
+
+    def test_recap_du_soir_des_indices_plus_court(self):
+        from unittest import mock
+        outs = {}
+        for fmt in ("compact", "complet"):
+            sent, cs = [], zigzag(3)
+            with mock.patch.object(gold, "tf_candles", lambda api, cache, sym, tf: cs), mock.patch.object(gold, "RECAP_FORMAT", fmt), \
+                    mock.patch.object(gold, "notify", lambda text, *a, **k: sent.append(text) or 1):
+                self.assertTrue(gold.send_synth_recap(None, {}, cs[-1]["epoch"] + 600))
+            outs[fmt] = sent
+        short = outs["compact"]
+        self.assertEqual(len(short), 2)
+        self.assertLess(sum(map(len, short)), 0.5 * sum(map(len, outs["complet"])))
+        self.assertIn("soir", short[0].split("\n")[0])
+        for name in ("V10", "V25", "V50", "V75", "V100"):
+            line = next(l for l in short[0].split("\n") if l.startswith(f"{name}  "))
+            self.assertIn("biais S3", line)
+            self.assertIn("jour ", line)
+
+    def test_format_par_defaut_compact(self):
+        self.assertEqual(gold.RECAP_FORMAT, "compact")
 
 
 if __name__ == "__main__":

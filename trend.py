@@ -145,5 +145,18 @@ def alert_short(d, infos, now):
     return " · ".join(parts)
 
 
+def symbol_line(name, infos, now, dec):
+    """Récapitulatif compact : une ligne par actif, ex. « XAUUSD  🟢 D1 établie ⚡ · 🟢 H4 mûre · ⚪ H1 ». La couleur donne le sens,
+    donc l'alignement des timeframes se lit d'un coup d'œil ; l'invalidation et la durée sont dans le format complet."""
+    parts = []
+    for tf in TIMEFRAMES:
+        info = infos.get(tf)
+        if info is None:
+            parts.append(f"⚪ {tf}")
+        else:
+            parts.append(f"{'🟢' if info['dir'] == 'BUY' else '🔴'} {tf} {info['age']}{' ⚡' if info['impulsive'] else ''}")
+    return f"{name}  " + " · ".join(parts)
+
+
 def symbol_block(name, infos, now, dec):
     return "\n".join([name] + [tf_line(tf, infos.get(tf), now, dec) for tf in TIMEFRAMES] + [f"  {summary(infos)}"])
