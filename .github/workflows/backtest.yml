@@ -43,6 +43,9 @@ jobs:
           INTRADAY_RUNNERS: ${{ vars.INTRADAY_RUNNERS }}
           CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
           SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
+          S6_RISK_CAP_ATR: ${{ vars.S6_RISK_CAP_ATR }}
+          S6_MIN_RR: ${{ vars.S6_MIN_RR }}
+          S6_TOL_ATR: ${{ vars.S6_TOL_ATR }}
           TIER_MAX: ${{ vars.TIER_MAX }}
           CONFLUENCE_MIN: ${{ vars.CONFLUENCE_MIN }}
           ENTRY_MODE: ${{ vars.ENTRY_MODE }}

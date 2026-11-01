@@ -50,6 +50,9 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STRATEGIES: ${{ vars.STRATEGIES }}
+          S6_RISK_CAP_ATR: ${{ vars.S6_RISK_CAP_ATR }}
+          S6_MIN_RR: ${{ vars.S6_MIN_RR }}
+          S6_TOL_ATR: ${{ vars.S6_TOL_ATR }}
           SYMBOLS: ${{ vars.SYMBOLS }}
           SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
           ALERT_FORMAT: ${{ vars.ALERT_FORMAT }}
@@ -66,6 +69,8 @@ jobs:
           CRYPTO_INTRADAY: ${{ vars.CRYPTO_INTRADAY }}
           PULLBACK_VARIANT: ${{ vars.PULLBACK_VARIANT }}
           RECAP_FORMAT: ${{ vars.RECAP_FORMAT }}
+          REVERSAL_ALERTS: ${{ vars.REVERSAL_ALERTS }}
+          REVERSAL_MIN_SIGNS: ${{ vars.REVERSAL_MIN_SIGNS }}
           PULLBACK_ADX_MIN: ${{ vars.PULLBACK_ADX_MIN }}
           CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
           TIER_MAX: ${{ vars.TIER_MAX }}
