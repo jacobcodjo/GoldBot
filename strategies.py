@@ -270,7 +270,7 @@ def is_late(d, price, trig_close, a_ltf):
 LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
 LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
 LIMIT_MAX_ATR = 1.5         # zone d'entrée à plus de 1,5 ATR du prix actuel : signal écarté (trop de retracement requis)
-LIMIT_TTL = {"S1": 7200, "S2": 10800, "S3": 3600, "S4": 5400, "S5": 86400}   # validité de l'ordre limite, en secondes
+LIMIT_TTL = {"S1": 7200, "S2": 10800, "S3": 3600, "S4": 5400, "S5": 86400, "S6": 10800}   # validité de l'ordre limite, en secondes
 
 
 def ob_zone(cs, lo_i, hi_i, d):
@@ -1251,7 +1251,7 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
 
 
 
-STRAT_LABELS = {"S1": "Pullback", "S2": "Asian Breakout", "S3": "Sweep + CHoCH", "S4": "Mean Reversion"}
+STRAT_LABELS = {"S1": "Pullback", "S2": "Asian Breakout", "S3": "Sweep + CHoCH", "S4": "Mean Reversion", "S6": "Chart Patterns"}
 # Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback ». Les anciens codes, libellés et
 # trades enregistrés restent reconnus (configuration GitHub, trades en cours dans trades.json).
 STRAT_ALIAS = {"S5": "S1"}
@@ -1279,7 +1279,9 @@ def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market", variant=N
     return out
 
 
-STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4)]
+from patterns import scan_s6   # noqa: E402  (S6 Chart Patterns ; patterns.py importe strategies à l'appel, pas à l'import)
+
+STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4), ("S6", scan_s6)]
 
 
 def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None, variants=None):

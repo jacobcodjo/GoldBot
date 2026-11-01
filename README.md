@@ -90,6 +90,7 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 |---|---|
 | `gold.py` | Scan, client Deriv (limites de requêtes, reconnexion), alertes et commandes Telegram, suivi |
 | `strategies.py` | Les 4 stratégies, indicateurs (EMA, ATR, ADX, RSI, Bollinger, swings), sessions |
+| `reversal.py` | Alerte d'information « retournement possible » (sweep, cassure de structure, divergence RSI, essoufflement) |
 | `trend.py` | Tendance et âge de la tendance (D1, H4, H1) pour le récapitulatif journalier |
 | `tracker.py` | Suivi des trades : TP1/TP2/TP3, stop à l'entrée, sorties de structure et au temps, statistiques |
 | `guard.py` | Fenêtres sans alerte (news USD, rollover, week-end), limite d'exposition, santé du bot, bilan |
@@ -106,9 +107,10 @@ Mean Reversion ne sont pas limitées aux heures de session. Spread par défaut d
 1. Crée un dépôt GitHub avec le contenu de ce dossier (le dossier `.github/workflows` inclus).
 2. **Settings > Secrets and variables > Actions** : secrets `TELEGRAM_TOKEN` et `TELEGRAM_CHAT_ID`.
 3. Variables facultatives (onglet Variables) :
+   - `REVERSAL_ALERTS` (défaut actif, `0` pour désactiver) et `REVERSAL_MIN_SIGNS` (défaut 2) : alerte d'information « retournement possible » (tendance H4 mûre + sweep H1 sur un niveau majeur + cassure de structure + signes d'essoufflement), voir `STRATEGIES.md`.
    - `RECAP_FORMAT` : `compact` (défaut, une ligne par actif pour le récapitulatif du matin et celui du soir des indices) ou `complet`.
    - `SYNTH_RECAP_HEURES` (défaut 4) : délai avant la clôture de la bougie daily pour le récapitulatif des indices synthétiques.
-   - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4` ; l'ancien code `S5` est lu comme `S1`).
+   - `STRATEGIES` : liste à activer, ex. `S2,S3` (défaut : `S1,S2,S3,S4,S6` ; l'ancien code `S5` est lu comme `S1`).
    - `PULLBACK_VARIANT` : variante de S1 Pullback, `classique` (EMA 50/200 + ADX, cassure M15, objectifs 1-2-3 R), `structure` (structure H4, sweep, FVG / bloc d'ordre, objectifs sur l'impulsion, ratio mini 1:3) ou `auto` (défaut : les deux, la variante structure d'abord ; un seul trade par actif et par sens). `PULLBACK_ADX_MIN` : ADX H4 minimal de la variante structure (0 = désactivé). Pour comparer : `python backtest.py --split 0.6 --set strategies.PULLBACK_VARIANT=classique,structure,auto`.
    - `SYMBOL_STRATEGIES` : stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` (prioritaire sur tout ; un actif
      absent reçoit toutes les stratégies actives, ou celles de sa classe avec `CLASS_FILTER=1`). Sert par exemple à couper Sweep + CHoCH sur les cryptos.

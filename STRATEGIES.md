@@ -1,6 +1,6 @@
 # Stratégies du bot (or, paires majeures, BTC et ETH)
 
-Cinq stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
+Six stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
 alertes Telegram (le code S1 à S4 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
 paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --set`).
 
@@ -281,6 +281,37 @@ aucun avantage statistique n'est démontré : à valider sur de l'historique ré
 
 ---
 
+## Chart Patterns (code S6) · figures H1/H4 > confirmation M15
+
+Figures chartistes de **retournement** et de **continuation**, dans le cadre intraday du bot : la figure est détectée sur les
+bougies **clôturées H1 ou H4** (les obstacles majeurs), la **cassure de sa ligne clé est confirmée en M15** (une des 2 dernières
+bougies M15 clôturées finit au-delà de la ligne, la précédente non). Module : `patterns.py`.
+
+- **Pivots** : fractales à 4 bougies de chaque côté (`S6_PIVOT_K`), alternées haut/bas, swing minimal 0,8 ATR (`S6_MIN_SWING_ATR`).
+- **Figures de retournement** (la tendance qui précède doit être inverse à la cassure) : double sommet / creux, triple sommet / creux,
+  tête et épaules (et inversée), biseau montant / descendant, tasse avec anse (et inversée).
+- **Figures de continuation** (tendance précédente dans le sens de la cassure) : drapeau et fanion (mât >= 3,5 ATR, figure <= 60 % du
+  mât), triangle ascendant / descendant / symétrique, rectangle, canal, élargissement. Pour les triangles, rectangle, canal, biseau et
+  élargissement, le type dépend de la tendance qui précède (30 bougies, >= 1,5 ATR) : tendance inverse = retournement, même sens =
+  continuation ; sans tendance, la figure est ignorée.
+- **Lignes** : les pivots intermédiaires doivent toucher la ligne à 0,5 ATR près (`S6_TOL_ATR`) et les clôtures rester dans la figure.
+  Hauteur minimale 1,5 ATR (2 ATR pour les sommets/creux). Dernier pivot de moins de 40 bougies (`S6_MAX_AGE`).
+- **Déclencheur** : clôture M15 au-delà de la ligne de cassure (marge 0,1 ATR de la figure), la clôture M15 précédente encore en deçà.
+- **Entrée** : ordre limite au **retest de la ligne cassée** (`ENTRY_MODES`), sinon au marché ; zone à plus de 1,5 ATR M15 du prix : signal
+  écarté. Validité de l'ordre : 3 h (`LIMIT_TTL`).
+- **Stop** : au-delà de la figure (sommet pour une vente, creux pour un achat) + 0,2 ATR de la figure ; risque minimal 0,5 ATR M15,
+  risque maximal 5 x ATR du timeframe de la figure (`S6_RISK_CAP_ATR`), sinon signal rejeté.
+- **Objectifs** : mesure de la figure à partir de la ligne cassée : TP1 = 0,5 x hauteur, TP2 = 1 x hauteur, TP3 = 1,5 x hauteur (pour
+  drapeau et fanion, la hauteur est celle du mât). Ratio gain/risque minimal 1 sur TP3 (`S6_MIN_RR`). Le cadre intraday ramène ensuite
+  les objectifs avant le prochain obstacle H4/H1 opposé (comme pour les autres stratégies).
+- **Invalidation** : le niveau du stop. Pas de filtre de session : la confirmation M15 n'est pas limitée aux killzones.
+- **Un signal par sens** : si plusieurs figures cassent en même temps, la meilleure (ratio TP3) est gardée.
+- **Entonnoir** : `S6_figure` (figures présentes), `S6_cassure` (cassure confirmée en M15), `S6_signal`.
+
+> **Important.** Ces seuils sont des points de départ classiques, **non optimisés ni validés** sur l'or. Lance le backtest
+> (`backtest.yml`, option `--only S6`) avant de t'y fier, et compare chaque figure (`extra.figure` dans le rapport).
+> Retire la stratégie sans toucher au code avec `STRATEGIES=S1,S2,S3,S4`.
+
 ## Classes d'actifs et niveaux (quelle stratégie sur quel actif)
 
 **Cette section ne s'applique que si la variable `CLASS_FILTER=1`.** Par défaut, toutes les stratégies actives tournent sur chaque actif, sans niveau ni marquage « 🧪 ».
@@ -359,3 +390,19 @@ S1 (Pullback) et S3 n'entrent que sur réaction à un niveau ou une zone H4/H1 (
 - **La veille** : PDH/PDL de S3 et filtre d'obstacles utilisent la même bougie D1.
 - **Setups filtrés** (volatilité, obstacle, news) : refus transitoire, réexaminé jusqu'à `MAX_AGE_MIN` ; la clé de la variante structure inclut le déclencheur.
 - **Backtest** : trades suivis sur l'unité de temps du signal, comme en direct ; échauffement par défaut de 35 jours.
+
+
+## Alerte de retournement possible (information, hors stratégies)
+
+Les stratégies jouent la continuation de la tendance de fond ; `reversal.py` signale en plus, **à titre d'information**, un retournement
+possible. Aucun ordre, aucun suivi, aucun filtre sur les stratégies. Une alerte n'est envoyée que si tout se cumule :
+
+1. **Tendance H4 mûre** (4 jambes ou plus) **encore intacte** : on prévient avant que le H4 ne casse (après, il est trop tard).
+2. **Sweep H1** : une bougie prend un sommet (creux) récent puis referme de l'autre côté, moins de 6 bougies H1 plus tôt. Un niveau déjà pris par une mèche ou une clôture ne compte pas.
+3. **Niveau majeur** : le sommet (creux) pris est sur un sommet / creux H4, une zone H4 ou le plus haut / bas de la veille (`REQUIRE_LEVEL`).
+4. **Cassure de structure H1 contre la tendance** : clôture sous le dernier creux (au-dessus du dernier sommet) formé avant le sweep, datant de 2 bougies H1 au plus.
+5. **Essoufflement** : au moins `REVERSAL_MIN_SIGNS` signes sur 3 (défaut 2) : divergence RSI H1 (nouvel extrême du prix, RSI plus bas), bougies qui rétrécissent (corps des 3 dernières < 60 % de celui des 10 précédentes), mèche de rejet (>= 2 fois le corps).
+
+Un message par sweep, avec l'invalidation (l'extrême du sweep). Pas d'alerte pour les indices synthétiques. Réglages : `REVERSAL_ALERTS=0`
+la désactive, `REVERSAL_MIN_SIGNS` (1 à 3), et les constantes de `reversal.py` (`AGES`, `SWEEP_BARS`, `FRESH_BARS`, `FADE_RATIO`...).
+Attendre la cassure du H4 pour confirmer : un retournement signalé peut n'être qu'un repli.

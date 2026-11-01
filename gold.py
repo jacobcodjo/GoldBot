@@ -1,7 +1,7 @@
 """Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH + indices Volatility de Deriv : 5 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
 Stratégies (détail dans STRATEGIES.md) :
-  S1 Pullback (variantes classique / structure) · S2 Cassure de la plage asiatique · S3 Sweep + CHoCH · S4 Mean Reversion
+  S1 Pullback (variantes classique / structure) · S2 Cassure de la plage asiatique · S3 Sweep + CHoCH · S4 Mean Reversion · S6 Chart Patterns
 Un passage = un scan (à déclencher toutes les 5 minutes par un cron externe, voir README.md).
 """
 import json, os, random, sys, time
@@ -16,6 +16,7 @@ import guard as G
 import strategies as S
 import tracker as T
 import trend as TR
+import reversal as REV
 
 APP_ID = os.getenv("DERIV_APP_ID") or "1089"
 # 1) endpoint public Deriv (sans authentification), 2) ancien endpoint en secours.
@@ -102,7 +103,7 @@ def parse_sym_strats(text):
     return out
 
 
-ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit"}   # défaut : ordres limites partout
+ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit", "S6": "limit"}   # défaut : ordres limites partout
 for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S3:market,S4:market"
     _k, _, _v = _p.partition(":")
     _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
@@ -279,7 +280,7 @@ def is_247(sym):
     return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
     """'S2,S3' -> ['S2', 'S3'] ; vide ou absent -> les 4 stratégies (GitHub transmet une chaîne vide si la variable n'existe pas)."""
-    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4"]
+    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4", "S6"]
 
 
 ENABLED = parse_strategies(os.getenv("STRATEGIES"))
@@ -812,6 +813,21 @@ def add_confluence(sig, tr, batch, now):
     return sig
 
 
+def reversal_alert(sym, provide, now, state):
+    """Texte d'une alerte d'information « retournement possible » (voir reversal.py), ou None. Un message par sweep ; ni ordre,
+    ni suivi, ni contrôle de risque. Pas pour les indices synthétiques (prix aléatoire, pas de niveaux qui comptent)."""
+    if not REV.ENABLED or G.is_synthetic(sym):
+        return None
+    rev = REV.detect(provide, now)
+    if not rev:
+        return None
+    key = f"REV|{sym}|{rev['dir']}|{rev['epoch']}"
+    if key in state:
+        return None
+    state[key] = int(now)
+    return REV.message(rev, name_of(sym), dec_of(sym), alert_clock(now))
+
+
 def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
     """Filtres horaires, contrôles de risque, envoi (graphique + boutons Pris / Ignoré), enregistrement."""
     sent[sig["key"]] = int(now)   # un setup bloqué ou alerté n'est jamais réexaminé
@@ -1278,6 +1294,9 @@ def main():
                 for sig, ltf in found:
                     add_confluence(sig, tr, viable, now)
                     emit_alert(sig, ltf, tr, g, state, funnel, now)
+                text = reversal_alert(sym, provide, now, state)
+                if text:
+                    notify(text)
             except Exception as ex:      # un actif en échec ne doit pas bloquer les autres
                 print(f"{name_of(sym)} ignoré : {str(ex)[:100]}")
         G.health_end(g, BOT, funnel["data"] > 0, now, notify)

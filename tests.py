@@ -242,8 +242,8 @@ class Messages(unittest.TestCase):
         self.assertEqual(gold.age_txt({"age_min": 0.2}), "à l'instant")
 
     def test_variables_vides(self):
-        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4"])      # variable GitHub non définie
-        self.assertEqual(gold.parse_strategies(None), ["S1", "S2", "S3", "S4"])
+        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4", "S6"])      # variable GitHub non définie
+        self.assertEqual(gold.parse_strategies(None), ["S1", "S2", "S3", "S4", "S6"])
         self.assertEqual(gold.parse_strategies("S1,S5,S3"), ["S1", "S3"])               # ancien code S5 = Pullback (S1), sans doublon
         self.assertEqual(gold.parse_strategies(" s2 , S3 "), ["S2", "S3"])
 
@@ -2019,6 +2019,252 @@ class RecapCompact(unittest.TestCase):
 
     def test_format_par_defaut_compact(self):
         self.assertEqual(gold.RECAP_FORMAT, "compact")
+
+
+class RetournementPossible(unittest.TestCase):
+    """Alerte d'information : tendance H4 mûre + sweep H1 sur un niveau majeur + cassure de structure + essoufflement."""
+
+    @staticmethod
+    def h1_sweep():
+        cs = []
+
+        def add(o, hi, lo, cl):
+            cs.append({"epoch": 1_790_000_000 + len(cs) * 3600, "open": o, "high": hi, "low": lo, "close": cl})
+        for i in range(60):                                   # hausse régulière, corps de 0,5, sans fractale
+            p = 100 + 0.17 * i
+            add(p, p + 0.7, p - 0.2, p + 0.5)
+        add(110.0, 112.0, 109.6, 110.4)                        # 60 : sommet qui sera pris
+        add(110.4, 110.8, 109.9, 110.3)
+        add(110.3, 110.7, 109.8, 110.2)
+        add(110.2, 110.6, 109.4, 110.1)
+        add(110.1, 110.5, 108.0, 110.2)                        # 64 : creux
+        add(110.2, 110.6, 110.2, 110.3)
+        add(110.3, 110.7, 110.0, 110.4)
+        add(110.4, 110.9, 109.6, 110.5)                        # 67 : creux de structure (pivot 109,6)
+        add(110.5, 111.0, 110.3, 110.6)
+        add(111.3, 113.0, 111.0, 111.2)                        # 69 : sweep du sommet 112, mèche haute longue
+        add(111.2, 111.4, 109.3, 109.4)                        # 70 : clôture sous le pivot
+        add(109.4, 109.8, 109.2, 109.5)                        # 71 : en formation
+        return cs
+
+    OBS_UP = {"res": [(112.0, 112.0, "sommet H4")], "sup": [], "atr": 1.0}
+    TREND_UP = {"dir": "BUY", "age": "mûre", "legs": 5, "start_epoch": 1, "invalid": 100.0, "impulsive": False}
+
+    def run_detect(self, h1=None, trend="up", obs="up", **patch):
+        from unittest import mock
+        import reversal as R
+        h1 = h1 or self.h1_sweep()
+        now = h1[-1]["epoch"] + 600
+        provide = lambda tf: {"H4": h1[::4] or h1, "H1": h1, "D1": None}[tf]
+        info = self.TREND_UP if trend == "up" else trend
+        obstacles = self.OBS_UP if obs == "up" else obs
+        with mock.patch.object(R.TR, "trend_info", lambda c, tf=None: info), \
+                mock.patch.object(R.S, "htf_obstacles", lambda pr, n: obstacles), \
+                (mock.patch.multiple(R, **patch) if patch else __import__("contextlib").nullcontext()):
+            return R.detect(provide, now)
+
+    def test_retournement_baissier_apres_tendance_haussiere_mure(self):
+        rev = self.run_detect()
+        self.assertIsNotNone(rev)
+        self.assertEqual((rev["dir"], rev["trend_dir"], rev["age"]), ("SELL", "BUY", "mûre"))
+        self.assertEqual(rev["level"], (112.0, "sommet H4"))
+        self.assertEqual((rev["ext"], rev["pivot"]), (113.0, 109.6))
+        self.assertEqual(rev["signs"], ["divergence RSI H1", "bougies qui rétrécissent", "mèche de rejet"])
+
+    def test_retournement_haussier_apres_tendance_baissiere_mure(self):
+        mirror = S._s5_flip(self.h1_sweep())                   # même scénario en miroir : creux pris, remontée
+        obs = {"res": [], "sup": [(-112.0, -112.0, "creux H4")], "atr": 1.0}
+        trend = dict(self.TREND_UP, dir="SELL")
+        rev = self.run_detect(mirror, trend=trend, obs=obs)
+        self.assertIsNotNone(rev)
+        self.assertEqual((rev["dir"], rev["trend_dir"]), ("BUY", "SELL"))
+        self.assertEqual((rev["level"][0], rev["ext"], rev["pivot"]), (-112.0, -113.0, -109.6))
+
+    def test_pas_d_alerte_sans_tendance_mure_ou_apres_cassure_du_h4(self):
+        self.assertIsNone(self.run_detect(trend=dict(self.TREND_UP, age="établie")))
+        self.assertIsNone(self.run_detect(trend=dict(self.TREND_UP, age="naissante")))
+        self.assertIsNone(self.run_detect(trend=None))                                # le H4 a déjà cassé : trop tard
+
+    def test_niveau_majeur_exige(self):
+        mineur = {"res": [(112.0, 112.0, "sommet H1")], "sup": [], "atr": 1.0}
+        loin = {"res": [(120.0, 120.0, "sommet H4")], "sup": [], "atr": 1.0}
+        self.assertIsNone(self.run_detect(obs=mineur))
+        self.assertIsNone(self.run_detect(obs=loin))
+        self.assertIsNone(self.run_detect(obs=None))
+        self.assertIsNotNone(self.run_detect(obs=mineur, REQUIRE_LEVEL=False))
+        veille = {"res": [(112.2, 112.2, "plus haut de la veille")], "sup": [], "atr": 1.0}
+        self.assertEqual(self.run_detect(obs=veille)["level"][1], "plus haut de la veille")
+
+    def test_signes_d_essoufflement_minimaux(self):
+        self.assertIsNone(self.run_detect(MIN_SIGNS=4))                               # 3 signes seulement
+        self.assertIsNotNone(self.run_detect(MIN_SIGNS=3))
+
+    def test_cassure_trop_ancienne_donnees_anciennes_ou_sommet_deja_pris(self):
+        h1 = self.h1_sweep()
+        for k in range(3):                                                            # 3 bougies de plus : la cassure date de 4 bougies
+            h1.insert(-1, {"epoch": h1[-2]["epoch"] + 3600, "open": 109.4, "high": 109.6, "low": 109.0, "close": 109.3})
+            h1[-1]["epoch"] += 3600
+        self.assertIsNone(self.run_detect(h1))
+        import reversal as R
+        h = self.h1_sweep()
+        self.assertIsNone(R.find_reversal(h[:30]))                                    # historique trop court
+        pris = self.h1_sweep()
+        pris[68] = dict(pris[68], high=112.6, close=112.3)                            # le sommet 112 a déjà été dépassé (clôture au-dessus)
+        self.assertIsNone(R.find_reversal(pris[:-1]))
+
+    def test_marche_ferme(self):
+        from unittest import mock
+        import reversal as R
+        h1 = self.h1_sweep()
+        with mock.patch.object(R.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
+                mock.patch.object(R.S, "htf_obstacles", lambda pr, n: self.OBS_UP):
+            self.assertIsNone(R.detect(lambda tf: h1, h1[-1]["epoch"] + 3 * 86400))    # week-end : données H1 anciennes
+
+    def test_indicateurs(self):
+        import reversal as R
+        h = self.h1_sweep()[:-1]
+        plat = [dict(c, open=100.0, close=100.5) for c in h]                          # corps constants : pas de rétrécissement
+        self.assertFalse(R.shrinking_candles(plat, 69))
+        self.assertTrue(R.shrinking_candles(h, 69))
+        self.assertFalse(R.shrinking_candles(h, 5))                                   # pas assez d'historique
+        self.assertTrue(R.rejection_wick({"open": 111.3, "high": 113.0, "low": 111.0, "close": 111.2}))
+        self.assertFalse(R.rejection_wick({"open": 100.0, "high": 101.0, "low": 99.5, "close": 100.9}))
+        self.assertFalse(R.rejection_wick({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}))
+        up = [{"epoch": i, "open": 100 + i, "high": 101 + i, "low": 99.5 + i, "close": 100.8 + i} for i in range(40)]
+        self.assertFalse(R.rsi_divergence(up, 30, 39))                                # RSI au plus haut avec le prix : pas de divergence
+        self.assertFalse(R.rsi_divergence(up, 39, 30))                                # ordre invalide
+        self.assertTrue(R.rsi_divergence(h, 60, 69))
+
+    def test_message(self):
+        import reversal as R
+        rev = self.run_detect()
+        txt = R.message(rev, "XAUUSD", 2, "08h15 Bénin")
+        self.assertTrue(txt.startswith("🔄 Retournement possible · XAUUSD · baissier"))
+        for part in ("tendance H4 haussier mûre (5 jambes)", "sommet H1 112.00 (sommet H4)", "extrême 113.00",
+                     "sous le dernier creux (109.60)", "divergence RSI H1 · bougies qui rétrécissent · mèche de rejet",
+                     "Invalidation : retour au-dessus de 113.00", "aucun ordre, aucun suivi", "08h15 Bénin"):
+            self.assertIn(part, txt)
+        buy = dict(rev, dir="BUY", trend_dir="SELL")
+        self.assertIn("haussier", R.message(buy, "EURUSD", 5).split("\n")[0])
+        self.assertIn("au-dessus du dernier sommet", R.message(buy, "EURUSD", 5))
+        self.assertIn("retour en dessous de", R.message(buy, "EURUSD", 5))
+
+    def test_une_seule_alerte_par_sweep_pas_de_synthetiques_et_desactivable(self):
+        from unittest import mock
+        h1 = self.h1_sweep()
+        now = h1[-1]["epoch"] + 600
+        provide = lambda tf: h1
+        state = {}
+        with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
+                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP):
+            text = gold.reversal_alert("frxXAUUSD", provide, now, state)
+            self.assertIn("🔄 Retournement possible · XAUUSD", text)
+            self.assertEqual(len(state), 1)
+            self.assertIsNone(gold.reversal_alert("frxXAUUSD", provide, now + 300, state))   # déjà signalé
+            self.assertIsNone(gold.reversal_alert("R_100", provide, now, {}))                 # indices synthétiques : non
+            with mock.patch.object(gold.REV, "ENABLED", False):
+                self.assertIsNone(gold.reversal_alert("frxEURUSD", provide, now, {}))
+        self.assertTrue(gold.REV.ENABLED)                                                    # activée par défaut
+
+
+class ChartPatterns(unittest.TestCase):
+    """S6 Chart Patterns : figure H1 détectée, cassure confirmée en M15 (données synthétiques, sans réseau)."""
+    T0 = 1_800_000_000 - (1_800_000_000 % 14400)
+
+    def setUp(self):                                    # les séries synthétiques sont plus volatiles (en ATR) que les marchés réels
+        import patterns
+        from unittest import mock
+        p = mock.patch.object(patterns, "S6_RISK_CAP_ATR", 12.0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    @staticmethod
+    def m15_series(way, seed=1, noise=0.04, flip=False):
+        """M15 construites par interpolation de points (indice H1, prix) : chaque point H1 vaut 4 bougies M15."""
+        rnd = random.Random(seed)
+        pts = sorted((i * 4, p) for i, p in way)
+        c = []
+        for (i1, p1), (i2, p2) in zip(pts, pts[1:]):
+            c += [p1 + (p2 - p1) * (i - i1) / (i2 - i1) for i in range(i1, i2)]
+        c.append(pts[-1][1])
+        c = [x + rnd.uniform(-noise, noise) for x in c]
+        if flip:
+            c = [200 - x for x in c]
+        o = [c[0]] + c[:-1]
+        return [{"epoch": ChartPatterns.T0 + 900 * i, "open": a, "high": max(a, b) + 0.12, "low": min(a, b) - 0.12, "close": b}
+                for i, (a, b) in enumerate(zip(o, c))]
+
+    @staticmethod
+    def agg(m15, size, upto):
+        """Bougies de `size` M15 ; la dernière est la bougie en formation (construite jusqu'à la M15 d'indice upto)."""
+        out = []
+        for g in range(0, upto + 1, size):
+            grp = m15[g:min(g + size, upto + 1)]
+            out.append({"epoch": grp[0]["epoch"], "open": grp[0]["open"], "high": max(x["high"] for x in grp),
+                        "low": min(x["low"] for x in grp), "close": grp[-1]["close"]})
+        return out
+
+    def replay(self, way, flip=False, mode="market", start=420):
+        m15 = self.m15_series(way, flip=flip)
+        for e in range(start, len(m15) - 1):
+            provide = lambda tf, force=False, _e=e: {"M15": m15[:_e + 1], "H1": self.agg(m15, 4, _e), "H4": self.agg(m15, 16, _e)}[tf]
+            funnel = Counter()
+            sigs = S.scan_s6(provide, m15[e]["epoch"] + 900, funnel, 2, True, mode)
+            if sigs:
+                return sigs, funnel
+        return None, None
+
+    DOUBLE_TOP = [(0, 80), (60, 90), (100, 100), (115, 94), (130, 100), (155, 88), (180, 84)]
+
+    def test_double_sommet_vente(self):
+        sigs, funnel = self.replay(self.DOUBLE_TOP)
+        self.assertIsNotNone(sigs)
+        sig = sigs[0]
+        self.assertEqual((sig["strat"], sig["label"], sig["dir"]), ("S6", "Chart Patterns", "SELL"))
+        self.assertEqual(sig["extra"]["figure"], "Double sommet")
+        self.assertEqual(sig["extra"]["famille"], "retournement")
+        self.assertEqual(sig["ltf"], "M15")
+        self.assertGreater(sig["sl"], sig["entry"])
+        self.assertTrue(sig["entry"] > sig["tp1"] > sig["tp2"] > sig["tp3"])
+        self.assertGreaterEqual(funnel["S6_cassure"], 1)
+
+    def test_double_creux_achat_miroir(self):
+        sigs, _ = self.replay(self.DOUBLE_TOP, flip=True)
+        self.assertIsNotNone(sigs)
+        sig = sigs[0]
+        self.assertEqual((sig["dir"], sig["extra"]["figure"]), ("BUY", "Double creux"))
+        self.assertLess(sig["sl"], sig["entry"])
+        self.assertTrue(sig["entry"] < sig["tp1"] < sig["tp2"] < sig["tp3"])
+
+    def test_ordre_limite_au_retest(self):
+        sigs, _ = self.replay(self.DOUBLE_TOP, mode="limit")
+        sig = sigs[0]
+        if sig["otype"] != sig["dir"]:                      # ordre limite posé au retest de la ligne cassée
+            self.assertEqual(sig["otype"], "SELL LIMIT")
+            self.assertGreater(sig["entry"], sig["price_now"])
+            self.assertEqual(sig["ttl"], S.LIMIT_TTL["S6"])
+
+    def test_tete_epaules(self):
+        way = [(0, 80), (60, 90), (90, 100), (100, 95), (115, 105), (130, 95.5), (142, 100.5), (170, 90), (190, 85)]
+        sigs, _ = self.replay(way)
+        self.assertIsNotNone(sigs)
+        self.assertEqual(sigs[0]["extra"]["figure"], "Tête et épaules")
+
+    def test_pas_de_signal_sans_figure(self):
+        rnd = random.Random(3)
+        way = [(i, 100 + rnd.uniform(-0.3, 0.3)) for i in range(0, 200)]      # bruit autour d'un niveau
+        sigs, _ = self.replay(way, start=420)
+        self.assertIsNone(sigs)
+
+    def test_donnees_insuffisantes(self):
+        self.assertIsNone(S.scan_s6(lambda tf, force=False: [], 0, Counter()))
+
+    def test_enregistree_dans_le_bot(self):
+        self.assertIn("S6", dict(S.STRATEGIES))
+        self.assertEqual(S.STRAT_LABELS["S6"], "Chart Patterns")
+        self.assertEqual(gold.LABEL_CODE["Chart Patterns"], "S6")
+        self.assertEqual(gold.ENTRY_MODES["S6"], "limit")
+        self.assertIn("S6_signal", G.FUNNEL_ORDER)
 
 
 if __name__ == "__main__":
