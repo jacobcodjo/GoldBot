@@ -330,7 +330,7 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
     funnel["S6_signal"] += 1
     fam = d["kind"]
     return S._signal(
-        "S6", "Chart Patterns", dr, entry, lv, m15, "M15", f"{d['name']}|{tf}|{cur['epoch']}",
+        "S6", "Figures & Retournement", dr, entry, lv, m15, "M15", f"{d['name']}|{tf}|{cur['epoch']}",
         [f"✅ Figure {tf} : {d['name']} ({fam})",
          f"✅ Cassure confirmée en M15 ({'sous' if dr == 'SELL' else 'au-dessus de'} la ligne)",
          f"✅ Objectif = hauteur de la figure ({d['height']:.{dec}f})"]
@@ -340,12 +340,12 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
         inval=sl, short=f"{d['name']} {tf} · {fam}", trig=cur["epoch"], otype=otype, price_now=price,
         ttl=S6_LIMIT_TTL if otype != dr else None,
         entry_note=f"Ordre limite au retest de la ligne cassée ({entry:.{dec}f})" if otype != dr else "",
-        extra=dict({"figure": d["name"], "famille": fam, "tf_figure": tf},
+        extra=dict({"origine": "figure", "figure": d["name"], "famille": fam, "tf_figure": tf},
                    **({"confluence_retournement": conf} if conf is not None else {})))
 
 
 def scan_s6(provide, now, funnel, dec=2, kz=True, mode="market"):
-    """S6 Chart Patterns : figures H1 / H4, cassure confirmée en M15. Retourne une liste de signaux (au plus un par sens), ou None.
+    """S6 Figures & Retournement : figures H1 / H4 (cassure confirmée en M15) et retournement possible (ex-S7). Retourne une liste de signaux (au plus un par sens), ou None.
     `kz` n'a pas d'effet : la confirmation n'est pas limitée à des heures de session."""
     import strategies as S
     m15 = provide("M15")
@@ -386,4 +386,13 @@ def scan_s6(provide, now, funnel, dec=2, kz=True, mode="market"):
                     best[sig["dir"]] = sig
     for sig in best.values():
         sig.pop("rr_tp3", None)
-    return list(best.values()) or None
+    out = list(best.values())
+    # Partie « retournement » (ex-S7) : le même événement (sweep d'un niveau majeur + cassure de structure H1) en ordre. Si une figure de
+    # retournement a déjà donné un signal dans ce sens, c'est elle qui le porte (avec sa confluence) : un seul signal par sens.
+    rev = rev_fn()
+    if rev and rev["dir"] not in best:
+        import reversal
+        sig = reversal.reversal_signal(provide, now, funnel, dec, mode, rev=rev)
+        if sig:
+            out.append(sig)
+    return out or None

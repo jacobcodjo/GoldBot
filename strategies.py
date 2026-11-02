@@ -3,8 +3,7 @@
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
 
-  S1  Pullback                    H4 (tendance) > H1 (repli 50-79 %) > M15 ; deux variantes (PULLBACK_VARIANT) : « classique » (EMA/ADX,
-                                  cassure M15, objectifs 1-2-3 R) et « structure » (structure H4, sweep, FVG/bloc d'ordre, objectifs sur extensions)
+  S1  Pullback                    structure HTF > impulsion + repli Fibonacci 50-79 % > entrée LTF (sweep, FVG/bloc d'ordre ; objectifs sur extensions)
   S2  Asian Breakout                  M15, fenêtre 02h00-07h00 New York
   S3  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
   S4  Mean Reversion                  H1 (régime) > M15 (rejet des bandes de Bollinger)
@@ -15,6 +14,8 @@ import os
 import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from smc import body, mean_body, is_displacement, wick_sweep, close_beyond, fresh_break, mirror   # primitives SMC communes (S1 structure, S3, zones d'entrée)
 
 NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
@@ -32,16 +33,7 @@ VOL_LOOKBACK = 240        # fenêtre (en bougies H1) de la médiane de l'ATR
 
 KILLZONES_NY = [("Asie", 20, 24), ("Asie", 0, 2), ("Londres", 2, 5), ("New York", 7, 10), ("London Close", 10, 12)]
 
-# --- S1 Trend Pullback ---
-S1_EMA_FAST, S1_EMA_SLOW = 50, 200     # EMA du H4
-S1_ADX_MIN = 18                        # ADX(14) du H4 minimal : écarte les marchés sans direction
-S1_SWING_H4 = 2                        # fractale H4 : 2 bougies de chaque côté
-S1_SWING_H1 = 3                        # fractale H1 : 3 bougies de chaque côté
-S1_LEG_BARS = 24                       # la jambe démarre au plus bas (haut) des 24 H1 qui précèdent le sommet (creux)
-S1_LEG_MIN_ATR, S1_LEG_MAX_ATR = 1.5, 5.0   # taille de la jambe impulsive H1, en ATR H1
-S1_FIB_MIN, S1_FIB_MAX = 0.50, 0.79    # le repli doit atteindre 50 % et ne pas dépasser 79 % de la jambe (comme S5 et la zone dessinée)
-S1_ZONE = (0.50, 0.79)                 # zone de repli affichée (50 % - 79 %)
-S1_RISK_CAP_H1 = 1.5                   # risque maximal : 1,5 x ATR H1
+H4_EMA_FAST = 50                       # EMA du H4 utilisée par le filtre de S2 (h4_ema_bias)
 
 # --- S2 Cassure de la plage asiatique ---
 S2_RANGE_MIN_ATR, S2_RANGE_MAX_ATR = 0.4, 2.0   # taille de la plage asiatique, en ATR H1
@@ -67,18 +59,7 @@ S4_HOURS = [(20, 26), (11, 15)]        # 20h-02h et 11h-15h New York (26 = 02h d
 S4_MIN_RR1, S4_MIN_RR2 = 0.8, 1.5      # ratios minimaux vers TP1 et TP2
 S4_RISK_CAP_H1 = 1.0
 
-# --- Pullback, variante « structure » (ex-S5 Impulsion + retracement Fibonacci, portée du crt-bot : impulse.py) ---
-PULLBACK_VARIANTS = ("classique", "structure", "auto")
-
-
-def parse_variant(text, default="auto"):
-    """'classique' (ex-S1 : EMA 50/200 + ADX, cassure M15, objectifs 1-2-3 R), 'structure' (ex-S5 : structure H4, sweep, FVG / bloc
-    d'ordre, objectifs sur l'impulsion) ou 'auto' (les deux, la variante structure d'abord). Vide ou invalide -> auto."""
-    v = (text or "").strip().lower()
-    return v if v in PULLBACK_VARIANTS else default
-
-
-PULLBACK_VARIANT = parse_variant(os.getenv("PULLBACK_VARIANT"))
+# --- S1 Pullback (ex-S5 Impulsion + retracement Fibonacci, portée du crt-bot : impulse.py ; l'ancienne variante « classique » EMA/ADX est supprimée) ---
 try:
     S5_ADX_MIN = float(os.getenv("PULLBACK_ADX_MIN") or 0)   # ADX(14) H4 minimal de la variante structure (0 = désactivé, comme avant)
 except ValueError:
@@ -121,13 +102,9 @@ S5_RISK_CAP_H1 = 0                     # plafond de risque en ATR H1 (0 = aucun,
 # ==========================================================================
 # Indicateurs
 # ==========================================================================
-def body(c):
-    return abs(c["close"] - c["open"])
-
-
 def body_avg(cs, n=20):
     cs = cs[-n:]
-    return sum(body(c) for c in cs) / len(cs) if cs else 0.0
+    return mean_body(cs)
 
 
 def atr(cs, n=ATR_N):
@@ -270,7 +247,7 @@ def is_late(d, price, trig_close, a_ltf):
 LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
 LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
 LIMIT_MAX_ATR = 1.5         # zone d'entrée à plus de 1,5 ATR du prix actuel : signal écarté (trop de retracement requis)
-LIMIT_TTL = {"S1": 7200, "S2": 10800, "S3": 3600, "S4": 5400, "S5": 86400, "S6": 10800, "S7": 7200}   # validité de l'ordre limite, en secondes
+LIMIT_TTL = {"S2": 10800, "S3": 3600, "S4": 5400, "S5": 86400, "S6": 10800}   # validité de l'ordre limite, en secondes
 
 
 def ob_zone(cs, lo_i, hi_i, d):
@@ -302,7 +279,7 @@ def fvg_zone(cs, lo_i, d):
             gap = (b["high"], a["low"])
         else:
             continue
-        if avg > 0 and body(m) < DISP_MULT * avg:
+        if avg > 0 and not is_displacement(m, avg, DISP_MULT):
             continue
         later = cs[i + 2:]
         if (d == "BUY" and any(c["low"] <= gap[0] for c in later)) or \
@@ -373,122 +350,10 @@ def _signal(strat, label, d, price, lv, ltf, ltf_n, key, details, **kw):
 def h4_ema_bias(h4):
     """+1 si le dernier H4 clôturé est au-dessus de l'EMA 50, -1 sinon, 0 si inconnu."""
     closes = [c["close"] for c in h4[:-1]]
-    e = ema(closes, S1_EMA_FAST)[-1] if closes else None
+    e = ema(closes, H4_EMA_FAST)[-1] if closes else None
     if e is None:
         return 0
     return 1 if closes[-1] > e else -1
-
-
-# ==========================================================================
-# S1  Trend Pullback
-# ==========================================================================
-def s1_trend(h4c):
-    """'BUY' / 'SELL' / None. Tendance haussière : EMA50 > EMA200, clôture > EMA200, ADX >= 18 et dernier
-    creux H4 plus haut que le précédent. Baissière : l'inverse (sommet plus bas)."""
-    if len(h4c) < S1_EMA_SLOW + 10:
-        return None
-    closes = [c["close"] for c in h4c]
-    fast, slow = ema(closes, S1_EMA_FAST)[-1], ema(closes, S1_EMA_SLOW)[-1]
-    a = adx(h4c)
-    if fast is None or slow is None or a is None or a < S1_ADX_MIN:
-        return None
-    if fast > slow and closes[-1] > slow:
-        lows = swings(h4c, "low", S1_SWING_H4)
-        if len(lows) >= 2 and h4c[lows[-1]]["low"] > h4c[lows[-2]]["low"]:
-            return "BUY"
-    if fast < slow and closes[-1] < slow:
-        highs = swings(h4c, "high", S1_SWING_H4)
-        if len(highs) >= 2 and h4c[highs[-1]]["high"] < h4c[highs[-2]]["high"]:
-            return "SELL"
-    return None
-
-
-def scan_s1(provide, now, funnel, dec=2, kz=True, mode="market"):
-    h4, h1, m15 = provide("H4"), provide("H1"), provide("M15")
-    if not (h4 and h1 and m15):
-        return None
-    h4c, h1c, m15c = h4[:-1], h1[:-1], m15[:-1]
-    d = s1_trend(h4c)
-    if d is None or len(h1c) < 60 or len(m15c) < 40:
-        return None
-    funnel["S1_tendance"] += 1
-    buy = d == "BUY"
-    a_h1, a_m15 = atr(h1c), atr(m15c)
-    if a_h1 <= 0 or a_m15 <= 0:
-        return None
-    # --- jambe impulsive H1 : dernier swing (sommet si achat) et swing opposé qui le précède ---
-    hk, lk = ("high", "low") if buy else ("low", "high")
-    tops = swings(h1c, hk, S1_SWING_H1)
-    if not tops:
-        return None
-    ti = tops[-1]
-    if len(h1c) - 1 - ti > 48:
-        return None                                  # sommet trop ancien
-    top = h1c[ti][hk]
-    if any((c["high"] > top) if buy else (c["low"] < top) for c in h1c[ti + 1:]):
-        return None                                  # nouvel extrême en cours : on attend sa confirmation
-    window = h1c[max(0, ti - S1_LEG_BARS):ti + 1]          # la jambe démarre au plus bas (haut) des 24 H1 précédents
-    base = min(c["low"] for c in window) if buy else max(c["high"] for c in window)
-    leg = abs(top - base)
-    if not (S1_LEG_MIN_ATR * a_h1 <= leg <= S1_LEG_MAX_ATR * a_h1):
-        return None
-    # --- repli : extrême atteint depuis le sommet (M15 clôturées après la clôture de la bougie H1 du sommet) ---
-    after = [(i, c) for i, c in enumerate(m15c) if c["epoch"] >= h1c[ti]["epoch"] + GRAN["H1"]]
-    if len(after) < 4:
-        return None
-    pb_i, pb = (min(after, key=lambda x: (x[1]["low"], -x[0])) if buy
-                else max(after, key=lambda x: (x[1]["high"], x[0])))
-    pb_px = pb["low"] if buy else pb["high"]
-    retr = abs(top - pb_px) / leg
-    if not (S1_FIB_MIN <= retr <= S1_FIB_MAX):
-        return None
-    funnel["S1_repli"] += 1
-    # --- déclencheur M15 : cassure du dernier swing contraire formé pendant le repli ---
-    sk = "high" if buy else "low"
-    piv = [i for i in swings(m15c, sk, 2) if i < pb_i and m15c[i]["epoch"] > h1c[ti]["epoch"]]
-    if not piv:
-        return None
-    level = m15c[piv[-1]][sk]
-    avg = body_avg(m15c[-21:-1])
-    trig = None
-    for i in range(pb_i + 1, len(m15c)):
-        c = m15c[i]
-        if (c["close"] > level) if buy else (c["close"] < level):
-            trig = i
-            break
-    if trig is None or trig < len(m15c) - FRESH:
-        return None
-    tc = m15c[trig]
-    if body(tc) < DISP_MULT * avg:
-        return None
-    price = m15[-1]["close"]
-    sl = pb_px - BUF_ATR * a_m15 if buy else pb_px + BUF_ATR * a_m15
-    poi = entry_zone(m15c, pb_i, trig - 1, d)
-    otype, entry = pick_entry(d, price, poi[0] if poi else None, sl, mode)
-    if otype != d:
-        if abs(price - entry) > LIMIT_MAX_ATR * a_m15:
-            funnel["stale"] += 1                      # zone d'entrée trop loin du prix
-            return None
-    elif is_late(d, price, tc["close"], a_m15):
-        funnel["stale"] += 1
-        return None
-    lv = build_levels(d, entry, sl, a_m15, a_h1, S1_RISK_CAP_H1)
-    if lv is None:
-        return None
-    funnel["S1_signal"] += 1
-    zone = sorted([top - S1_ZONE[0] * leg, top - S1_ZONE[1] * leg]) if buy else \
-        sorted([top + S1_ZONE[0] * leg, top + S1_ZONE[1] * leg])
-    return _signal(
-        "S1", "Trend Pullback", d, entry, lv, m15, "M15", f"{h1c[ti]['epoch']}|{pb['epoch']}|{tc['epoch']}",
-        [f"✅ Tendance H4 {'haussière' if buy else 'baissière'} (EMA 50/200, ADX {adx(h4c):.0f})",
-         f"✅ Repli H1 à {retr * 100:.0f} % de la jambe ({top:.{dec}f} → {base:.{dec}f})",
-         f"✅ Cassure de structure M15 à {level:.{dec}f}"],
-        lines=[{"y": level, "label": "Cassure", "kind": "range"}, {"y": pb_px, "label": "Repli", "kind": "sweep"}],
-        zones=[{"lo": zone[0], "hi": zone[1], "label": "Fib 50-79 %", "kind": "fib"}],
-        inval=pb_px, extra={"retr": round(retr, 2), "poi": poi[1] if otype != d else "marché"},
-        short=f"Repli H1 {retr * 100:.0f} % · cassure M15", trig=tc["epoch"], otype=otype, price_now=price,
-        ttl=LIMIT_TTL["S1"] if otype != d else None,
-        entry_note=poi_note(poi, "M15", dec) if otype != d else "")
 
 
 # ==========================================================================
@@ -520,7 +385,7 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
     rng = tc["high"] - tc["low"]
     strong = rng > 0 and ((tc["close"] - tc["low"]) / rng >= S2_CLOSE_STRENGTH if d == "BUY"
                           else (tc["high"] - tc["close"]) / rng >= S2_CLOSE_STRENGTH)
-    if not strong or body(tc) < DISP_MULT * body_avg(m15c[-21:-1]):
+    if not strong or not is_displacement(tc, body_avg(m15c[-21:-1]), DISP_MULT):
         return None
     bias = h4_ema_bias(h4)
     if S2_H4_FILTER and bias != (1 if d == "BUY" else -1):
@@ -619,7 +484,7 @@ def htf_zones(cs, d, tf, before, untouched=None):
     for j in range(max(21, len(cs) - S3_HTF_BARS[tf]), len(cs)):
         c = cs[j]
         avg = body_avg(cs[j - 20:j])
-        if (c["close"] > c["open"]) != (d == "BUY") or avg <= 0 or body(c) < DISP_MULT * avg:
+        if (c["close"] > c["open"]) != (d == "BUY") or avg <= 0 or not is_displacement(c, avg, DISP_MULT):
             continue
         prev = cs[max(0, j - 5):j]
         if (d == "BUY" and c["close"] <= max(x["high"] for x in prev)) or \
@@ -707,11 +572,10 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
             c = m15c[i]
             if S3_FRESH_LEVELS and c["epoch"] < t0:
                 continue
-            swept = (c["high"] > px and c["close"] < px) if kind == "high" else (c["low"] < px and c["close"] > px)
-            if not swept:
+            if not wick_sweep(c, px, kind):
                 continue
             later = m15c[i + 1:]
-            if any((x["close"] > px) if kind == "high" else (x["close"] < px) for x in later):
+            if any(close_beyond(x, px, kind == "high") for x in later):
                 continue                              # le niveau a été franchi pour de bon
             if S3_FRESH_LEVELS and level_taken(m15c, px, kind, t0, upto=i):
                 continue                              # liquidité déjà prise avant cette bougie : plus de stops à balayer
@@ -752,11 +616,11 @@ def _s3_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     pivot = cfc[piv[-1]][pk]
     avg = body_avg(cfc[-21:-1])
     trig = next((i for i in range(ext_i + 1, len(cfc))
-                 if ((cfc[i]["close"] < pivot) if d == "SELL" else (cfc[i]["close"] > pivot))), None)
+                 if close_beyond(cfc[i], pivot, d == "BUY")), None)
     if trig is None or trig < len(cfc) - FRESH:
         return None
     tc = cfc[trig]
-    if body(tc) < DISP_MULT * avg:
+    if not is_displacement(tc, avg, DISP_MULT):
         return None
     sess = session_name(tc["epoch"])
     if kz and sess not in S3_SESSIONS:
@@ -832,7 +696,7 @@ def _s3_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
 # ==========================================================================
 # Cadre intraday : obstacles majeurs H4 / H1
 # ==========================================================================
-OBST_ENTRY_STRATS = ("S1", "S3")  # entrent sur réaction à un niveau ; S2 (cassure de plage), S4 (range H1), S6 et S7 (retest de leur propre ligne) en sont exemptées
+OBST_ENTRY_STRATS = ("S1", "S3")  # entrent sur réaction à un niveau ; S2 (cassure de plage), S4 (range H1), S6 (retest de sa propre ligne ou du creux/sommet cassé) en sont exemptées
 OBST_TOL_ATR = 0.5                      # l'entrée doit être à moins de 0,5 ATR H1 d'un niveau (ou dans une zone) du bon côté
 OBST_MIN_RR = 1.0                       # obstacle opposé à moins de 1 R de l'entrée : signal écarté
 OBST_BUF_ATR = 0.1                      # TP1 placé 0,1 ATR H1 avant l'obstacle
@@ -1003,16 +867,6 @@ def scan_s4(provide, now, funnel, dec=2, kz=True, mode="market"):
 # ==========================================================================
 # S5  Impulsion + retracement Fibonacci (zone 50-79 %)
 # ==========================================================================
-def _s5_flip(cs):
-    """Miroir des bougies (prix * -1) : les calculs sont écrits pour un achat, la vente passe par ce miroir."""
-    return [{"epoch": c["epoch"], "open": -c["open"], "high": -c["low"], "low": -c["high"], "close": -c["close"]} for c in cs]
-
-
-def _s5_bavg(cs):
-    """Corps moyen d'une liste de bougies (sans plafond de longueur)."""
-    return sum(body(c) for c in cs) / len(cs) if cs else 0.0
-
-
 def s5_trend(htf):
     """Tendance haussière (écrite pour un achat) : {'age', 'legs'} ou None. Même définition que S3 (biais) et que les
     alertes : trend.py (dernier sommet et dernier creux plus hauts, structure intacte, sommet cassé par une clôture)."""
@@ -1057,8 +911,8 @@ def s5_find_impulse(mtf):
         leg = hi - lo
         if leg <= 0 or leg < S5_IMPULSE_ATR * atr(m[:e + 1]):
             continue
-        avg = _s5_bavg(m[max(0, o - 10):o + 1])
-        if avg and max(body(x) for x in m[o + 1:e + 1]) < S5_IMPULSE_DISP * avg:
+        avg = mean_body(m[max(0, o - 10):o + 1])
+        if avg and not any(is_displacement(x, avg, S5_IMPULSE_DISP) for x in m[o + 1:e + 1]):
             continue                                  # pas de déplacement
         if any(x["close"] < hi - S5_ZONE[1] * leg for x in m[e + 1:]):
             return None                               # retracement trop profond (au-delà de 0,79) : setup annulé
@@ -1089,7 +943,7 @@ def s5_find_entry(ltf, imp, mtf_gran, mode="limit"):
     for k in range(touch, len(m)):
         # sweep : la mèche prend un creux (formé pendant le retracement) et referme au-dessus
         levels = [m[s]["low"] for s in swings(m[:k], "low", 2)[-3:]] if k >= 5 else []
-        swept = [lv for lv in levels if m[k]["low"] < lv < m[k]["close"]]
+        swept = [lv for lv in levels if wick_sweep(m[k], lv, "low")]
         if not swept or any(c["close"] < m[k]["low"] for c in m[k + 1:]):
             continue
         for j in range(max(k + 1, len(m) - S5_FRESH), len(m)):
@@ -1097,17 +951,17 @@ def s5_find_entry(ltf, imp, mtf_gran, mode="limit"):
             if not sh:
                 continue
             level = m[sh[-1]]["high"]
-            if not (m[j]["close"] > level and m[j - 1]["close"] <= level):
+            if not fresh_break(m[j], m[j - 1], level, True):
                 continue                              # pas de cassure de structure
-            avg = _s5_bavg(m[max(0, j - 8):j])
-            if avg and body(m[j]) < S5_DISP * avg:
+            avg = mean_body(m[max(0, j - 8):j])
+            if avg and not is_displacement(m[j], avg, S5_DISP):
                 continue                              # pas de déplacement
             i = next((ii for ii in (j, j + 1)
                       if 2 <= ii < len(m) and ii - 1 >= k
                       and m[ii]["low"] > m[ii - 2]["high"]
                       and m[ii]["low"] - m[ii - 2]["high"] >= S5_FVG_MIN_ATR * a
                       and m[ii - 1]["close"] > m[ii - 1]["open"]
-                      and (not avg or body(m[ii - 1]) >= S5_FVG_DISP * avg)), None)
+                      and (not avg or is_displacement(m[ii - 1], avg, S5_FVG_DISP))), None)
             if i is None:
                 continue                              # pas de FVG
             ob_i = next((x for x in range(i - 2, k - 1, -1) if m[x]["close"] < m[x]["open"]), None)
@@ -1192,12 +1046,12 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
         ltf = None
         for d in ("BUY", "SELL"):
             buy = d == "BUY"
-            H, M = (htf, mtf) if buy else (_s5_flip(htf), _s5_flip(mtf))
+            H, M = (htf, mtf) if buy else (mirror(htf), mirror(mtf))
             trend = s5_trend(H)
             if not trend or trend["age"] not in S5_TREND_AGES_OK:
                 continue
             funnel["S5_tendance"] += 1
-            if S5_ADX_MIN:                            # option : même filtre de force de tendance que la variante classique
+            if S5_ADX_MIN:                            # option : filtre de force de tendance (ADX H4)
                 a_htf = adx(H[:-1])
                 if a_htf is None or a_htf < S5_ADX_MIN:
                     continue
@@ -1210,7 +1064,7 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
                 ltf = provide(ltf_n) or []
             if not ltf or now - ltf[-1]["epoch"] > 3 * GRAN[ltf_n]:
                 continue
-            r = s5_find_entry(ltf if buy else _s5_flip(ltf), imp, GRAN[mtf_n], "limit" if mode == "limit" else "market")
+            r = s5_find_entry(ltf if buy else mirror(ltf), imp, GRAN[mtf_n], "limit" if mode == "limit" else "market")
             if not r:
                 continue
             if not buy:
@@ -1251,56 +1105,40 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
 
 
 
-STRAT_LABELS = {"S1": "Pullback", "S2": "Asian Breakout", "S3": "Sweep + CHoCH", "S4": "Mean Reversion", "S6": "Chart Patterns", "S7": "Reversal"}
-# Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback ». Les anciens codes, libellés et
+STRAT_LABELS = {"S1": "Pullback", "S2": "Asian Breakout", "S3": "Sweep + CHoCH", "S4": "Mean Reversion", "S6": "Figures & Retournement"}
+# Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback » ; S6 (Chart Patterns) et S7 (Reversal)
+# en S6 « Figures & Retournement ». Les anciens codes, libellés et
 # trades enregistrés restent reconnus (configuration GitHub, trades en cours dans trades.json).
-STRAT_ALIAS = {"S5": "S1"}
+STRAT_ALIAS = {"S5": "S1", "S7": "S6"}
 STRAT_FAMILY = dict(STRAT_ALIAS)
-LABEL_FAMILY = {"Trend Pullback": "Pullback", "Impulsion": "Pullback"}
+LABEL_FAMILY = {"Trend Pullback": "Pullback", "Impulsion": "Pullback", "Chart Patterns": "Figures & Retournement", "Reversal": "Figures & Retournement"}
 
 
-def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market", variant=None):
-    """S1 Pullback : tendance H4, repli de 50-79 % d'une jambe H1, confirmation M15. Deux variantes (PULLBACK_VARIANT) :
-    'structure' (ex-S5), 'classique' (ex-S1), 'auto' (les deux : la variante structure d'abord ; le garde-fou « un trade par actif,
-    sens et stratégie » écarte le second signal d'un même mouvement). `variant` force la variante pour un actif donné."""
-    v = parse_variant(variant, PULLBACK_VARIANT)
-    out = []
-    if v in ("structure", "auto"):
-        for sig in scan_s5(provide, now, funnel, dec, kz, mode) or []:
-            sig["extra"] = dict(sig["extra"], variante="structure")
-            out.append(sig)
-    if v in ("classique", "auto"):
-        sig = scan_s1(provide, now, funnel, dec, kz, mode)
-        if sig:
-            sig["extra"] = dict(sig["extra"], variante="classique")
-            out.append(sig)
+def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market"):
+    """S1 Pullback : tendance HTF (structure), impulsion MTF, repli de 50-79 % (Fibonacci), entrée LTF (sweep, cassure avec déplacement,
+    FVG, bloc d'ordre). Ex-S5 Impulsion ; l'ancienne variante « classique » (ex-S1, EMA 50/200 + ADX) est supprimée."""
+    out = scan_s5(provide, now, funnel, dec, kz, mode) or []
     for sig in out:
+        sig["extra"] = dict(sig["extra"], variante="structure")
         sig.update(strat="S1", label="Pullback")
     return out
 
 
-def scan_s7(provide, now, funnel, dec=2, kz=True, mode="market"):
-    """S7 Reversal (voir reversal.py) ; import tardif : reversal.py importe ce module."""
-    import reversal
-    return reversal.scan_s7(provide, now, funnel, dec, kz, mode)
-
-
 from patterns import scan_s6   # noqa: E402  (S6 Chart Patterns ; patterns.py importe strategies à l'appel, pas à l'import)
 
-STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4), ("S6", scan_s6), ("S7", scan_s7)]
+STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4), ("S6", scan_s6)]
 
 
-def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None, variants=None):
+def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
     """Évalue les stratégies (toutes, ou celles de `only`) et renvoie les signaux trouvés.
     dec : décimales du prix de l'actif (affichage uniquement).
-    modes : {"S1": "limit"|"market", ...} (défaut : marché). variants : {"S1": "classique"|"structure"|"auto"} (variante de Pullback).
+    modes : {"S1": "limit"|"market", ...} (défaut : marché).
     kz : False pour un actif 24/7 (cryptos) : S3 et S4 ne sont alors pas limitées aux heures de session."""
     out = []
     for name, fn in STRATEGIES:
         if only and name not in only:
             continue
-        extra = {"variant": variants.get(name)} if variants and name == "S1" else {}
-        sig = fn(provide, now, funnel, dec, kz, (modes or {}).get(name, "market"), **extra)
+        sig = fn(provide, now, funnel, dec, kz, (modes or {}).get(name, "market"))
         for one in (sig if isinstance(sig, list) else [sig] if sig else []):   # Pullback renvoie une liste (une par cascade et sens)
             funnel["signal"] += 1
             out.append(one)

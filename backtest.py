@@ -9,7 +9,7 @@ Outils de validation (pour ne pas se fier à un seul chiffre) :
   - rapport par stratégie, par sens, par session, par alignement H4 ;
   - séparation en deux périodes (--split 0.6) : les mêmes règles doivent tenir sur la seconde ;
   - intervalle de confiance à 95 % de l'espérance par trade (bootstrap) et verdict prudent ;
-  - grille de réglages (--set strategies.S1_ADX_MIN=15,18,22) avec le résultat de chaque période
+  - grille de réglages (--set strategies.S5_ADX_MIN=15,18,22) avec le résultat de chaque période
     pour repérer un réglage qui ne marche que sur une seule période (sur-ajustement).
 
 Exemples :
@@ -19,7 +19,7 @@ Exemples :
   python backtest.py --sym synth --days 120 --split 0.6              (10 indices Volatility ; classes : or, forex, forex_jpy, crypto…)
   python backtest.py --sym forex_jpy --split 0.6 --tier-max 1        (stratégie principale de la classe seulement)
   python backtest.py --days 180 --only S2,S3
-  python backtest.py --days 120 --set strategies.S1_ADX_MIN=15,18,22 --set tracker.STRUCT_EXIT=true,false
+  python backtest.py --days 120 --set strategies.S5_ADX_MIN=15,18,22 --set tracker.STRUCT_EXIT=true,false
   python backtest.py --source csv --file xauusd_m5.csv
   python backtest.py --source sim --days 60          (marche aléatoire : contrôle de bon sens)
 Un CSV contient les colonnes epoch,open,high,low,close (bougies M5, epoch en secondes, ordre croissant).

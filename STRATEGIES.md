@@ -1,7 +1,7 @@
 # Stratégies du bot (or, paires majeures, BTC et ETH)
 
-Six stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
-alertes Telegram (le code S1 à S4, S6 et S7 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
+Cinq stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
+alertes Telegram (le code S1 à S4 et S6 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
 paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --set`).
 
 > **Important.** Aucune stratégie n'a un taux de réussite élevé garanti. Les valeurs ci-dessous sont des
@@ -32,7 +32,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Déclenchement récent** : la bougie de déclenchement doit être l'une des 2 dernières clôturées (`FRESH`).
 - **Tendance dans l'alerte** : chaque alerte indique la tendance D1 et H4 avec son âge (règles de `trend.py`,
   voir plus bas), ✅ dans le sens du trade, ⚠️ à contre-sens. Information seulement, jamais un filtre (seule exception : le biais de structure de Sweep + CHoCH, voir S3).
-- **Zones d'entrée de Pullback (variante classique) et Sweep + CHoCH** : 1) le **bloc d'ordre** (dernière bougie de sens opposé entre
+- **Zones d'entrée de Sweep + CHoCH** : 1) le **bloc d'ordre** (dernière bougie de sens opposé entre
   l'extrême du repli ou du sweep et la bougie de cassure) avec entrée à son **bord proche** (le haut pour un achat, le
   bas pour une vente ; `LIMIT_OB_FRACTION = 0`, 1 = bord lointain) ; 2) à défaut, le **FVG** non comblé créé par le
   déplacement (3 bougies, la bougie du milieu doit être un déplacement : corps >= 1,2 x le corps moyen) avec entrée
@@ -41,7 +41,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Ordres limites** (défaut, `ENTRY_MODE=auto`) : l'entrée est un ordre limite au retest d'une zone propre à chaque
   stratégie, à condition que la zone soit entre le stop et le prix actuel, sinon l'ordre est au marché.
   L'ordre est **annulé** si TP1 est atteint avant l'entrée, si une bougie clôture au-delà du stop, si le marché ferme pour
-  le week-end, ou après sa durée de validité (S1 classique 2 h, S2 3 h, S3 1 h, S4 1 h 30, S1 structure 24 h : `LIMIT_TTL`). Une zone à plus de
+  le week-end, ou après sa durée de validité (S1 24 h, S2 3 h, S3 1 h, S4 1 h 30, S6 3 h, ou 2 h pour son ordre de retournement : `LIMIT_TTL`). Une zone à plus de
   1,5 x ATR du prix écarte le signal (`LIMIT_MAX_ATR`). Les ordres limites améliorent le prix d'entrée mais manquent
   les mouvements qui ne reviennent pas : compare les rendements **totaux** au backtest, pas seulement par trade.
   Le suivi ne considère l'ordre posé qu'à partir de la bougie suivant l'alerte.
@@ -50,7 +50,7 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 - **Stop** : au-delà de l'extrême de la structure, plus une marge de 0,15 x ATR (`BUF_ATR`). Risque minimal
   0,5 x ATR du timeframe d'entrée (`MIN_RISK_ATR`) : si le stop est plus proche, il est éloigné jusque-là.
   Risque maximal : un plafond en ATR H1 propre à chaque stratégie, sinon le signal est rejeté.
-- **Objectifs** (S1, S2) : TP1 = 1 R, TP2 = 2 R, TP3 = 3 R (R = distance entrée-stop). S3 : TP1 = 1 R, TP2 et TP3 sur la liquidité opposée (voir S3).
+- **Objectifs** (S2) : TP1 = 1 R, TP2 = 2 R, TP3 = 3 R (R = distance entrée-stop). S1 : extrême de l'impulsion puis extensions 1,272 et 1,618 (voir sa section). S3 : TP1 = 1 R, TP2 et TP3 sur la liquidité opposée (voir S3).
 - **Gestion** (`tracker.py`) : 50 % clôturés à TP1 et stop à l'entrée ; 25 % à TP2 et stop à TP1 ; 25 % vers
   TP3. Sortie avant TP1 si une bougie clôture au-delà du niveau d'invalidation, ou après 150 bougies sans TP1.
   Si stop et cible sont touchés dans la même bougie, le stop est supposé touché en premier. Hypothèses prudentes : un ordre limite n'est rempli que si le prix
@@ -70,55 +70,14 @@ La plage asiatique (Asian Breakout) et les niveaux PDH/PDL gardent leur définit
 
 ---
 
-## Pullback (code S1) : deux variantes
+## Pullback (code S1) · HTF > MTF > LTF
 
-S1 est la fusion de l'ancienne Trend Pullback (S1) et de l'ancienne Impulsion + Fibonacci (S5) : même idée (tendance H4, repli de
-50-79 % d'une jambe H1, confirmation M15), deux manières de la lire. `PULLBACK_VARIANT` choisit :
-
-| | classique (ex-S1) | structure (ex-S5) |
-|---|---|---|
-| Tendance H4 | EMA 50/200 + ADX >= 18 | structure (sommets et creux, BOS par clôture) ; ADX en option (`PULLBACK_ADX_MIN`) |
-| Entrée | cassure de structure M15, zone d'entrée sur bloc d'ordre / FVG | sweep + cassure + FVG + bloc d'ordre |
-| Stop | au-delà du creux du repli | sous le sweep |
-| Objectifs | 1 R, 2 R, 3 R | extrême de l'impulsion, extensions 1,272 et 1,618 ; ratio mini 1:3 |
-| Ordre limite valable | 2 h | 24 h (plafonné par la fin de séance) |
-
-`auto` (défaut) évalue les deux, la variante structure d'abord ; un seul trade par actif et par sens (même libellé « Pullback »), donc
-jamais deux positions sur le même repli. Chaque trade enregistre `variante` (ligne dédiée dans le rapport du backtest). Sur les indices
-synthétiques, seule la variante structure tourne. Comparaison : `python backtest.py --split 0.6 --set strategies.PULLBACK_VARIANT=classique,structure,auto`.
-Les anciens codes (`S5` dans `STRATEGIES`, `CLASS_STRATEGIES`, `SYMBOL_STRATEGIES`, `ENTRY_MODES`) sont lus comme `S1`.
-
-### Variante classique · H4 > H1 > M15
-
-**Idée** : trader dans le sens de la tendance H4, en entrant à la fin d'un repli de 50 à 79 % de la dernière
-jambe impulsive H1, quand le M15 confirme la reprise.
-
-**1. Tendance H4** (bougies H4 clôturées)
-- Achat : EMA 50 > EMA 200 (`S1_EMA_FAST/SLOW`), dernière clôture > EMA 200, ADX(14) ≥ 18 (`S1_ADX_MIN`),
-  et le dernier creux H4 est **plus haut** que le précédent (fractale de 2 bougies, `S1_SWING_H4`).
-- Vente : l'inverse (EMA 50 < EMA 200, clôture < EMA 200, ADX ≥ 18, dernier sommet plus bas).
-- Un seul creux (sommet) plus haut (bas) suffit, volontairement : exiger trois swings consécutifs détecte la
-  tendance trop tard.
-
-**2. Jambe impulsive H1**
-- Sommet de référence (achat) : dernier plus haut H1 confirmé (fractale de 3 bougies, `S1_SWING_H1`), vieux de
-  48 bougies H1 au plus et **pas dépassé** depuis (sinon on attend la confirmation du nouveau sommet).
-- Base de la jambe : plus bas des 24 H1 qui précèdent le sommet (`S1_LEG_BARS`).
-- Taille de la jambe : entre 1,5 et 5 x ATR H1 (`S1_LEG_MIN_ATR`, `S1_LEG_MAX_ATR`).
-
-**3. Repli**
-- Extrême du repli : plus bas M15 depuis la clôture de la bougie H1 du sommet.
-- Le repli doit atteindre **50 %** de la jambe et ne pas dépasser **79 %** (`S1_FIB_MIN/MAX`, comme S5). La zone
-  50-79 % est dessinée sur le graphique.
-
-**4. Déclencheur M15**
-- Niveau : dernier sommet M15 (fractale de 2) formé pendant le repli, avant son extrême.
-- Une bougie M15 **clôture au-dessus** de ce niveau (sous le dernier creux pour une vente), avec un corps
-  d'au moins 1,2 x le corps moyen (`DISP_MULT`).
-
-**Entrée** : ordre **limite** sur la zone du déplacement (bloc d'ordre M15 en priorité, sinon FVG M15 ; règles de
-zone plus bas). **Stop** : sous l'extrême du repli (+ marge). **Plafond de risque** : 1,5 x ATR H1.
-**Invalidation** : clôture M15 sous l'extrême du repli.
+S1 est l'ancienne Impulsion + Fibonacci (S5) : tendance HTF (structure), repli de 50-79 % d'une impulsion MTF, entrée sur la
+confirmation LTF. L'ancienne Trend Pullback (variante « classique » : EMA 50/200 + ADX, cassure M15) est **supprimée** ; son code, ses
+constantes `S1_*` et la variable `PULLBACK_VARIANT` (désormais ignorée) n'existent plus. Les anciens codes (`S5` dans `STRATEGIES`,
+`CLASS_STRATEGIES`, `SYMBOL_STRATEGIES`, `ENTRY_MODES`) sont lus comme `S1`, et les trades enregistrés avant la suppression
+(libellés « Trend Pullback », « Impulsion ») restent suivis. Chaque trade porte `variante = structure`. Le détail des règles est
+dans la section « Règles de Pullback » plus bas.
 
 ---
 
@@ -223,10 +182,10 @@ moyenne. C'est la stratégie la plus risquée si une tendance démarre : le rég
 
 ---
 
-### Variante structure (ex-S5, Impulsion + Fibonacci) · HTF > MTF > LTF
+### Règles de Pullback (ex-S5, Impulsion + Fibonacci) · HTF > MTF > LTF
 
 **Origine** : stratégie du module `impulse.py` du crt-bot, portée telle quelle (mêmes règles et mêmes valeurs), avec les
-adaptations listées en bas de section. Elle est faite pour être comparée à S1 (même idée de repli à 50-79 %) et S3.
+adaptations listées en bas de section. Elle partage avec S3 les mêmes primitives SMC (module `smc.py` : sweep de mèche, cassure par clôture, déplacement, miroir).
 
 **Idée** : dans le sens d'une tendance HTF, trader le retracement 50-79 % d'une impulsion MTF, en entrant sur la
 confirmation LTF (sweep d'un creux, cassure de structure avec déplacement, FVG, bloc d'ordre dans la zone).
@@ -270,7 +229,7 @@ Gestion habituelle (50 % à TP1, 25 % à TP2, 25 % vers TP3).
 - Pas de plafond de risque (`S5_RISK_CAP_H1 = 0`, comme dans le crt-bot) ; le mettre à 2, par exemple, rejette les stops de plus de 2 ATR H1.
 - **Actifs** : tous par défaut. Avec `CLASS_FILTER=1` (voir « Classes d'actifs et niveaux ») : secondaire sur l'or, les cryptos, le forex JPY et les indices synthétiques,
   à tester sur le forex de session, absente du forex calme. `TIER_MAX=2` la coupe sur le forex de session, `TIER_MAX=1` partout.
-- Réglages testables : `python backtest.py --only S1 --split 0.6 --set strategies.PULLBACK_VARIANT=structure --set strategies.S5_IMPULSE_ATR=1.5,2,2.5`.
+- Réglages testables : `python backtest.py --only S1 --split 0.6 --set strategies.S5_IMPULSE_ATR=1.5,2,2.5`.
 
 **Vérification du portage** : sur 12 séries simulées (plus de 20 000 évaluations par fonction), `s5_trend`, `s5_find_impulse` et
 `s5_find_entry` donnent des résultats identiques à ceux de `impulse.py` (tendance, impulsion, entrée limite FVG, limite bloc d'ordre,
@@ -281,7 +240,14 @@ aucun avantage statistique n'est démontré : à valider sur de l'historique ré
 
 ---
 
-## Chart Patterns (code S6) · figures H1/H4 > confirmation M15
+## Figures & Retournement (code S6) : deux parties
+
+S6 regroupe l'ancienne S6 Chart Patterns (figures) et l'ancienne S7 Reversal (retournement). Le code `S7` est lu comme `S6` ; les trades
+enregistrés avec les libellés « Chart Patterns » et « Reversal » restent suivis et comptent comme la même stratégie (un seul trade par actif et par sens).
+**Un signal par sens et par scan** : si une figure de retournement et le retournement détecté vont dans le même sens, la figure porte le signal (avec sa confluence) ;
+le retournement seul n'est émis que s'il n'y a pas de figure dans ce sens.
+
+### Partie figures (ex-S6 Chart Patterns) · figures H1/H4 > confirmation M15
 
 Figures chartistes de **retournement** et de **continuation**, dans le cadre intraday du bot : la figure est détectée sur les
 bougies **clôturées H1 ou H4** (les obstacles majeurs), la **cassure de sa ligne clé est confirmée en M15** (une des 2 dernières
@@ -314,9 +280,9 @@ bougies M15 clôturées finit au-delà de la ligne, la précédente non). Module
 
 > **Important.** Ces seuils sont des points de départ classiques, **non optimisés ni validés** sur l'or. Lance le backtest
 > (`backtest.yml`, option `--only S6`) avant de t'y fier, et compare chaque figure (`extra.figure` dans le rapport).
-> Retire la stratégie sans toucher au code avec `STRATEGIES=S1,S2,S3,S4,S7`.
+> Retire la stratégie sans toucher au code avec `STRATEGIES=S1,S2,S3,S4`.
 
-## Reversal (code S7) · H4 > H1 > M15
+### Partie retournement (ex-S7 Reversal) · H4 > H1 > M15
 
 L'alerte de retournement possible (voir plus bas) devient un **ordre**. Mêmes conditions (`reversal.detect`) : tendance H4 mûre
 (4 jambes ou plus) encore intacte, sweep H1 d'un sommet (creux) récent sur un niveau majeur H4 / veille, cassure de structure H1 contre
@@ -327,13 +293,13 @@ la tendance, au moins 2 signes d'essoufflement sur 3 (divergence RSI, bougies qu
 - **Stop** : au-delà de l'extrême du sweep + 0,2 ATR H1. Risque maximal 3 x ATR H1 (`S7_RISK_CAP_ATR`), sinon signal rejeté.
 - **Objectifs** : 1R / 2R / 3R, ramenés avant le prochain obstacle par le cadre intraday.
 - **Contre la tendance H4** : le message le rappelle (taille réduite conseillée) et `extra.contre_tendance` est enregistré.
-- **Un ordre par sweep** (clé = bougie de l'extrême). Quand S7 est active, l'alerte d'information n'est plus envoyée (même événement) ;
-  `STRATEGIES=S1,S2,S3,S4,S6` la rétablit. `REVERSAL_ALERTS=0` supprime seulement le message d'information (S7 n'en dépend pas).
-- **Tous les actifs, indices synthétiques compris** (S6 et S7). Sur un indice synthétique le prix est généré : les niveaux et figures y ont
-  moins de sens, le backtest dira si S6 et S7 y tiennent (`--sym` pour les isoler).
-- **Entonnoir** : `S7_retournement` (retournements détectés), `S7_signal`.
+- **Un ordre par sweep** (clé = bougie de l'extrême). Quand S6 est active, l'alerte d'information n'est plus envoyée (même événement) ;
+  `STRATEGIES=S1,S2,S3,S4` la rétablit. `REVERSAL_ALERTS=0` supprime seulement le message d'information (S6 n'en dépend pas).
+- **Tous les actifs, indices synthétiques compris** (S6). Sur un indice synthétique le prix est généré : les niveaux et figures y ont
+  moins de sens, le backtest dira si S6 y tient (`--sym` pour les isoler).
+- **Entonnoir** : `S6_retournement` (retournements détectés) ; les signaux comptent dans `S6_signal`.
 
-> Stratégie contre la tendance, non validée : backtest (`--only S7`) avant de t'y fier.
+> Stratégie contre la tendance, non validée : backtest (`--only S6`) avant de t'y fier.
 
 ## Classes d'actifs et niveaux (quelle stratégie sur quel actif)
 
@@ -349,10 +315,10 @@ secondaires, à tester. La logique :
 - **Forex calme** (USDCHF, EURCHF, AUDUSD, NZDUSD : peu directionnelles) : S4 principale ; S3 secondaire.
 - **Cryptos** (24h/24, tendances fortes ; S2 et S4 reposent sur des horaires ou un range que le 24h/24 rend peu pertinents) : S1 principale ;
   S3 et S5 secondaires.
-- **Indices synthétiques** (prix généré par un algorithme, aucune liquidité réelle) : S3 principale ; Pullback secondaire (variante structure). Aucune stratégie n'y a de base
+- **Indices synthétiques** (prix généré par un algorithme, aucune liquidité réelle) : S3 principale ; Pullback secondaire. Aucune stratégie n'y a de base
   logique : à traiter comme une expérience.
 
-- **S6 Chart Patterns et S7 Reversal** : à tester sur toutes les classes (niveau 3), indices synthétiques compris.
+- **S6 Figures & Retournement** : à tester sur toutes les classes (niveau 3), indices synthétiques compris.
 
 **Ces classements sont des hypothèses, pas des résultats.** Avec `CLASS_FILTER=1`, une stratégie absente d'une classe n'y tourne pas (S2 et S4 sur l'or, par exemple) ;
 pour les y remettre : `CLASS_STRATEGIES="or:S3/S1/S2,S4"`. Réglages : `CLASS_FILTER`, `TIER_MAX`, `CLASS_STRATEGIES`, et `SYMBOL_STRATEGIES` (prioritaire sur tout, actif par actif).
@@ -374,7 +340,7 @@ Quand deux stratégies ou plus signalent **le même actif dans le même sens** �
 
 - **Information seulement** : rien n'est filtré, chaque stratégie alerte comme avant, avec ses propres niveaux.
 - **Qui compte** : les trades des autres stratégies encore en attente ou ouverts, alertés dans la fenêtre, et les signaux trouvés au même
-  scan. Un trade clôturé, annulé ou expiré ne compte pas. Une même stratégie ne se compte pas elle-même (Pullback en deux variantes = une seule).
+  scan. Un trade clôturé, annulé ou expiré ne compte pas. Une même stratégie ne se compte pas elle-même (S1 et son ancien code S5 = une seule ; S6 et son ancien code S7 = une seule).
 - **Une seule étiquette, sur la seconde alerte** : si S3 alerte à 10h00 puis S4 à 10h20, c'est l'alerte de S4 qui porte la confluence ;
   celle de S3, déjà envoyée, n'est pas modifiée. Au même scan, les deux alertes la portent.
 - **Mesure au backtest** : chaque trade enregistre `confluence` (ex. `S3+S4`, ou `aucune`) et le rapport ajoute une ligne par valeur.
@@ -407,7 +373,7 @@ S1 (Pullback) et S3 n'entrent que sur réaction à un niveau ou une zone H4/H1 (
 
 ## Cohérence entre stratégies (v30)
 
-- **S1 et S5 fusionnées en Pullback** (deux variantes, voir plus haut) : un seul trade par actif et par sens, pas de confluence entre variantes. Repli maximal de la variante classique aligné sur la variante structure (79 %).
+- **S1 et S5 fusionnées en Pullback** (variante classique supprimée) : un seul trade par actif et par sens ; **S6 et S7 fusionnées** : même règle.
 - **Pas de sens opposé** sur un même actif (toutes stratégies, ordres en attente compris).
 - **Tendance** : la structure (S3, S5, alertes) vient d'une seule définition, `trend.py`. S1 et S2 gardent leur filtre EMA, qui définit ces stratégies.
 - **Objectifs et obstacles** : un obstacle ramène TP1, mais aussi TP2 et TP3 s'ils sont au-delà.
@@ -417,7 +383,7 @@ S1 (Pullback) et S3 n'entrent que sur réaction à un niveau ou une zone H4/H1 (
 - **Backtest** : trades suivis sur l'unité de temps du signal, comme en direct ; échauffement par défaut de 35 jours.
 
 
-## Alerte de retournement possible (information ; devient l'ordre S7 quand S7 est active)
+## Alerte de retournement possible (information ; devient l'ordre de retournement de S6 quand S6 est active)
 
 Les stratégies jouent la continuation de la tendance de fond ; `reversal.py` signale en plus, **à titre d'information**, un retournement
 possible. Aucun ordre, aucun suivi, aucun filtre sur les stratégies. Une alerte n'est envoyée que si tout se cumule :

@@ -104,7 +104,7 @@ def detect(provide, now):
     if not t4 or t4["age"] not in AGES:
         return None
     up = t4["dir"] == "BUY"
-    h = h1[:-1] if up else S._s5_flip(h1[:-1])              # miroir pour une tendance baissière
+    h = h1[:-1] if up else S.mirror(h1[:-1])              # miroir pour une tendance baissière
     found = find_reversal(h)
     if not found:
         return None
@@ -153,7 +153,7 @@ def message(rev, name, dec, clock=""):
     return "\n".join(lines)
 
 
-# ----------------------------- S7 Reversal : l'alerte de retournement devient un ordre -----------------------------
+# ----------------------------- Retournement : l'alerte devient un ordre (partie « retournement » de S6) -----------------------------
 def _f(name, default):
     try:
         return float(os.getenv(name) or default)
@@ -161,20 +161,21 @@ def _f(name, default):
         return float(default)
 
 
-S7_RISK_CAP_ATR = _f("S7_RISK_CAP_ATR", 3.0)       # risque maximal : 3 x ATR H1 (stop au-delà de l'extrême du sweep)
+S7_RISK_CAP_ATR = _f("S7_RISK_CAP_ATR", 3.0)       # risque maximal : 3 x ATR H1 (stop au-delà de l'extrême du sweep) ; nom hérité de l'ancienne S7
 S7_SL_BUF_ATR = 0.2                                 # marge du stop au-delà de l'extrême du sweep (en ATR H1)
 S7_ENTRY_MAX_ATR = _f("S7_ENTRY_MAX_ATR", 1.0)      # retest du creux (sommet) cassé à plus de 1 ATR H1 du prix : signal écarté
 S7_LIMIT_TTL = 7200                                 # validité de l'ordre limite, en secondes
+STRAT, LABEL = "S6", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S6 (STRAT_ALIAS : S7 -> S6)
 
 
-def scan_s7(provide, now, funnel, dec=2, kz=True, mode="market"):
-    """S7 Reversal : mêmes conditions que l'alerte de retournement possible (detect), mais en ordre. Entrée au retest du dernier
-    creux (sommet) H1 cassé, stop au-delà de l'extrême du sweep, objectifs 1R / 2R / 3R. Contre une tendance H4 mûre : taille réduite
-    conseillée. Retourne une liste d'un signal, ou None."""
-    rev = detect(provide, now)
+def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
+    """Retournement possible (detect) en ordre : mêmes conditions que l'alerte d'information. Entrée au retest du dernier creux
+    (sommet) H1 cassé, stop au-delà de l'extrême du sweep, objectifs 1R / 2R / 3R. Contre une tendance H4 mûre : taille réduite
+    conseillée. `rev` : résultat de detect() déjà calculé (sinon calculé ici). Retourne un signal, ou None."""
+    rev = rev or detect(provide, now)
     if not rev:
         return None
-    funnel["S7_retournement"] += 1
+    funnel["S6_retournement"] += 1
     m15, h1 = provide("M15"), provide("H1")
     if not m15 or not h1:
         return None
@@ -195,12 +196,12 @@ def scan_s7(provide, now, funnel, dec=2, kz=True, mode="market"):
     lv = S.build_levels(d, entry, sl, a_m15, a_h1, S7_RISK_CAP_ATR)
     if lv is None:
         return None
-    funnel["S7_signal"] += 1
+    funnel["S6_signal"] += 1
     word = {"BUY": "haussière", "SELL": "baissière"}[rev["trend_dir"]]
     taken = "sommet" if d == "SELL" else "creux"
     broke = "sous le dernier creux" if d == "SELL" else "au-dessus du dernier sommet"
-    sig = S._signal(
-        "S7", "Reversal", d, entry, lv, m15, "M15", f"{rev['epoch']}",
+    return S._signal(
+        STRAT, LABEL, d, entry, lv, m15, "M15", f"{rev['epoch']}",
         [f"✅ Tendance H4 {word} mûre ({rev['legs']} jambes), encore intacte",
          f"✅ Sweep : {taken} H1 {rev['level'][0]:.{dec}f} ({rev['level'][1]}) pris puis rejeté",
          f"✅ Cassure de structure H1 : clôture {broke} ({rev['pivot']:.{dec}f})",
@@ -211,5 +212,4 @@ def scan_s7(provide, now, funnel, dec=2, kz=True, mode="market"):
         inval=sl, short=f"Retournement · {rev['level'][1]}", trig=m15c[-1]["epoch"], otype=otype, price_now=price,
         ttl=S7_LIMIT_TTL if otype != d else None,
         entry_note=f"Ordre limite au retest du niveau cassé ({entry:.{dec}f})" if otype != d else "",
-        extra={"contre_tendance": True, "niveau": rev["level"][1], "signes": len(rev["signs"])})
-    return [sig]
+        extra={"origine": "retournement", "contre_tendance": True, "niveau": rev["level"][1], "signes": len(rev["signs"])})

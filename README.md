@@ -1,15 +1,14 @@
 # Bot or (XAUUSD) + forex + BTC/ETH + indices Volatility
 
-Bot d'**alertes Telegram** pour l'or, 15 paires forex (7 majeures contre USD, 8 croisements), BTC, ETH et les 10 indices Volatility de Deriv, avec six stratégies (règles précises : [STRATEGIES.md](STRATEGIES.md)). Il reprend l'architecture du bot CRT/Impulsion (client Deriv, suivi des trades, garde-fous, graphique, boutons Telegram, backtest) mais aucune de ses stratégies, sauf la variante « structure » de Pullback.
+Bot d'**alertes Telegram** pour l'or, 15 paires forex (7 majeures contre USD, 8 croisements), BTC, ETH et les 10 indices Volatility de Deriv, avec cinq stratégies (règles précises : [STRATEGIES.md](STRATEGIES.md)). Il reprend l'architecture du bot CRT/Impulsion (client Deriv, suivi des trades, garde-fous, graphique, boutons Telegram, backtest) mais aucune de ses stratégies, sauf Pullback (ex-Impulsion + Fibonacci).
 
 | Code | Stratégie | Unités de temps |
 |---|---|---|
-| S1 | Pullback (variantes « classique » et « structure ») | H4 > H1 > M15 |
+| S1 | Pullback (structure + retracement Fibonacci 50-79 %) | H4 > H1 > M15 |
 | S2 | Asian Breakout | M15 |
 | S3 | Sweep + CHoCH (SMC) | H4/H1 > M15 > M5 |
 | S4 | Mean Reversion | H1 > M15 |
-| S6 | Chart Patterns (figures de retournement et de continuation) | H1/H4 > M15 |
-| S7 | Reversal (retournement contre une tendance H4 mûre) | H4 > H1 > M15 |
+| S6 | Figures & Retournement (figures chartistes + retournement contre une tendance H4 mûre ; ex-S6 et S7) | H1/H4 > M15 |
 
 Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à TP3 avec ratio, graphique) et suit leur résultat en R. Aucune stratégie n'est garantie ; les paramètres sont des points de départ à valider par backtest.
 
@@ -35,12 +34,12 @@ Par défaut, aucune restriction. Avec `CLASS_FILTER=1`, chaque actif ne reçoit 
 
 | Classe | Actifs | Principale | Secondaires | À tester |
 |---|---|---|---|---|
-| Or | `frxXAUUSD` | S3 | S1 | S6, S7 |
-| Forex de session | EURUSD, GBPUSD, USDCAD, EURGBP, EURAUD, EURCAD, GBPAUD | S3 | S2 | S1, S6, S7 |
-| Forex JPY | USDJPY, EURJPY, GBPJPY, AUDJPY | S1 | | S6, S7 |
-| Forex calme | USDCHF, EURCHF, AUDUSD, NZDUSD | S4 | S3 | S6, S7 |
-| Cryptos | BTC, ETH | S1 | S3 | S6, S7 |
-| Indices synthétiques | 10 Volatility | S3 | S1 (variante structure) | S6, S7 |
+| Or | `frxXAUUSD` | S3 | S1 | S6 |
+| Forex de session | EURUSD, GBPUSD, USDCAD, EURGBP, EURAUD, EURCAD, GBPAUD | S3 | S2 | S1, S6 |
+| Forex JPY | USDJPY, EURJPY, GBPJPY, AUDJPY | S1 | | S6 |
+| Forex calme | USDCHF, EURCHF, AUDUSD, NZDUSD | S4 | S3 | S6 |
+| Cryptos | BTC, ETH | S1 | S3 | S6 |
+| Indices synthétiques | 10 Volatility | S3 | S1 | S6 |
 
 Réglages : `TIER_MAX` (1, 2 ou 3 par défaut), `CLASS_STRATEGIES` (ex. `or:S3/S1/S2;forex_jpy:S1//`), `SYMBOL_STRATEGIES` (prioritaire sur tout, actif par actif ; un actif absent reçoit toutes les stratégies actives). L'alerte affiche alors la classe et le niveau (« 🧪 À tester »). Backtest : `--class-filter`, `--tier-max`.
 
@@ -49,9 +48,9 @@ Réglages : `TIER_MAX` (1, 2 ou 3 par défaut), `CLASS_STRATEGIES` (ex. `or:S3/S
 | Fichier | Rôle |
 |---|---|
 | `gold.py` | Scan, client Deriv, alertes et commandes Telegram, suivi |
-| `strategies.py` | Stratégies S1 à S4 (S6 et S7 y sont enregistrées), indicateurs, sessions |
+| `strategies.py` | Stratégies S1 à S4 (S6 y est enregistrée), indicateurs, sessions |
 | `patterns.py` | S6 : figures sur H1/H4, cassure confirmée en M15, confluence avec le retournement |
-| `reversal.py` | Retournement possible (message d'information) et ordre S7 |
+| `reversal.py` | Retournement possible (message d'information) et ordre de retournement de S6 |
 | `trend.py` | Tendance et âge (D1, H4, H1) pour les récapitulatifs |
 | `tracker.py` | Suivi des trades (TP1/TP2/TP3, break-even, sorties de structure et au temps) |
 | `guard.py` | Fenêtres sans alerte, limites d'exposition, santé du bot, bilan |
@@ -73,15 +72,15 @@ Réglages : `TIER_MAX` (1, 2 ou 3 par défaut), `CLASS_STRATEGIES` (ex. `or:S3/S
 
 | Variable | Rôle (défaut) |
 |---|---|
-| `STRATEGIES` | Stratégies actives, ex. `S2,S3` (défaut `S1,S2,S3,S4,S6,S7` ; l'ancien `S5` est lu comme `S1`) |
+| `STRATEGIES` | Stratégies actives, ex. `S2,S3` (défaut `S1,S2,S3,S4,S6` ; l'ancien `S5` est lu comme `S1` et l'ancien `S7` comme `S6`) |
 | `SYMBOLS` | Actifs suivis (défaut : les 28 ci-dessus) |
 | `SYMBOL_STRATEGIES` | Stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` |
 | `CLASS_FILTER`, `TIER_MAX`, `CLASS_STRATEGIES` | Classes d'actifs (voir plus haut) |
-| `PULLBACK_VARIANT` | `classique`, `structure` ou `auto` (défaut : les deux, structure d'abord) ; `PULLBACK_ADX_MIN` : ADX H4 minimal de la variante structure |
+| `PULLBACK_ADX_MIN` | ADX H4 minimal de Pullback (0 = désactivé, défaut). L'ancienne variable `PULLBACK_VARIANT` est ignorée : la variante « classique » est supprimée |
 | `ENTRY_MODE` / `ENTRY_MODES` | `auto` (défaut : ordres limites), `market` ou `limit` ; par stratégie, ex. `S3:market,S4:market` |
 | `INTRADAY` | `0` désactive le cadre intraday ; `INTRADAY_RUNNERS=1` laisse courir le reste après TP1 en fin de séance ; `CRYPTO_INTRADAY=1` y soumet les cryptos |
 | `REVERSAL_ALERTS`, `REVERSAL_MIN_SIGNS` | Message d'information de retournement (défaut actif ; 2 signes sur 3) |
-| `S6_RISK_CAP_ATR`, `S6_MIN_RR`, `S6_NOCONF_MIN_RR`, `S6_TOL_ATR`, `S7_RISK_CAP_ATR` | Réglages de S6 et S7 (voir STRATEGIES.md) |
+| `S6_RISK_CAP_ATR`, `S6_MIN_RR`, `S6_NOCONF_MIN_RR`, `S6_TOL_ATR`, `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR` | Réglages de S6 : figures et retournement (les noms `S7_*` sont conservés pour la partie retournement ; voir STRATEGIES.md) |
 | `CONFLUENCE_MIN` | Fenêtre de confluence entre stratégies, en minutes (défaut 60, `0` désactive) |
 | `SPREAD_PCT`, `SPREAD_TABLE` | Spread supposé en % du prix : global, ou par actif ex. `frxXAUUSD=0.02,cryBTCUSD=0.04` (prioritaire) |
 | `MAX_AGE_MIN` | Âge maximal d'un signal (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi |
@@ -92,13 +91,14 @@ Réglages : `TIER_MAX` (1, 2 ou 3 par défaut), `CLASS_STRATEGIES` (ex. `or:S3/S
 
 **État.** `trades.json`, `guard.json` et `state.json` sont sauvegardés à chaque scan sur la branche `data` (une seule révision, écrasée) ; si le dépôt est public, cette branche est lisible par tous (aucun secret). Les bougies restent dans le cache GitHub : sa perte ne fait que ralentir un scan. Pour les annonces non couvertes par le calendrier automatique, copie `news.example.json` en `news.json`.
 
-## Figures chartistes (S6) et retournement (S7)
+## Figures chartistes et retournement (S6)
 
-- **S6 Chart Patterns** : figures de **retournement** (double et triple sommet/creux, tête et épaules et inversée, biseaux, tasse avec anse) et de **continuation** (drapeau, fanion, triangles, rectangle, canal, élargissement). Détection sur les bougies clôturées H1 ou H4, cassure de la ligne confirmée par une clôture M15. Entrée en ordre limite au retest de la ligne, stop au-delà de la figure, objectifs 0,5 / 1 / 1,5 fois la hauteur de la figure. Retournement ou continuation selon la tendance qui précède.
-- **S7 Reversal** : l'alerte de retournement devient un ordre (tendance H4 mûre, sweep d'un niveau majeur, cassure de structure H1, essoufflement). Entrée au retest du creux (sommet) cassé, stop au-delà de l'extrême du sweep, objectifs 1R / 2R / 3R. **Contre la tendance H4** : prendre une taille réduite (le bot ne calcule pas de taille de position).
+- **S6, partie figures** : figures de **retournement** (double et triple sommet/creux, tête et épaules et inversée, biseaux, tasse avec anse) et de **continuation** (drapeau, fanion, triangles, rectangle, canal, élargissement). Détection sur les bougies clôturées H1 ou H4, cassure de la ligne confirmée par une clôture M15. Entrée en ordre limite au retest de la ligne, stop au-delà de la figure, objectifs 0,5 / 1 / 1,5 fois la hauteur de la figure. Retournement ou continuation selon la tendance qui précède.
+- **S6, partie retournement** (ex-S7) : l'alerte de retournement devient un ordre (tendance H4 mûre, sweep d'un niveau majeur, cassure de structure H1, essoufflement). Entrée au retest du creux (sommet) cassé, stop au-delà de l'extrême du sweep, objectifs 1R / 2R / 3R. **Contre la tendance H4** : prendre une taille réduite (le bot ne calcule pas de taille de position).
 - **Confluence** : une figure de retournement de S6 qui va dans le sens du retournement détecté est admise avec un risque maximal 1,4 fois plus large et porte « Confluence : retournement possible » ; sans confluence, son ratio minimal vers TP3 passe de 1 à 1,5. Les figures de continuation ne sont pas concernées.
-- **Alerte d'information** : tant que S7 est active, le retournement n'arrive qu'en ordre (pas de doublon). Pour le seul message d'information, retire S7 de `STRATEGIES` ; `REVERSAL_ALERTS=0` supprime ce message.
-- Seuils **non validés** : lance `python backtest.py --only S6,S7` (le rapport sépare chaque figure et la confluence) avant de t'y fier.
+- **Un seul signal par sens** : si une figure de retournement et le retournement détecté vont dans le même sens, c'est la figure qui porte le signal (avec sa confluence).
+- **Alerte d'information** : tant que S6 est active, le retournement n'arrive qu'en ordre (pas de doublon). Pour le seul message d'information, retire S6 de `STRATEGIES` ; `REVERSAL_ALERTS=0` supprime ce message.
+- Seuils **non validés** : lance `python backtest.py --only S6` (le rapport sépare chaque figure et la confluence) avant de t'y fier.
 
 ## Récapitulatifs de tendance
 
@@ -122,8 +122,8 @@ Par défaut, chaque alerte est un **ordre limite** posé au retest d'une zone (b
 | Asian Breakout | bord de plage cassé | 3 h |
 | Sweep + CHoCH | bloc d'ordre M5 (sinon FVG M5) | 1 h |
 | Mean Reversion | bande de Bollinger rejetée | 1 h 30 |
-| Chart Patterns | ligne de la figure cassée | 3 h |
-| Reversal | dernier creux (sommet) H1 cassé | 2 h |
+| Figures & Retournement (figure) | ligne de la figure cassée | 3 h |
+| Figures & Retournement (retournement) | dernier creux (sommet) H1 cassé | 2 h |
 
 Le bot signale « Ordre limite touché », « Ordre annulé » (TP1 atteint sans fill, stop franchi, week-end) ou « Ordre expiré » pour que tu annules chez ton courtier. Une zone à plus de 1,5 ATR du prix, ou du mauvais côté, écarte le signal ou laisse l'alerte au marché. `/bilan` affiche le taux de remplissage. **Contrepartie** : meilleur prix et stop plus court, mais certains trades ne sont jamais remplis (souvent les meilleurs). Compare : `--set gold.ENTRY_MODE=market,limit`.
 
@@ -131,7 +131,7 @@ Le bot signale « Ordre limite touché », « Ordre annulé » (TP1 atteint sans
 
 Contexte et obstacles majeurs en H4/H1, confirmation en M15, trade de la journée.
 
-- **Entrée sur réaction à un niveau** (S1, S3) : à moins de 0,5 ATR H1 d'un niveau ou dans une zone H4/H1 du bon côté, sinon « hors niveau H4/H1 ». S2, S4, S6 et S7 n'y sont pas soumises.
+- **Entrée sur réaction à un niveau** (S1, S3) : à moins de 0,5 ATR H1 d'un niveau ou dans une zone H4/H1 du bon côté, sinon « hors niveau H4/H1 ». S2, S4 et S6 n'y sont pas soumises.
 - **Objectif avant le prochain obstacle** (toutes) : TP1 ne dépasse jamais le prochain obstacle opposé (sommet/creux H1/H4, plus haut/bas de la veille, zone d'offre ou de demande). À moins de 1 R de l'entrée : signal écarté ; sinon TP1 est ramené 0,1 ATR H1 avant l'obstacle, et les objectifs au-delà aussi. Après TP1, stop à l'entrée.
 - **Fin de séance** (forex et or) : trades clôturés au plus tard à 16h45 New York ou 10 h après l'ouverture, **même après TP1** ; ordre en attente annulé au même moment. Cryptos et indices : aucune fin de séance.
 - Les seuils sont des choix de départ. Pour comparer : backtest avec `INTRADAY` vide, puis `0` (ou `--no-intraday`).
@@ -178,7 +178,7 @@ Boutons **Pris / Ignoré** sous chaque alerte, et `/pris N`, `/ignore N`, `/r N 
 Workflow **Backtest Or** ou, en local : `python backtest.py --days 120 --split 0.6`.
 
 - Rejoue les mêmes fonctions que le bot, sans regarder le futur, avec spread (`--spread-pct` ou `SPREAD_TABLE`). Prévois environ 25 jours d'échauffement (EMA 200 du H4) : demande `--days` en plus.
-- `--sym frxXAUUSD,frxEURUSD`, `--sym all` (28 actifs), `--sym synth`, ou une classe (`forex_jpy`, `crypto`…) ; `--only S2,S3` (`--only S6,S7` pour figures et retournement) ; `--set strategies.S1_ADX_MIN=15,18,22` pour une grille ; `--source csv` (un seul actif) ou `--source sim` (marche aléatoire, contrôle de bon sens).
+- `--sym frxXAUUSD,frxEURUSD`, `--sym all` (28 actifs), `--sym synth`, ou une classe (`forex_jpy`, `crypto`…) ; `--only S2,S3` (`--only S6` pour figures et retournement) ; `--set strategies.S5_ADX_MIN=15,18,22` pour une grille ; `--source csv` (un seul actif) ou `--source sim` (marche aléatoire, contrôle de bon sens).
 - Rapport par actif, stratégie, sens, session, alignement H4, coût du spread et stabilité entre deux périodes ; l'intervalle de confiance rééchantillonne des jours entiers.
 - **Lecture** : sous quelques centaines de trades, un taux de gain n'est que du bruit. Retiens une stratégie seulement si l'espérance est positive sur les deux périodes, avec un intervalle de confiance qui exclut zéro, après ton vrai spread.
 
