@@ -1,4 +1,4 @@
-"""Quatre stratégies pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
+"""Stratégies S1 à S4 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
 
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
@@ -832,7 +832,7 @@ def _s3_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
 # ==========================================================================
 # Cadre intraday : obstacles majeurs H4 / H1
 # ==========================================================================
-OBST_ENTRY_STRATS = ("S1", "S3")  # entrent sur réaction à un niveau ; S2 (cassure de plage) et S4 (range H1) en sont exemptées
+OBST_ENTRY_STRATS = ("S1", "S3")  # entrent sur réaction à un niveau ; S2 (cassure de plage), S4 (range H1), S6 et S7 (retest de leur propre ligne) en sont exemptées
 OBST_TOL_ATR = 0.5                      # l'entrée doit être à moins de 0,5 ATR H1 d'un niveau (ou dans une zone) du bon côté
 OBST_MIN_RR = 1.0                       # obstacle opposé à moins de 1 R de l'entrée : signal écarté
 OBST_BUF_ATR = 0.1                      # TP1 placé 0,1 ATR H1 avant l'obstacle

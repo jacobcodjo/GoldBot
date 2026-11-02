@@ -1,7 +1,7 @@
 # Stratégies du bot (or, paires majeures, BTC et ETH)
 
-Sept stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
-alertes Telegram (le code S1 à S4 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
+Six stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
+alertes Telegram (le code S1 à S4, S6 et S7 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
 paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --set`).
 
 > **Important.** Aucune stratégie n'a un taux de réussite élevé garanti. Les valeurs ci-dessous sont des
@@ -328,7 +328,7 @@ la tendance, au moins 2 signes d'essoufflement sur 3 (divergence RSI, bougies qu
 - **Objectifs** : 1R / 2R / 3R, ramenés avant le prochain obstacle par le cadre intraday.
 - **Contre la tendance H4** : le message le rappelle (taille réduite conseillée) et `extra.contre_tendance` est enregistré.
 - **Un ordre par sweep** (clé = bougie de l'extrême). Quand S7 est active, l'alerte d'information n'est plus envoyée (même événement) ;
-  `STRATEGIES=S1,S2,S3,S4,S6` la rétablit. `REVERSAL_ALERTS=0` désactive aussi la détection de l'information.
+  `STRATEGIES=S1,S2,S3,S4,S6` la rétablit. `REVERSAL_ALERTS=0` supprime seulement le message d'information (S7 n'en dépend pas).
 - **Tous les actifs, indices synthétiques compris** (S6 et S7). Sur un indice synthétique le prix est généré : les niveaux et figures y ont
   moins de sens, le backtest dira si S6 et S7 y tiennent (`--sym` pour les isoler).
 - **Entonnoir** : `S7_retournement` (retournements détectés), `S7_signal`.
@@ -351,6 +351,8 @@ secondaires, à tester. La logique :
   S3 et S5 secondaires.
 - **Indices synthétiques** (prix généré par un algorithme, aucune liquidité réelle) : S3 principale ; Pullback secondaire (variante structure). Aucune stratégie n'y a de base
   logique : à traiter comme une expérience.
+
+- **S6 Chart Patterns et S7 Reversal** : à tester sur toutes les classes (niveau 3), indices synthétiques compris.
 
 **Ces classements sont des hypothèses, pas des résultats.** Avec `CLASS_FILTER=1`, une stratégie absente d'une classe n'y tourne pas (S2 et S4 sur l'or, par exemple) ;
 pour les y remettre : `CLASS_STRATEGIES="or:S3/S1/S2,S4"`. Réglages : `CLASS_FILTER`, `TIER_MAX`, `CLASS_STRATEGIES`, et `SYMBOL_STRATEGIES` (prioritaire sur tout, actif par actif).

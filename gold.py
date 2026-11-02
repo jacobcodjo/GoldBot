@@ -279,7 +279,7 @@ def is_247(sym):
     """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S3 et S4."""
     return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
-    """'S2,S3' -> ['S2', 'S3'] ; vide ou absent -> les 4 stratégies (GitHub transmet une chaîne vide si la variable n'existe pas)."""
+    """'S2,S3' -> ['S2', 'S3'] ; vide ou absent -> toutes les stratégies (S1, S2, S3, S4, S6, S7 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
     return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4", "S6", "S7"]
 
 
