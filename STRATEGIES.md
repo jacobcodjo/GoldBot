@@ -1,6 +1,6 @@
 # Stratégies du bot (or, paires majeures, BTC et ETH)
 
-Six stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
+Sept stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
 alertes Telegram (le code S1 à S4 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
 paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --set`).
 
@@ -305,12 +305,35 @@ bougies M15 clôturées finit au-delà de la ligne, la précédente non). Module
   drapeau et fanion, la hauteur est celle du mât). Ratio gain/risque minimal 1 sur TP3 (`S6_MIN_RR`). Le cadre intraday ramène ensuite
   les objectifs avant le prochain obstacle H4/H1 opposé (comme pour les autres stratégies).
 - **Invalidation** : le niveau du stop. Pas de filtre de session : la confirmation M15 n'est pas limitée aux killzones.
+- **Confluence avec l'alerte de retournement** (figures de retournement seulement) : si l'alerte de retournement possible (voir plus bas)
+  va dans le même sens (tendance H4 mûre, sweep d'un niveau majeur, cassure de structure H1), le risque maximal admis est multiplié
+  par 1,4 (`S6_CONF_RISK_FACTOR`) et le signal porte « Confluence : retournement possible ». Sans cette confluence, le ratio minimal
+  vers TP3 passe de 1 à 1,5 (`S6_NOCONF_MIN_RR`). Les figures de continuation ne sont pas concernées.
 - **Un signal par sens** : si plusieurs figures cassent en même temps, la meilleure (ratio TP3) est gardée.
 - **Entonnoir** : `S6_figure` (figures présentes), `S6_cassure` (cassure confirmée en M15), `S6_signal`.
 
 > **Important.** Ces seuils sont des points de départ classiques, **non optimisés ni validés** sur l'or. Lance le backtest
 > (`backtest.yml`, option `--only S6`) avant de t'y fier, et compare chaque figure (`extra.figure` dans le rapport).
-> Retire la stratégie sans toucher au code avec `STRATEGIES=S1,S2,S3,S4`.
+> Retire la stratégie sans toucher au code avec `STRATEGIES=S1,S2,S3,S4,S7`.
+
+## Reversal (code S7) · H4 > H1 > M15
+
+L'alerte de retournement possible (voir plus bas) devient un **ordre**. Mêmes conditions (`reversal.detect`) : tendance H4 mûre
+(4 jambes ou plus) encore intacte, sweep H1 d'un sommet (creux) récent sur un niveau majeur H4 / veille, cassure de structure H1 contre
+la tendance, au moins 2 signes d'essoufflement sur 3 (divergence RSI, bougies qui rétrécissent, mèche de rejet).
+
+- **Entrée** : ordre limite au **retest du dernier creux (sommet) H1 cassé** ; au marché si le mode est `market` ou si le niveau n'est pas
+  atteignable. Retest à plus de 1 ATR H1 du prix (`S7_ENTRY_MAX_ATR`) : signal écarté. Validité de l'ordre : 2 h.
+- **Stop** : au-delà de l'extrême du sweep + 0,2 ATR H1. Risque maximal 3 x ATR H1 (`S7_RISK_CAP_ATR`), sinon signal rejeté.
+- **Objectifs** : 1R / 2R / 3R, ramenés avant le prochain obstacle par le cadre intraday.
+- **Contre la tendance H4** : le message le rappelle (taille réduite conseillée) et `extra.contre_tendance` est enregistré.
+- **Un ordre par sweep** (clé = bougie de l'extrême). Quand S7 est active, l'alerte d'information n'est plus envoyée (même événement) ;
+  `STRATEGIES=S1,S2,S3,S4,S6` la rétablit. `REVERSAL_ALERTS=0` désactive aussi la détection de l'information.
+- **Tous les actifs, indices synthétiques compris** (S6 et S7). Sur un indice synthétique le prix est généré : les niveaux et figures y ont
+  moins de sens, le backtest dira si S6 et S7 y tiennent (`--sym` pour les isoler).
+- **Entonnoir** : `S7_retournement` (retournements détectés), `S7_signal`.
+
+> Stratégie contre la tendance, non validée : backtest (`--only S7`) avant de t'y fier.
 
 ## Classes d'actifs et niveaux (quelle stratégie sur quel actif)
 
@@ -392,7 +415,7 @@ S1 (Pullback) et S3 n'entrent que sur réaction à un niveau ou une zone H4/H1 (
 - **Backtest** : trades suivis sur l'unité de temps du signal, comme en direct ; échauffement par défaut de 35 jours.
 
 
-## Alerte de retournement possible (information, hors stratégies)
+## Alerte de retournement possible (information ; devient l'ordre S7 quand S7 est active)
 
 Les stratégies jouent la continuation de la tendance de fond ; `reversal.py` signale en plus, **à titre d'information**, un retournement
 possible. Aucun ordre, aucun suivi, aucun filtre sur les stratégies. Une alerte n'est envoyée que si tout se cumule :
@@ -403,6 +426,6 @@ possible. Aucun ordre, aucun suivi, aucun filtre sur les stratégies. Une alerte
 4. **Cassure de structure H1 contre la tendance** : clôture sous le dernier creux (au-dessus du dernier sommet) formé avant le sweep, datant de 2 bougies H1 au plus.
 5. **Essoufflement** : au moins `REVERSAL_MIN_SIGNS` signes sur 3 (défaut 2) : divergence RSI H1 (nouvel extrême du prix, RSI plus bas), bougies qui rétrécissent (corps des 3 dernières < 60 % de celui des 10 précédentes), mèche de rejet (>= 2 fois le corps).
 
-Un message par sweep, avec l'invalidation (l'extrême du sweep). Pas d'alerte pour les indices synthétiques. Réglages : `REVERSAL_ALERTS=0`
+Un message par sweep, avec l'invalidation (l'extrême du sweep). Active sur tous les actifs, indices synthétiques compris. Réglages : `REVERSAL_ALERTS=0`
 la désactive, `REVERSAL_MIN_SIGNS` (1 à 3), et les constantes de `reversal.py` (`AGES`, `SWEEP_BARS`, `FRESH_BARS`, `FADE_RATIO`...).
 Attendre la cassure du H4 pour confirmer : un retournement signalé peut n'être qu'un repli.

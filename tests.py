@@ -242,8 +242,8 @@ class Messages(unittest.TestCase):
         self.assertEqual(gold.age_txt({"age_min": 0.2}), "à l'instant")
 
     def test_variables_vides(self):
-        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4", "S6"])      # variable GitHub non définie
-        self.assertEqual(gold.parse_strategies(None), ["S1", "S2", "S3", "S4", "S6"])
+        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4", "S6", "S7"])      # variable GitHub non définie
+        self.assertEqual(gold.parse_strategies(None), ["S1", "S2", "S3", "S4", "S6", "S7"])
         self.assertEqual(gold.parse_strategies("S1,S5,S3"), ["S1", "S3"])               # ancien code S5 = Pullback (S1), sans doublon
         self.assertEqual(gold.parse_strategies(" s2 , S3 "), ["S2", "S3"])
 
@@ -451,7 +451,7 @@ class IndicesVolatility(unittest.TestCase):
             self.assertEqual(gold.pullback_variants(sym), {"S1": "structure"})   # prix généré : seule la variante structure
         self.assertIsNone(gold.pullback_variants("frxEURUSD"))
         # les autres classes suivent leur propre liste (principale, secondaires, à tester)
-        self.assertEqual(gold.strategies_for("frxEURUSD"), ["S3", "S2", "S1"])
+        self.assertEqual(gold.strategies_for("frxEURUSD"), ["S3", "S2", "S1", "S6", "S7"])
 
     def test_scan_lance_s3_et_pullback_sans_killzone_sur_les_synthetiques(self):
         from unittest import mock
@@ -466,7 +466,7 @@ class IndicesVolatility(unittest.TestCase):
         provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
         with mock.patch.object(S, "scan_all", fake):
             gold.scan("R_75", provide, data[t]["epoch"] + 300, {}, Counter(), ())
-        self.assertEqual(seen, {"only": ["S1", "S3"], "kz": False, "dec": 4, "variants": {"S1": "structure"}})
+        self.assertEqual(seen, {"only": ["S1", "S3", "S6", "S7"], "kz": False, "dec": 4, "variants": {"S1": "structure"}})
 
     def test_marche_24h_sur_24_sans_news_ni_week_end(self):
         samedi, news = ts(2026, 10, 24, 12), [{"start": ts(2026, 10, 24, 11), "end": ts(2026, 10, 24, 13), "note": "NFP", "cur": []}]
@@ -1259,9 +1259,9 @@ class ClassesEtNiveaux(unittest.TestCase):
         self.assertEqual(gold.CLASS_OF["frxEURCHF"], "forex_calme")
 
     def test_tableau_par_defaut(self):
-        want = {"or": [["S3"], ["S1"], []], "forex_session": [["S3"], ["S2"], ["S1"]],
-                "forex_jpy": [["S1"], [], []], "forex_calme": [["S4"], ["S3"], []],
-                "crypto": [["S1"], ["S3"], []], "synthetique": [["S3"], ["S1"], []]}
+        want = {"or": [["S3"], ["S1"], ["S6", "S7"]], "forex_session": [["S3"], ["S2"], ["S1", "S6", "S7"]],
+                "forex_jpy": [["S1"], [], ["S6", "S7"]], "forex_calme": [["S4"], ["S3"], ["S6", "S7"]],
+                "crypto": [["S1"], ["S3"], ["S6", "S7"]], "synthetique": [["S3"], ["S1"], ["S6", "S7"]]}
         self.assertEqual(gold.DEFAULT_CLASS_TIERS, want)
         for tiers in want.values():
             self.assertEqual(len(tiers), 3)
@@ -1272,12 +1272,12 @@ class ClassesEtNiveaux(unittest.TestCase):
 
     def test_strategies_par_classe_et_niveau_max(self):
         from unittest import mock
-        cas = {"frxXAUUSD": (["S3"], ["S3", "S1"], ["S3", "S1"]),
-               "frxEURUSD": (["S3"], ["S3", "S2"], ["S3", "S2", "S1"]),
-               "frxUSDJPY": (["S1"], ["S1"], ["S1"]),
-               "frxUSDCHF": (["S4"], ["S4", "S3"], ["S4", "S3"]),
-               "cryBTCUSD": (["S1"], ["S1", "S3"], ["S1", "S3"]),
-               "R_75": (["S3"], ["S3", "S1"], ["S3", "S1"])}
+        cas = {"frxXAUUSD": (["S3"], ["S3", "S1"], ["S3", "S1", "S6", "S7"]),
+               "frxEURUSD": (["S3"], ["S3", "S2"], ["S3", "S2", "S1", "S6", "S7"]),
+               "frxUSDJPY": (["S1"], ["S1"], ["S1", "S6", "S7"]),
+               "frxUSDCHF": (["S4"], ["S4", "S3"], ["S4", "S3", "S6", "S7"]),
+               "cryBTCUSD": (["S1"], ["S1", "S3"], ["S1", "S3", "S6", "S7"]),
+               "R_75": (["S3"], ["S3", "S1"], ["S3", "S1", "S6", "S7"])}
         for sym, (t1, t2, t3) in cas.items():
             for tmax, want in ((1, t1), (2, t2), (3, t3)):
                 with mock.patch.object(gold, "TIER_MAX", tmax):
@@ -1288,7 +1288,7 @@ class ClassesEtNiveaux(unittest.TestCase):
         with mock.patch.dict(gold.SYMBOL_OVERRIDES, {"frxEURUSD": ["S4"]}):
             self.assertEqual(gold.strategies_for("frxEURUSD"), ["S4"])
             self.assertIsNone(gold.tier_of("frxEURUSD", "S4"))
-            self.assertEqual(gold.strategies_for("frxGBPUSD"), ["S3", "S2", "S1"])   # les autres gardent leur classe
+            self.assertEqual(gold.strategies_for("frxGBPUSD"), ["S3", "S2", "S1", "S6", "S7"])   # les autres gardent leur classe
         self.assertEqual(gold.strategies_for("frxINCONNU"), self.TOUTES)                  # hors classe : toutes
 
     def test_niveau_d_une_strategie(self):
@@ -2156,15 +2156,73 @@ class RetournementPossible(unittest.TestCase):
         provide = lambda tf: h1
         state = {}
         with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
-                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP):
+                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
+                mock.patch.object(gold, "ENABLED", ["S1", "S2", "S3", "S4"]):
             text = gold.reversal_alert("frxXAUUSD", provide, now, state)
             self.assertIn("🔄 Retournement possible · XAUUSD", text)
             self.assertEqual(len(state), 1)
             self.assertIsNone(gold.reversal_alert("frxXAUUSD", provide, now + 300, state))   # déjà signalé
-            self.assertIsNone(gold.reversal_alert("R_100", provide, now, {}))                 # indices synthétiques : non
+            self.assertIn("🔄 Retournement possible · ", gold.reversal_alert("R_100", provide, now, {}))   # indices synthétiques : oui
             with mock.patch.object(gold.REV, "ENABLED", False):
                 self.assertIsNone(gold.reversal_alert("frxEURUSD", provide, now, {}))
         self.assertTrue(gold.REV.ENABLED)                                                    # activée par défaut
+        with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
+                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
+                mock.patch.object(gold, "ENABLED", ["S1", "S7"]):
+            self.assertIsNone(gold.reversal_alert("frxXAUUSD", provide, now, {}))            # S7 active : l'ordre remplace l'information
+
+    def s7_provide(self, price=109.5):
+        h1 = self.h1_sweep()
+        now = h1[-1]["epoch"] + 600
+        t0 = (now // 900) * 900 - 80 * 900
+        m15 = [{"epoch": t0 + i * 900, "open": price, "high": price + 0.15, "low": price - 0.15, "close": price} for i in range(81)]
+        return now, (lambda tf, force=False: {"H4": h1[::4] or h1, "H1": h1, "M15": m15, "M5": m15, "D1": None}[tf])
+
+    def run_s7(self, mode="limit", price=109.5, **patch):
+        from unittest import mock
+        now, provide = self.s7_provide(price)
+        with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
+                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
+                mock.patch.object(gold.REV, "S7_RISK_CAP_ATR", patch.get("cap", 10.0)):
+            funnel = Counter()
+            return gold.REV.scan_s7(provide, now, funnel, 2, True, mode), funnel
+
+    def test_s7_ordre_de_retournement(self):
+        sigs, funnel = self.run_s7()
+        self.assertEqual(len(sigs), 1)
+        sig = sigs[0]
+        self.assertEqual((sig["strat"], sig["label"], sig["dir"]), ("S7", "Reversal", "SELL"))
+        self.assertEqual(sig["otype"], "SELL LIMIT")
+        self.assertAlmostEqual(sig["entry"], 109.6)                       # retest du creux de structure cassé
+        self.assertGreater(sig["sl"], 113.0)                              # au-delà de l'extrême du sweep (113,00)
+        self.assertTrue(sig["entry"] > sig["tp1"] > sig["tp2"] > sig["tp3"])
+        self.assertTrue(sig["extra"]["contre_tendance"])
+        self.assertEqual(sig["ttl"], gold.REV.S7_LIMIT_TTL)
+        self.assertEqual((funnel["S7_retournement"], funnel["S7_signal"]), (1, 1))
+
+    def test_s7_marche_et_ecartes(self):
+        sigs, _ = self.run_s7(mode="market")
+        self.assertEqual(sigs[0]["otype"], "SELL")
+        far, funnel = self.run_s7(price=105.0)                            # retest du creux à plus de 1 ATR H1 du prix
+        self.assertIsNone(far)
+        self.assertEqual(funnel["stale"], 1)
+        capped, _ = self.run_s7(cap=0.5)                                  # risque au-delà du plafond
+        self.assertIsNone(capped)
+
+    def test_s7_enregistree_et_sur_tous_les_actifs(self):
+        self.assertIn("S7", dict(S.STRATEGIES))
+        self.assertEqual((S.STRAT_LABELS["S7"], gold.LABEL_CODE["Reversal"], gold.ENTRY_MODES["S7"]), ("Reversal", "S7", "limit"))
+        self.assertIn("S7", gold.parse_strategies(""))
+        self.assertIn("S7_signal", G.FUNNEL_ORDER)
+        from unittest import mock
+        now, provide = self.s7_provide()
+        for sym, attendu in (("frxXAUUSD", True), ("R_100", True)):
+            with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
+                    mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
+                    mock.patch.object(gold.REV, "S7_RISK_CAP_ATR", 10.0), \
+                    mock.patch.object(gold, "ENABLED", ["S7"]):
+                out = gold.scan(sym, provide, now, {}, Counter(), ())
+            self.assertEqual(any(sig["strat"] == "S7" for sig, _ in out), attendu, sym)
 
 
 class ChartPatterns(unittest.TestCase):
@@ -2174,9 +2232,10 @@ class ChartPatterns(unittest.TestCase):
     def setUp(self):                                    # les séries synthétiques sont plus volatiles (en ATR) que les marchés réels
         import patterns
         from unittest import mock
-        p = mock.patch.object(patterns, "S6_RISK_CAP_ATR", 12.0)
-        p.start()
-        self.addCleanup(p.stop)
+        for name, val in (("S6_RISK_CAP_ATR", 12.0), ("S6_NOCONF_MIN_RR", 1.0)):
+            p = mock.patch.object(patterns, name, val)
+            p.start()
+            self.addCleanup(p.stop)
 
     @staticmethod
     def m15_series(way, seed=1, noise=0.04, flip=False):
@@ -2227,6 +2286,37 @@ class ChartPatterns(unittest.TestCase):
         self.assertGreater(sig["sl"], sig["entry"])
         self.assertTrue(sig["entry"] > sig["tp1"] > sig["tp2"] > sig["tp3"])
         self.assertGreaterEqual(funnel["S6_cassure"], 1)
+
+    REV_SELL = {"dir": "SELL", "trend_dir": "BUY", "age": "mûre", "legs": 5, "level": (100.0, "sommet H4"), "ext": 100.5,
+                "pivot": 94.0, "signs": ["mèche de rejet"], "epoch": 1}
+
+    def test_confluence_avec_alerte_de_retournement(self):
+        from unittest import mock
+        with mock.patch("reversal.detect", return_value=dict(self.REV_SELL)):
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+        self.assertIs(sigs[0]["extra"]["confluence_retournement"], True)
+        self.assertTrue(any("Confluence : retournement possible" in x for x in sigs[0]["details"]))
+        with mock.patch("reversal.detect", return_value=dict(self.REV_SELL, dir="BUY")):    # alerte dans l'autre sens : pas de confluence
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+        self.assertIs(sigs[0]["extra"]["confluence_retournement"], False)
+
+    def test_sans_confluence_ratio_plus_exigeant(self):
+        from unittest import mock
+        import patterns
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "S6_NOCONF_MIN_RR", 5.0):
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+            self.assertIsNone(sigs)                                                        # ratio TP3 insuffisant sans confluence
+        with mock.patch("reversal.detect", return_value=dict(self.REV_SELL)), mock.patch.object(patterns, "S6_NOCONF_MIN_RR", 5.0):
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+            self.assertIsNotNone(sigs)                                                     # avec confluence, le ratio normal suffit
+
+    def test_continuation_sans_effet_de_la_confluence(self):
+        from unittest import mock
+        w = [(0, 100), (50, 100), (60, 90), (66, 92.5), (70, 90.8), (76, 92.9), (82, 91.4), (88, 93.1), (94, 91.4), (108, 85)]
+        with mock.patch("reversal.detect", side_effect=AssertionError("non appelée")):
+            sigs, _ = self.replay(w, start=330)
+        if sigs:
+            self.assertNotIn("confluence_retournement", sigs[0]["extra"])
 
     def test_double_creux_achat_miroir(self):
         sigs, _ = self.replay(self.DOUBLE_TOP, flip=True)

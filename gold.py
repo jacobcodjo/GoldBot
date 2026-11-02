@@ -1,7 +1,7 @@
 """Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH + indices Volatility de Deriv : 5 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
 Stratégies (détail dans STRATEGIES.md) :
-  S1 Pullback (variantes classique / structure) · S2 Cassure de la plage asiatique · S3 Sweep + CHoCH · S4 Mean Reversion · S6 Chart Patterns
+  S1 Pullback (variantes classique / structure) · S2 Cassure de la plage asiatique · S3 Sweep + CHoCH · S4 Mean Reversion · S6 Chart Patterns · S7 Reversal
 Un passage = un scan (à déclencher toutes les 5 minutes par un cron externe, voir README.md).
 """
 import json, os, random, sys, time
@@ -103,7 +103,7 @@ def parse_sym_strats(text):
     return out
 
 
-ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit", "S6": "limit"}   # défaut : ordres limites partout
+ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit", "S6": "limit", "S7": "limit"}   # défaut : ordres limites partout
 for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S3:market,S4:market"
     _k, _, _v = _p.partition(":")
     _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
@@ -135,12 +135,12 @@ ASSET_CLASSES = {                       # clé : (libellé, actifs)
 CLASS_ALIASES = {"gold": "or", "xau": "or", "cryptos": "crypto", "synth": "synthetique", "synthetiques": "synthetique"}
 CLASS_OF = {sym: key for key, (_, syms) in ASSET_CLASSES.items() for sym in syms}
 DEFAULT_CLASS_TIERS = {                 # [principales, secondaires, à tester]
-    "or": [["S3"], ["S1"], []],
-    "forex_session": [["S3"], ["S2"], ["S1"]],
-    "forex_jpy": [["S1"], [], []],
-    "forex_calme": [["S4"], ["S3"], []],
-    "crypto": [["S1"], ["S3"], []],
-    "synthetique": [["S3"], ["S1"], []],
+    "or": [["S3"], ["S1"], ["S6", "S7"]],
+    "forex_session": [["S3"], ["S2"], ["S1", "S6", "S7"]],
+    "forex_jpy": [["S1"], [], ["S6", "S7"]],
+    "forex_calme": [["S4"], ["S3"], ["S6", "S7"]],
+    "crypto": [["S1"], ["S3"], ["S6", "S7"]],
+    "synthetique": [["S3"], ["S1"], ["S6", "S7"]],
 }
 # Variante de Pullback imposée par classe : sur un indice synthétique (prix généré, sans tendance EMA/ADX qui ait un sens), seule
 # la variante structure tournait avant la fusion (ex-S5) ; les autres classes suivent PULLBACK_VARIANT.
@@ -280,7 +280,7 @@ def is_247(sym):
     return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
     """'S2,S3' -> ['S2', 'S3'] ; vide ou absent -> les 4 stratégies (GitHub transmet une chaîne vide si la variable n'existe pas)."""
-    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4", "S6"]
+    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4", "S6", "S7"]
 
 
 ENABLED = parse_strategies(os.getenv("STRATEGIES"))
@@ -815,8 +815,8 @@ def add_confluence(sig, tr, batch, now):
 
 def reversal_alert(sym, provide, now, state):
     """Texte d'une alerte d'information « retournement possible » (voir reversal.py), ou None. Un message par sweep ; ni ordre,
-    ni suivi, ni contrôle de risque. Pas pour les indices synthétiques (prix aléatoire, pas de niveaux qui comptent)."""
-    if not REV.ENABLED or G.is_synthetic(sym):
+    ni suivi, ni contrôle de risque. Tous les actifs, indices synthétiques compris."""
+    if not REV.ENABLED or "S7" in ENABLED:   # S7 envoie le même retournement en ordre
         return None
     rev = REV.detect(provide, now)
     if not rev:
