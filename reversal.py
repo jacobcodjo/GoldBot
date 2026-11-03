@@ -153,7 +153,7 @@ def message(rev, name, dec, clock=""):
     return "\n".join(lines)
 
 
-# ----------------------------- Retournement : l'alerte devient un ordre (partie « retournement » de S6) -----------------------------
+# ----------------------------- Retournement : l'alerte devient un ordre (partie « retournement » de S4) -----------------------------
 def _f(name, default):
     try:
         return float(os.getenv(name) or default)
@@ -165,7 +165,7 @@ S7_RISK_CAP_ATR = _f("S7_RISK_CAP_ATR", 3.0)       # risque maximal : 3 x ATR H1
 S7_SL_BUF_ATR = 0.2                                 # marge du stop au-delà de l'extrême du sweep (en ATR H1)
 S7_ENTRY_MAX_ATR = _f("S7_ENTRY_MAX_ATR", 1.0)      # retest du creux (sommet) cassé à plus de 1 ATR H1 du prix : signal écarté
 S7_LIMIT_TTL = 7200                                 # validité de l'ordre limite, en secondes
-STRAT, LABEL = "S6", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S6 (STRAT_ALIAS : S7 -> S6)
+STRAT, LABEL = "S4", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S4 (STRAT_ALIAS : S7 -> S4)
 
 
 def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
@@ -175,7 +175,7 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     rev = rev or detect(provide, now)
     if not rev:
         return None
-    funnel["S6_retournement"] += 1
+    funnel["S4_retournement"] += 1
     m15, h1 = provide("M15"), provide("H1")
     if not m15 or not h1:
         return None
@@ -196,7 +196,16 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     lv = S.build_levels(d, entry, sl, a_m15, a_h1, S7_RISK_CAP_ATR)
     if lv is None:
         return None
-    funnel["S6_signal"] += 1
+    # Objectifs sur la liquidité opposée intacte (comme S2) : TP1 = 1 R, TP2 = première liquidité entre 2 R et 6 R (sinon 2 R),
+    # TP3 = liquidité suivante à 3 R ou plus (sinon 3 R). Un retournement vise la structure, pas des multiples génériques.
+    levels = S.liquidity_levels(h1[:-1], provide("D1"), m15c, now, a_h1) or []
+    targets = S.liquidity_targets(levels, m15c, d, entry, lv["risk"], a_m15)
+    lv["tp"], t2, t3 = S.s2_tps(d, entry, lv["risk"], targets)
+    tp_lines = [f"🎯 {lab} sur la liquidité {t[0]} ({px_tp:.{dec}f}, {abs(px_tp - entry) / lv['risk']:.1f} R)"
+                for lab, t, px_tp in (("TP2", t2, lv["tp"][1]), ("TP3", t3, lv["tp"][2])) if t]
+    if not tp_lines:
+        tp_lines = ["🎯 Pas de liquidité opposée intacte à 2-6 R : TP2 / TP3 à 2 R / 3 R"]
+    funnel["S4_signal"] += 1
     word = {"BUY": "haussière", "SELL": "baissière"}[rev["trend_dir"]]
     taken = "sommet" if d == "SELL" else "creux"
     broke = "sous le dernier creux" if d == "SELL" else "au-dessus du dernier sommet"
@@ -206,10 +215,11 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
          f"✅ Sweep : {taken} H1 {rev['level'][0]:.{dec}f} ({rev['level'][1]}) pris puis rejeté",
          f"✅ Cassure de structure H1 : clôture {broke} ({rev['pivot']:.{dec}f})",
          "✅ Essoufflement : " + " · ".join(rev["signs"]),
-         "⚠️ Contre la tendance H4 : taille réduite conseillée"],
+         "⚠️ Contre la tendance H4 : taille réduite conseillée"] + tp_lines,
         lines=[{"y": rev["level"][0], "label": f"Sweep · {rev['level'][1]}", "kind": "sweep"},
                {"y": rev["pivot"], "label": "Cassure de structure H1", "kind": "info"}],
         inval=sl, short=f"Retournement · {rev['level'][1]}", trig=m15c[-1]["epoch"], otype=otype, price_now=price,
         ttl=S7_LIMIT_TTL if otype != d else None,
         entry_note=f"Ordre limite au retest du niveau cassé ({entry:.{dec}f})" if otype != d else "",
-        extra={"origine": "retournement", "contre_tendance": True, "niveau": rev["level"][1], "signes": len(rev["signs"])})
+        extra={"origine": "retournement", "contre_tendance": True, "niveau": rev["level"][1], "signes": len(rev["signs"]),
+               "tp": "liquidité" if (t2 or t3) else "fixe"})

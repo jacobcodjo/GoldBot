@@ -1,8 +1,8 @@
-"""S6 Chart Patterns : figures chartistes de retournement et de continuation (voir STRATEGIES.md).
+"""S4 Chart Patterns : figures chartistes de retournement et de continuation (voir STRATEGIES.md).
 
 Cadre intraday du bot : la figure est détectée sur les bougies clôturées H1 ou H4 (obstacles majeurs), la cassure de sa
 ligne clé est CONFIRMÉE en M15 (clôture M15 au-delà de la ligne, la bougie précédente encore en deçà).
-Module autonome (aucune entrée/sortie réseau), même interface que les autres stratégies : scan_s6(provide, now, funnel, ...).
+Module autonome (aucune entrée/sortie réseau), même interface que les autres stratégies : scan_s4(provide, now, funnel, ...).
 
 Toutes les figures sont écrites pour une cassure BAISSIÈRE ; les figures haussières s'obtiennent en retournant les prix
 (miroir) : même code pour les deux sens.
@@ -29,12 +29,12 @@ POLE_LB = int(_f("S6_POLE_LB", 20))
 POLE_ATR = _f("S6_POLE_ATR", 3.5)
 SL_BUF_ATR = 0.2                                 # marge du stop au-delà de la figure (en ATR du timeframe de la figure)
 TP_FRACTIONS = (0.5, 1.0, 1.5)                   # TP1/TP2/TP3 = ligne - fraction x hauteur de la figure (mât pour drapeau/fanion)
-S6_TFS = ("H1", "H4")                            # timeframes de détection des figures
-S6_RISK_CAP_ATR = _f("S6_RISK_CAP_ATR", 5.0)       # risque maximal : 5 x ATR du timeframe de la figure (H1 ou H4)
-S6_MIN_RR = _f("S6_MIN_RR", 1.0)                 # ratio minimal vers TP3
-S6_NOCONF_MIN_RR = _f("S6_NOCONF_MIN_RR", 1.5)   # figure de retournement SANS confluence avec l'alerte de retournement : ratio minimal vers TP3
-S6_CONF_RISK_FACTOR = _f("S6_CONF_RISK_FACTOR", 1.4)   # figure de retournement AVEC confluence : risque maximal multiplié par ce facteur
-S6_LIMIT_TTL = 10800                              # validité de l'ordre limite (retest de la ligne cassée), en secondes
+S4_TFS = ("H1", "H4")                            # timeframes de détection des figures
+S4_RISK_CAP_ATR = _f("S6_RISK_CAP_ATR", 5.0)       # risque maximal : 5 x ATR du timeframe de la figure (H1 ou H4)
+S4_MIN_RR = _f("S6_MIN_RR", 1.0)                 # ratio minimal vers TP3
+S4_NOCONF_MIN_RR = _f("S6_NOCONF_MIN_RR", 1.5)   # figure de retournement SANS confluence avec l'alerte de retournement : ratio minimal vers TP3
+S4_CONF_RISK_FACTOR = _f("S6_CONF_RISK_FACTOR", 1.4)   # figure de retournement AVEC confluence : risque maximal multiplié par ce facteur
+S4_LIMIT_TTL = 10800                              # validité de l'ordre limite (retest de la ligne cassée), en secondes
 FLAT = 0.025                                      # pente "plate" (ATR par bougie)
 PAR = 0.02                                        # écart de pente max pour un canal
 
@@ -237,7 +237,7 @@ FLIP_NAMES = {
 def candidates(h, l, c, flip):
     """Figures présentes sur les bougies clôturées (h, l, c), dont le dernier pivot est récent. Chaque candidat : nom, famille
     (retournement / continuation), s (+1 / -1 : signe du miroir), atr, ligne de cassure `level` (indices de bougies, espace miroir),
-    slref (extrême du stop), height (hauteur de la mesure). La cassure se teste ensuite en M15 (voir scan_s6)."""
+    slref (extrême du stop), height (hauteur de la mesure). La cassure se teste ensuite en M15 (voir scan_s4)."""
     n = len(c)
     if n < 80:
         return []
@@ -296,7 +296,7 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
             break
     if cur is None:
         return None
-    funnel["S6_cassure"] += 1
+    funnel["S4_cassure"] += 1
     t_now = m15[-1]["epoch"] + S.GRAN["M15"]
     price = m15[-1]["close"]
     sl = s * (d["slref"] + SL_BUF_ATR * d["atr"])
@@ -313,39 +313,40 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
         return None
     # Confluence avec l'alerte de retournement (sweep sur niveau majeur + cassure de structure H1 contre une tendance H4 mûre) :
     # une figure de retournement qui la rejoint a un risque admis plus large ; sans elle, un ratio plus exigeant.
-    conf, min_rr, cap = None, S6_MIN_RR, S6_RISK_CAP_ATR
+    conf, min_rr, cap = None, S4_MIN_RR, S4_RISK_CAP_ATR
     if d["kind"] == "retournement":
         rev = rev_fn()
         conf = bool(rev and rev["dir"] == dr)
         if conf:
-            cap = S6_RISK_CAP_ATR * S6_CONF_RISK_FACTOR
+            cap = S4_RISK_CAP_ATR * S4_CONF_RISK_FACTOR
         else:
-            min_rr = S6_NOCONF_MIN_RR
+            min_rr = S4_NOCONF_MIN_RR
     lv = S.build_levels(dr, entry, sl, a_m15, d["atr"], cap, tps=tps)
     if lv is None:
         return None
     gain = lambda t: ((t - entry) if dr == "BUY" else (entry - t)) / lv["risk"]
     if gain(tps[0]) <= 0 or gain(tps[2]) < min_rr:
         return None
-    funnel["S6_signal"] += 1
+    funnel["S4_signal"] += 1
     fam = d["kind"]
     return S._signal(
-        "S6", "Figures & Retournement", dr, entry, lv, m15, "M15", f"{d['name']}|{tf}|{cur['epoch']}",
+        "S4", "Figures & Retournement", dr, entry, lv, m15, "M15", f"{d['name']}|{tf}|{cur['epoch']}",
         [f"✅ Figure {tf} : {d['name']} ({fam})",
          f"✅ Cassure confirmée en M15 ({'sous' if dr == 'SELL' else 'au-dessus de'} la ligne)",
          f"✅ Objectif = hauteur de la figure ({d['height']:.{dec}f})"]
         + (["✅ Confluence : retournement possible (sweep sur niveau majeur + cassure de structure H1)"] if conf else [])
-        + ([f"ℹ️ Pas de confluence de retournement : ratio minimal {S6_NOCONF_MIN_RR:g} exigé"] if conf is False else []),
+        + ([f"ℹ️ Pas de confluence de retournement : ratio minimal {S4_NOCONF_MIN_RR:g} exigé"] if conf is False else []),
+        rr_rule=[(3, min_rr)],
         lines=[{"y": s * ref, "label": f"{d['name']} · cassure", "kind": "info"}],
         inval=sl, short=f"{d['name']} {tf} · {fam}", trig=cur["epoch"], otype=otype, price_now=price,
-        ttl=S6_LIMIT_TTL if otype != dr else None,
+        ttl=S4_LIMIT_TTL if otype != dr else None,
         entry_note=f"Ordre limite au retest de la ligne cassée ({entry:.{dec}f})" if otype != dr else "",
         extra=dict({"origine": "figure", "figure": d["name"], "famille": fam, "tf_figure": tf},
                    **({"confluence_retournement": conf} if conf is not None else {})))
 
 
-def scan_s6(provide, now, funnel, dec=2, kz=True, mode="market"):
-    """S6 Figures & Retournement : figures H1 / H4 (cassure confirmée en M15) et retournement possible (ex-S7). Retourne une liste de signaux (au plus un par sens), ou None.
+def scan_s4(provide, now, funnel, dec=2, kz=True, mode="market"):
+    """S4 Figures & Retournement : figures H1 / H4 (cassure confirmée en M15) et retournement possible (ex-S7). Retourne une liste de signaux (au plus un par sens), ou None.
     `kz` n'a pas d'effet : la confirmation n'est pas limitée à des heures de session."""
     import strategies as S
     m15 = provide("M15")
@@ -366,7 +367,7 @@ def scan_s6(provide, now, funnel, dec=2, kz=True, mode="market"):
         return memo["rev"]
 
     best = {}
-    for tf in S6_TFS:
+    for tf in S4_TFS:
         cs = provide(tf)
         csc = (cs[:-1] if cs else [])[-300:]
         if len(csc) < 80:
@@ -376,7 +377,7 @@ def scan_s6(provide, now, funnel, dec=2, kz=True, mode="market"):
         c = [x["close"] for x in csc]
         for flip in (False, True):
             for d in candidates(h, l, c, flip):
-                funnel["S6_figure"] += 1
+                funnel["S4_figure"] += 1
                 sig = _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn)
                 if not sig:
                     continue

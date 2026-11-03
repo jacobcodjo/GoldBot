@@ -1,4 +1,4 @@
-"""Primitives SMC communes à S1 (Pullback structure, ex-S5), S3 (Sweep + CHoCH) et aux zones d'entrée (bloc d'ordre, FVG).
+"""Primitives SMC communes à S1 (Pullback structure, ex-S5), S2 (Sweep + CHoCH) et aux zones d'entrée (bloc d'ordre, FVG).
 
 Fonctions pures, sans état ni réseau : une bougie est un dict {epoch, open, high, low, close}. Elles ne portent aucune règle de
 stratégie (seuils, sessions, filtres) : chaque stratégie garde ses réglages et appelle ces primitives. Un seul endroit définit donc

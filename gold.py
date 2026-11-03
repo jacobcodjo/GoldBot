@@ -1,7 +1,7 @@
 """Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH + indices Volatility de Deriv : 5 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
 Stratégies (détail dans STRATEGIES.md) :
-  S1 Pullback (structure + Fibonacci) · S2 Cassure de la plage asiatique · S3 Sweep + CHoCH · S4 Mean Reversion · S6 Figures & Retournement
+  S1 Pullback (structure + Fibonacci) · S2 Sweep + CHoCH · S3 Mean Reversion · S4 Figures & Retournement
 Un passage = un scan (à déclencher toutes les 5 minutes par un cron externe, voir README.md).
 """
 import json, os, random, sys, time
@@ -36,7 +36,7 @@ FOREX_MAJORS = ["frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxUSDCHF", "frxAUDUSD",
 FOREX_CROSSES = ["frxAUDJPY", "frxEURAUD", "frxEURCAD", "frxEURCHF", "frxEURGBP", "frxEURJPY", "frxGBPAUD", "frxGBPJPY"]
 CRYPTOS = ["cryBTCUSD", "cryETHUSD"]
 # Indices synthétiques Volatility de Deriv (prix produit par un générateur aléatoire, marché 24h/24 et 7j/7) : V10, V25, V50, V75, V100
-# et leurs variantes à 1 tick par seconde (1s). Classés par ASSET_CLASSES (stratégie principale S3, Pullback secondaire).
+# et leurs variantes à 1 tick par seconde (1s). Classés par ASSET_CLASSES (stratégie principale S2, Pullback secondaire).
 SYNTH_NAMES = {"R_10": "V10", "1HZ10V": "V10 (1s)", "R_25": "V25", "1HZ25V": "V25 (1s)", "R_50": "V50", "1HZ50V": "V50 (1s)",
                "R_75": "V75", "1HZ75V": "V75 (1s)", "R_100": "V100", "1HZ100V": "V100 (1s)"}
 SYNTHETICS = list(SYNTH_NAMES)
@@ -84,7 +84,7 @@ def spread_pct(sym):
 
 
 def canon_codes(codes, known_only=False):
-    """Codes de stratégie normalisés, sans doublon, dans l'ordre : l'ancien code S5 devient S1 (fusion en « Pullback »)."""
+    """Codes de stratégie normalisés, sans doublon, dans l'ordre : l'ancien code S5 devient S1 (fusion en « Pullback »), S7 devient S4."""
     out = []
     for c in codes:
         c = S.STRAT_ALIAS.get(c, c)
@@ -94,7 +94,7 @@ def canon_codes(codes, known_only=False):
 
 
 def parse_sym_strats(text):
-    """'frxEURUSD:S1,S2;cryBTCUSD:S2,S4' -> {'frxEURUSD': ['S1','S2'], 'cryBTCUSD': ['S2','S4']}."""
+    """'frxEURUSD:S1,S2;cryBTCUSD:S2,S3' -> {'frxEURUSD': ['S1','S2'], 'cryBTCUSD': ['S2','S3']}."""
     out = {}
     for part in (text or "").split(";"):
         sym, _, lst = part.partition(":")
@@ -103,8 +103,8 @@ def parse_sym_strats(text):
     return out
 
 
-ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit", "S6": "limit"}   # défaut : ordres limites partout
-for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S3:market,S4:market"
+ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit"}   # défaut : ordres limites partout
+for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S3:market"
     _k, _, _v = _p.partition(":")
     _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
     if _k in ENTRY_MODES and _v.strip().lower() in ("limit", "market"):
@@ -120,10 +120,9 @@ def entry_modes():
 
 
 # --------------------------------------------------------------------------
-# Classes d'actifs et niveaux de stratégie : chaque classe a une stratégie principale (niveau 1), des secondaires
-# (niveau 2) et des stratégies à tester (niveau 3). Hypothèses de départ à valider par backtest, pas des résultats.
+# Classes d'actifs : sert à regrouper les actifs (récapitulatifs, option --sym du backtest, colonne « classe » du rapport).
+# Aucune stratégie n'est filtrée par classe : toutes les stratégies actives tournent sur chaque actif.
 # --------------------------------------------------------------------------
-TIER_NAMES = {1: "principale", 2: "secondaire", 3: "à tester"}
 ASSET_CLASSES = {                       # clé : (libellé, actifs)
     "or": ("Or", [GOLD]),
     "forex_session": ("Forex de session", ["frxEURUSD", "frxGBPUSD", "frxUSDCAD", "frxEURGBP", "frxEURAUD", "frxEURCAD", "frxGBPAUD"]),
@@ -134,94 +133,18 @@ ASSET_CLASSES = {                       # clé : (libellé, actifs)
 }
 CLASS_ALIASES = {"gold": "or", "xau": "or", "cryptos": "crypto", "synth": "synthetique", "synthetiques": "synthetique"}
 CLASS_OF = {sym: key for key, (_, syms) in ASSET_CLASSES.items() for sym in syms}
-DEFAULT_CLASS_TIERS = {                 # [principales, secondaires, à tester]
-    "or": [["S3"], ["S1"], ["S6"]],
-    "forex_session": [["S3"], ["S2"], ["S1", "S6"]],
-    "forex_jpy": [["S1"], [], ["S6"]],
-    "forex_calme": [["S4"], ["S3"], ["S6"]],
-    "crypto": [["S1"], ["S3"], ["S6"]],
-    "synthetique": [["S3"], ["S1"], ["S6"]],
-}
-
-def parse_class_strats(text):
-    """'or:S3/S1/;forex_jpy:S1//S2' -> {'or': [['S3'], ['S1'], []], 'forex_jpy': [['S1'], [], ['S2']]}.
-    Format : classe:principales/secondaires/à tester (stratégies séparées par des virgules, niveaux par « / »).
-    Une classe inconnue est ignorée ; les niveaux manquants sont vides."""
-    out = {}
-    for part in (text or "").split(";"):
-        cls, _, lst = part.partition(":")
-        cls = cls.strip().lower()
-        cls = CLASS_ALIASES.get(cls, cls)
-        if cls not in ASSET_CLASSES or not lst.strip():
-            continue
-        tiers, seen = [], []
-        for seg in lst.split("/")[:3]:
-            tier = [c for c in canon_codes([x.strip().upper() for x in seg.split(",")], known_only=True) if c not in seen]
-            seen += tier                                    # S1,S5 (ancien format) : un seul Pullback, au niveau le plus haut
-            tiers.append(tier)
-        out[cls] = tiers + [[] for _ in range(3 - len(tiers))]
-    return out
-
-
-def parse_tier_max(text, default=3):
-    """Niveau maximal actif : 1 (principales seules), 2 (+ secondaires), 3 (+ à tester). Vide ou invalide -> 3."""
-    try:
-        v = int(float(str(text).strip()))
-    except (TypeError, ValueError):
-        return default
-    return v if v in (1, 2, 3) else default
-
-
-CLASS_TIERS = {**DEFAULT_CLASS_TIERS, **parse_class_strats(os.getenv("CLASS_STRATEGIES"))}
-TIER_MAX = parse_tier_max(os.getenv("TIER_MAX"))
-SYMBOL_OVERRIDES = parse_sym_strats(os.getenv("SYMBOL_STRATEGIES"))   # prioritaire sur les classes, actif par actif
-# Par défaut, TOUTES les stratégies actives (variable STRATEGIES) tournent sur CHAQUE actif. Les classes et niveaux
-# ci-dessus ne s'appliquent que si CLASS_FILTER=1 (ou true / oui / on).
-CLASS_FILTER = (os.getenv("CLASS_FILTER") or "").strip().lower() in ("1", "true", "oui", "on", "yes")
+SYMBOL_OVERRIDES = parse_sym_strats(os.getenv("SYMBOL_STRATEGIES"))   # stratégies imposées actif par actif ; un actif absent reçoit toutes les stratégies actives
 
 
 def strategies_for(sym):
-    """Stratégies de l'actif : SYMBOL_OVERRIDES s'il y est ; sinon toutes les stratégies actives (défaut) ; avec
-    CLASS_FILTER, les niveaux 1 à TIER_MAX de sa classe (dans l'ordre principale, secondaires, à tester). Un actif
-    hors classe garde toutes les stratégies actives."""
-    if sym in SYMBOL_OVERRIDES:
-        return list(SYMBOL_OVERRIDES[sym])
+    """Stratégies de l'actif : celles de SYMBOL_OVERRIDES s'il y figure, sinon toutes les stratégies actives (variable STRATEGIES)."""
+    return list(SYMBOL_OVERRIDES[sym]) if sym in SYMBOL_OVERRIDES else list(ENABLED)
+
+
+def add_class(sig, sym):
+    """Ajoute la classe de l'actif au signal (colonne « classe » du rapport du backtest). Aucun filtre, aucun marquage."""
     cls = CLASS_OF.get(sym)
-    if cls is None or not CLASS_FILTER:
-        return list(ENABLED)
-    out = []
-    for tier in CLASS_TIERS[cls][:TIER_MAX]:
-        out += [c for c in tier if c not in out]
-    return out
-
-
-def tier_of(sym, strat):
-    """Niveau (1 principale, 2 secondaire, 3 à tester) de la stratégie pour cet actif ; None si l'actif est réglé à la main
-    (SYMBOL_OVERRIDES), hors classe, ou si la stratégie n'est pas dans sa classe."""
-    cls = CLASS_OF.get(sym)
-    if sym in SYMBOL_OVERRIDES or cls is None or not CLASS_FILTER:
-        return None
-    for n, tier in enumerate(CLASS_TIERS[cls][:TIER_MAX], 1):
-        if strat in tier:
-            return n
-    return None
-
-
-def add_tier(sig, sym):
-    """Ajoute la classe et le niveau au signal : ligne de détail, colonnes « classe » et « tier » du backtest ; les
-    stratégies à tester sont marquées 🧪 pour ne pas les confondre avec les principales."""
-    cls = CLASS_OF.get(sym)
-    label = ASSET_CLASSES[cls][0] if cls else "Hors classe"
-    tier = tier_of(sym, sig["strat"])
-    name = ("manuelle" if sym in SYMBOL_OVERRIDES else "toutes" if not CLASS_FILTER
-            else TIER_NAMES.get(tier, "hors classe"))
-    sig["tier"] = tier
-    sig["extra"] = dict(sig["extra"], classe=label, tier=name)
-    if tier == 3:
-        sig["details"] = list(sig["details"]) + [f"🧪 À tester · {label}"]
-        sig["short"] = f"{sig['short']} · 🧪 à tester"
-    elif tier:
-        sig["details"] = list(sig["details"]) + [f"🏷️ {label} · stratégie {name}"]
+    sig["extra"] = dict(sig["extra"], classe=ASSET_CLASSES[cls][0] if cls else "Hors classe")
     return sig
 
 
@@ -265,11 +188,11 @@ def dec_of(sym):
 
 
 def is_247(sym):
-    """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S3 et S4."""
+    """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S2 et S3."""
     return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
-    """'S2,S3' -> ['S2', 'S3'] ; vide ou absent -> toutes les stratégies (S1, S2, S3, S4, S6 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
-    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4", "S6"]
+    """'S1,S2' -> ['S1', 'S2'] ; vide ou absent -> toutes les stratégies (S1, S2, S3, S4 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
+    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4"]
 
 
 ENABLED = parse_strategies(os.getenv("STRATEGIES"))
@@ -286,7 +209,7 @@ def parse_confluence(text, default=60.0):
 
 CONFLUENCE_MIN = parse_confluence(os.getenv("CONFLUENCE_MIN"))   # minutes ; 0 = pas d'étiquette de confluence
 LABEL_CODE = {v: k for k, v in S.STRAT_LABELS.items()}
-LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S6", "Reversal": "S6"})      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S3 » (trades enregistrés sans code)
+LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S4", "Reversal": "S4", "Asian Breakout": "AB"})   # « AB » : ancienne stratégie supprimée, sans code actif      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S2 » (trades enregistrés sans code)
 GRAN = S.GRAN
 COUNTS = {"M5": 300, "M15": 400}         # bougies téléchargées à chaque scan
 COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York ; D1 en 00h GMT pour les indices synthétiques), ~100 jours
@@ -637,7 +560,7 @@ def message_minimal(sig, tid):
     return "\n".join([f"{'🟢' if d == 'BUY' else '🔴'} {d} {sig['name']} {sig['ltf']} · {sig['label']}"
                        + (f" · {sig_clock(sig)}" if sig_clock(sig) else "")
                        + (f" · ⚡{'+'.join(sig['confluence'])}" if sig.get("confluence") else "")
-                       + (" · 🧪" if sig.get("tier") == 3 else ""),
+                      ,
                       f"{sig['otype'] + ' ' if is_limit(sig) else ''}{c(sig['entry'])} · SL {c(sig['sl'])} · TP {tps}"]
                      + ([tail] if tail else []))
 
@@ -650,7 +573,7 @@ def message_essentiel(sig, tid):
     tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
     entry = c(sig["entry"]) if is_limit(sig) else f"Marché {c(sig['entry'])}"
     l1 = (f"{'🟢' if d == 'BUY' else '🔴'} {sig['otype'] if is_limit(sig) else d} · {sig['name']} {sig['ltf']} · {strat}"
-          + (f" · {sig_clock(sig)}" if sig_clock(sig) else "") + (" · 🧪" if sig.get("tier") == 3 else ""))
+          + (f" · {sig_clock(sig)}" if sig_clock(sig) else ""))
     l2 = f"{entry} · SL {c(sig['sl'])} · TP {tps}"
     valid = limit_validity(sig) if is_limit(sig) else None
     age = f"signal {age_txt(sig)}" if (sig.get("age_min") or 0) >= 3 else None    # alerte tardive : on le dit
@@ -778,7 +701,7 @@ def confluence_with(sig, tr, batch, now):
     own, found = sig.get("strat"), {}
     fam = lambda c: S.STRAT_FAMILY.get(c, c)          # S1 et S5 : même idée, ce n'est pas une confirmation
     for t in T.active_list(tr):
-        code = t.get("strat") or LABEL_CODE.get(t.get("cascade"))
+        code = LABEL_CODE.get(t.get("cascade")) or t.get("strat")      # le libellé d'abord : les trades enregistrés avant la renumérotation portent d'anciens codes
         age = now - t["t0"]
         if t["sym"] == sig["sym"] and t["dir"] == sig["dir"] and code and fam(code) != fam(own) and 0 <= age <= win:
             found[code] = min(age / 60, found.get(code, age / 60))
@@ -805,7 +728,7 @@ def add_confluence(sig, tr, batch, now):
 def reversal_alert(sym, provide, now, state):
     """Texte d'une alerte d'information « retournement possible » (voir reversal.py), ou None. Un message par sweep ; ni ordre,
     ni suivi, ni contrôle de risque. Tous les actifs, indices synthétiques compris."""
-    if not REV.ENABLED or "S6" in ENABLED:   # S6 envoie le même retournement en ordre
+    if not REV.ENABLED or "S4" in ENABLED:   # S4 envoie le même retournement en ordre
         return None
     rev = REV.detect(provide, now)
     if not rev:
@@ -1023,7 +946,7 @@ def build_recap(api, cache, now, syms=None):
     blocks, closed = [], []
     for sym in (SYMBOLS if syms is None else syms):
         if G.is_synthetic(sym):
-            continue                   # indices synthétiques : pas de récapitulatif de tendance (S3 seule, marché aléatoire)
+            continue                   # indices synthétiques : pas de récapitulatif de tendance (S2 seule, marché aléatoire)
         try:
             h1 = tf_candles(api, cache, sym, "H1")
             if not h1 or now - h1[-1]["epoch"] > RECAP_STALE:
@@ -1099,26 +1022,26 @@ def synth_recap_slot(g, now):
 
 
 def synth_block(api, cache, sym, now):
-    """Bloc d'un indice : tendance D1/H4/H1, biais utilisé par S3, extrêmes de la bougie daily en cours. None si pas de données."""
+    """Bloc d'un indice : tendance D1/H4/H1, biais utilisé par S2, extrêmes de la bougie daily en cours. None si pas de données."""
     cs = {tf: tf_candles(api, cache, sym, tf) or [] for tf in TR.TIMEFRAMES}
     if not cs["H1"] or now - cs["H1"][-1]["epoch"] > RECAP_STALE:
         return None
     dec = dec_of(sym)
     infos = {tf: TR.trend_info(cs[tf], tf) for tf in TR.TIMEFRAMES}
-    if RECAP_FORMAT == "compact":                       # une ligne : tendances, biais S3, extrêmes de la bougie daily
+    if RECAP_FORMAT == "compact":                       # une ligne : tendances, biais S2, extrêmes de la bougie daily
         line = TR.symbol_line(name_of(sym), infos, now, dec)
-        if S.S3_BIAS_FILTER:
-            bias, tf = S.s3_bias(cs["H4"], cs["H1"])
-            line += f" · biais S3 {('🟢' if bias == 'BUY' else '🔴') + ' ' + tf if bias else '⚪ aucun'}"
+        if S.S2_BIAS_FILTER:
+            bias, tf = S.s2_bias(cs["H4"], cs["H1"])
+            line += f" · biais S2 {('🟢' if bias == 'BUY' else '🔴') + ' ' + tf if bias else '⚪ aucun'}"
         if cs["D1"]:
             day = cs["D1"][-1]
             line += f" · jour {day['low']:.{dec}f}–{day['high']:.{dec}f}"
         return line
     lines = [TR.symbol_block(name_of(sym), infos, now, dec)]
-    if S.S3_BIAS_FILTER:
-        bias, tf = S.s3_bias(cs["H4"], cs["H1"])
-        lines.append("  Biais S3 : " + (f"{'🟢 haussier' if bias == 'BUY' else '🔴 baissier'} ({tf}) → S3 n'émet que des {'achats' if bias == 'BUY' else 'ventes'}"
-                                          if bias else "⚪ aucun → S3 n'émet pas de signal"))
+    if S.S2_BIAS_FILTER:
+        bias, tf = S.s2_bias(cs["H4"], cs["H1"])
+        lines.append("  Biais S2 : " + (f"{'🟢 haussier' if bias == 'BUY' else '🔴 baissier'} ({tf}) → S2 n'émet que des {'achats' if bias == 'BUY' else 'ventes'}"
+                                          if bias else "⚪ aucun → S2 n'émet pas de signal"))
     if cs["D1"]:
         day = cs["D1"][-1]
         lines.append(f"  Bougie daily en cours : plus haut {day['high']:.{dec}f} · plus bas {day['low']:.{dec}f}")
@@ -1194,14 +1117,14 @@ def scan(sym, provide, now, sent, funnel, news=()):
     dec = dec_of(sym)
     only = [x for x in ENABLED if x in strategies_for(sym)]
     if not only:
-        return []                      # aucune stratégie active pour cet actif (classe, TIER_MAX ou SYMBOL_STRATEGIES)
+        return []                      # aucune stratégie active pour cet actif (SYMBOL_STRATEGIES)
     vol = None
     for sig in S.scan_all(provide, now, funnel, only=only, dec=dec, kz=not is_247(sym), modes=entry_modes()):
         sig.update(sym=sym, name=name_of(sym), dec=dec, key=f"{sym}|{sig['key']}")
         if sig["key"] in sent:
             continue
         sig["ts"] = now
-        add_tier(sig, sym)
+        add_class(sig, sym)
         sig["age_min"] = max(0.0, (now - sig["trig_close"]) / 60) if sig.get("trig_close") else None
         if sig["age_min"] is not None and sig["age_min"] > MAX_AGE_MIN:
             funnel["stale"] += 1       # alerte trop tardive (retard du cron ou du workflow)
@@ -1218,6 +1141,7 @@ def scan(sym, provide, now, sent, funnel, news=()):
             if why:
                 funnel[why] += 1       # entrée hors niveau H4/H1, ou obstacle trop proche devant l'objectif (transitoire)
                 continue
+        sig.pop("rr_rule", None)       # règle de ratio minimal : utilisée par le filtre d'obstacles seulement
         infos = {tf: TR.trend_info(provide(tf) or [], tf) for tf in TR.ALERT_TFS}
         tl, te = TR.alert_lines(sig["dir"], infos, now)
         sig.update(trend_lines=tl, trend_short=TR.alert_short(sig["dir"], infos, now))

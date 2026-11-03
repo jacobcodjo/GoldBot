@@ -42,12 +42,12 @@ GAP_ALERT_MIN = 30         # alerte si le bot reprend après plus de 30 min sans
 FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée Deriv
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
-FUNNEL_ORDER = ["data", "S2_range", "S2_signal", "S3_niveau", "S3_sweep",
-                "S3_biais", "S3_zone", "S3_signal", "S4_regime", "S4_signal", "S6_figure", "S6_cassure", "S6_signal", "S6_retournement", "S5_regime", "S5_tendance", "S5_adx", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "blackout", "dedupe", "risk", "alert"]
-FUNNEL_LABEL = {"data": "données", "S2_range": "Asian Breakout : plage", "S2_signal": "signal Asian Breakout", "S3_niveau": "Sweep + CHoCH : niveaux",
-                "S3_sweep": "sweep (niveau intact)", "S3_biais": "sens du biais H4/H1", "S3_zone": "sur zone H1/H4", "S3_signal": "signal Sweep + CHoCH", "S4_regime": "Mean Reversion : range H1", "S4_signal": "signal Mean Reversion", "S6_figure": "Figures & Retournement : figures H1/H4", "S6_cassure": "cassure confirmée M15", "S6_signal": "signal Figures & Retournement", "S6_retournement": "retournements détectés (ex-S7)",
+FUNNEL_ORDER = ["data", "S2_niveau", "S2_sweep",
+                "S2_biais", "S2_zone", "S2_signal", "S3_regime", "S3_signal", "S4_figure", "S4_cassure", "S4_signal", "S4_retournement", "S5_regime", "S5_tendance", "S5_adx", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "obst_rr", "blackout", "dedupe", "risk", "alert"]
+FUNNEL_LABEL = {"data": "données", "S2_niveau": "Sweep + CHoCH : niveaux",
+                "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4/H1", "S2_zone": "sur zone H1/H4", "S2_signal": "signal Sweep + CHoCH", "S3_regime": "Mean Reversion : range H1", "S3_signal": "signal Mean Reversion", "S4_figure": "Figures & Retournement : figures H1/H4", "S4_cassure": "cassure confirmée M15", "S4_signal": "signal Figures & Retournement", "S4_retournement": "retournements détectés (ex-S7)",
                 "S5_regime": "Pullback structure : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_adx": "ADX H4 suffisant", "S5_impulsion": "impulsion + Fibonacci", "S5_signal": "signal Pullback structure",
-                "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "obst_entree": "écartés (hors niveau H4/H1)", "obst_cible": "écartés (obstacle avant l'objectif)", "blackout": "bloqués (news/horaire)",
+                "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "obst_entree": "écartés (hors niveau H4/H1)", "obst_cible": "écartés (obstacle avant l'objectif)", "obst_rr": "écartés (ratio sous le minimum après obstacle)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 
 
@@ -314,7 +314,7 @@ def _short(label, s):
 
 
 REPORT_VALID_TRADES = 100
-REPORT_FILTERS = (("stale", "tardifs"), ("obst_entree", "hors niveau H4/H1"), ("obst_cible", "obstacle devant l'objectif"), ("vol", "volatilité faible"), ("blackout", "news/horaire"),
+REPORT_FILTERS = (("stale", "tardifs"), ("obst_entree", "hors niveau H4/H1"), ("obst_cible", "obstacle devant l'objectif"), ("obst_rr", "ratio sous le minimum après obstacle"), ("vol", "volatilité faible"), ("blackout", "news/horaire"),
                   ("dedupe", "doublons"), ("risk", "risque"))
 
 

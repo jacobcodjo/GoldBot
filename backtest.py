@@ -17,8 +17,7 @@ Exemples :
   python backtest.py --sym frxXAUUSD,frxEURUSD,frxGBPUSD --days 120 --split 0.6
   python backtest.py --sym all --days 120 --split 0.6                (tous les actifs suivis)
   python backtest.py --sym synth --days 120 --split 0.6              (10 indices Volatility ; classes : or, forex, forex_jpy, crypto…)
-  python backtest.py --sym forex_jpy --split 0.6 --tier-max 1        (stratégie principale de la classe seulement)
-  python backtest.py --days 180 --only S2,S3
+  python backtest.py --days 180 --only S2,S4
   python backtest.py --days 120 --set strategies.S5_ADX_MIN=15,18,22 --set tracker.STRUCT_EXIT=true,false
   python backtest.py --source csv --file xauusd_m5.csv
   python backtest.py --source sim --days 60          (marche aléatoire : contrôle de bon sens)
@@ -311,7 +310,7 @@ def report(results, days, spread_pct, split=None):
     L += breakdown(ts, "cascade")
     L.append("Coût du spread par stratégie :")
     L += cost_lines(ts)
-    for key in ["classe", "tier", "variante", "dir", "session", "liq", "h4", "poi", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
+    for key in ["classe", "variante", "dir", "session", "liq", "h4", "poi", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
         L += breakdown(ts, key)
     if split:
         p1, p2 = [t["r"] for t in ts if t.get("period") == "1"], [t["r"] for t in ts if t.get("period") == "2"]
@@ -408,19 +407,15 @@ def main():
     ap.add_argument("--source", choices=["deriv", "csv", "sim"], default="deriv")
     ap.add_argument("--file", help="CSV M5 (source csv, un seul actif)")
     ap.add_argument("--days", type=float, default=120)
-    ap.add_argument("--only", help="stratégies à rejouer, ex. S2,S3 (défaut : toutes)")
+    ap.add_argument("--only", help="stratégies à rejouer, ex. S2,S4 (défaut : toutes)")
     ap.add_argument("--spread-pct", type=float, default=None,
                     help="spread en %% du prix (défaut : or 0,015, majeures 0,006, BTC/ETH 0,05)")
     ap.add_argument("--warmup-days", type=float, default=35)
     ap.add_argument("--split", type=float, default=None, help="fraction de la période pour la période 1 (ex. 0.6)")
     ap.add_argument("--set", action="append", help="grille : module.NOM=v1,v2 (répétable)")
-    ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S4\" (défaut : celles de la classe de l'actif)")
-    ap.add_argument("--tier-max", type=int, choices=[1, 2, 3], help="niveau maximal : 1 principales, 2 + secondaires, 3 + à tester (défaut : 3)")
+    ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S3\" (défaut : toutes les stratégies actives)")
     ap.add_argument("--no-intraday", action="store_true",
-                    help="désactive le cadre intraday (cascades M5, confirmation S3 en M5, pas de clôture de fin de séance, pas de filtre d'obstacles)")
-    ap.add_argument("--class-filter", action="store_true",
-                    help="restreint chaque actif aux stratégies de sa classe (défaut : toutes les stratégies sur chaque actif)")
-    ap.add_argument("--class-strats", help="stratégies par classe, ex. \"or:S3/S1/S2;forex_jpy:S1//\" (principales/secondaires/à tester)")
+                    help="désactive le cadre intraday (cascades M5, confirmation S2 en M5, pas de clôture de fin de séance, pas de filtre d'obstacles)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--vol", type=float, default=0.0006, help="volatilité M5 de la marche aléatoire (sim)")
     ap.add_argument("--telegram", action="store_true", help="envoie aussi le rapport sur Telegram")
@@ -431,12 +426,6 @@ def main():
         gold.SYMBOL_OVERRIDES = gold.parse_sym_strats(a.sym_strats)
     if a.no_intraday:
         S.INTRADAY = T.INTRADAY = False
-    if a.class_filter:
-        gold.CLASS_FILTER = True
-    if a.tier_max:
-        gold.TIER_MAX = a.tier_max
-    if a.class_strats:
-        gold.CLASS_TIERS = {**gold.CLASS_TIERS, **gold.parse_class_strats(a.class_strats)}
     if a.only:
         gold.ENABLED = gold.canon_codes([x.strip().upper() for x in a.only.split(",") if x.strip()])
     syms = gold.resolve_symbols(a.sym)
