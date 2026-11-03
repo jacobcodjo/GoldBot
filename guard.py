@@ -14,6 +14,9 @@ GUARD_FILE = "guard.json"
 NEWS_FILE = "news.json"
 
 # --- Limites de risque ---
+# Un seul trade par actif et par sens, toutes stratégies confondues (ONE_TRADE_PER_SIDE=0 : un par stratégie, ancien comportement).
+# Deux stratégies d'accord sur le même mouvement ne doublent plus l'exposition ; leur accord reste signalé par l'étiquette de confluence.
+ONE_TRADE_PER_SIDE = (os.getenv("ONE_TRADE_PER_SIDE") or "1").strip().lower() not in ("0", "false", "non", "off", "no")
 GROUP_LIMIT = 2            # exposition nette maximale par devise (USD, EUR, JPY…) et par groupe crypto, même sens
 # --- Fenêtres sans alerte (forex et or) ---
 ROLLOVER = (16 * 60 + 55, 17 * 60 + 15)     # minutes NY : élargissement des spreads
@@ -43,9 +46,9 @@ FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée 
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
 FUNNEL_ORDER = ["data", "S2_niveau", "S2_sweep",
-                "S2_biais", "S2_zone", "S2_signal", "S3_regime", "S3_signal", "S4_figure", "S4_cassure", "S4_signal", "S4_retournement", "S5_regime", "S5_tendance", "S5_adx", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "obst_rr", "blackout", "dedupe", "risk", "alert"]
+                "S2_biais", "S2_zone", "S2_fib", "S2_signal", "S3_regime", "S3_fib", "S3_signal", "S4_figure", "S4_cassure", "S4_fib", "S4_signal", "S4_retournement", "S5_regime", "S5_tendance", "S5_adx", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "obst_rr", "blackout", "dedupe", "risk", "alert"]
 FUNNEL_LABEL = {"data": "données", "S2_niveau": "Sweep + CHoCH : niveaux",
-                "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4/H1", "S2_zone": "sur zone H1/H4", "S2_signal": "signal Sweep + CHoCH", "S3_regime": "Mean Reversion : range H1", "S3_signal": "signal Mean Reversion", "S4_figure": "Figures & Retournement : figures H1/H4", "S4_cassure": "cassure confirmée M15", "S4_signal": "signal Figures & Retournement", "S4_retournement": "retournements détectés (ex-S7)",
+                "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4/H1", "S2_zone": "sur zone H1/H4", "S2_fib": "écartés S2 (mauvais côté Fibonacci)", "S2_signal": "signal Sweep + CHoCH", "S3_regime": "Mean Reversion : range H1", "S3_fib": "écartés S3 (milieu du range)", "S3_signal": "signal Mean Reversion", "S4_figure": "Figures & Retournement : figures H1/H4", "S4_cassure": "cassure confirmée M15", "S4_fib": "écartés S4 (repli trop profond)", "S4_signal": "signal Figures & Retournement", "S4_retournement": "retournements détectés (ex-S7)",
                 "S5_regime": "Pullback structure : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_adx": "ADX H4 suffisant", "S5_impulsion": "impulsion + Fibonacci", "S5_signal": "signal Pullback structure",
                 "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "obst_entree": "écartés (hors niveau H4/H1)", "obst_cible": "écartés (obstacle avant l'objectif)", "obst_rr": "écartés (ratio sous le minimum après obstacle)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
@@ -244,12 +247,13 @@ def crypto_sign(sym, d):
 
 
 def risk_check(tr, sym, d, now, strat=None):
-    """Retourne (ok, motif). Contrôle : doublon (même actif, sens et stratégie ; les anciens libellés Trend Pullback / Impulsion comptent comme Pullback),
+    """Retourne (ok, motif). Contrôle : doublon (même actif et même sens, quelle que soit la stratégie ; avec ONE_TRADE_PER_SIDE=0, même
+    stratégie seulement, et les anciens libellés Trend Pullback / Impulsion comptent comme Pullback),
     sens opposé sur le même actif (pas de couverture involontaire entre stratégies), exposition nette par devise et groupe
     crypto. Aucune limite sur le nombre total de trades ouverts. Aucun blocage lié aux pertes de la journée ou de la semaine."""
     act = T.active_list(tr)
     fam = lambda lab: S.LABEL_FAMILY.get(lab, lab)
-    if any(t["sym"] == sym and t["dir"] == d and fam(t.get("cascade")) == fam(strat) for t in act):
+    if any(t["sym"] == sym and t["dir"] == d and (ONE_TRADE_PER_SIDE or fam(t.get("cascade")) == fam(strat)) for t in act):
         return False, "dedupe"
     if any(t["sym"] == sym and t["dir"] != d for t in act):
         return False, "sens opposé déjà en cours sur l'actif"

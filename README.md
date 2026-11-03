@@ -69,6 +69,8 @@ Les actifs sont regroupés en classes (Or, Forex de session, Forex JPY, Forex ca
 | `INTRADAY` | `0` désactive le cadre intraday ; `INTRADAY_RUNNERS=1` laisse courir le reste après TP1 en fin de séance ; `CRYPTO_INTRADAY=1` y soumet les cryptos |
 | `REVERSAL_ALERTS`, `REVERSAL_MIN_SIGNS` | Message d'information de retournement (défaut actif ; 2 signes sur 3) |
 | `S6_RISK_CAP_ATR`, `S6_MIN_RR`, `S6_NOCONF_MIN_RR`, `S6_TOL_ATR`, `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR` | Réglages de S4 : figures et retournement (les noms `S6_*` et `S7_*` sont conservés tels quels, même après la renumérotation des stratégies ; voir STRATEGIES.md) |
+| `S2_FIB_FILTER`, `S3_FIB_FILTER`, `S4_FIB_FILTER`, `S4_FIB_CAP_TP3` | Fibonacci des stratégies S2, S3 et S4 (défaut actif ; `0` pour désactiver ; voir STRATEGIES.md, « Fibonacci par stratégie ») |
+| `ONE_TRADE_PER_SIDE` | `1` (défaut) : un seul trade par actif et par sens, toutes stratégies confondues ; `0` : un par stratégie |
 | `CONFLUENCE_MIN` | Fenêtre de confluence entre stratégies, en minutes (défaut 60, `0` désactive) |
 | `SPREAD_PCT`, `SPREAD_TABLE` | Spread supposé en % du prix : global, ou par actif ex. `frxXAUUSD=0.02,cryBTCUSD=0.04` (prioritaire) |
 | `MAX_AGE_MIN` | Âge maximal d'un signal (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi |
@@ -131,7 +133,7 @@ Contexte et obstacles majeurs en H4/H1, confirmation en M15, trade de la journé
 - **Retard** : chaque alerte indique son âge ; au-delà de `MAX_AGE_MIN` ou si le prix a trop fui, elle est écartée. **Volatilité** : signaux écartés si l'ATR H1 tombe sous la moitié de sa médiane récente (`VOL_MIN_RATIO`).
 - **Calendrier économique** indisponible plus de 6 h : message d'alerte, puis message de retour ; les annonces ne bloquent plus les alertes entre-temps.
 - **Hypothèses prudentes du suivi et du backtest** : un ordre limite n'est rempli que si le prix traverse le niveau d'au moins un demi-spread ; dans la bougie du fill, aucun objectif n'est compté (le stop, si) ; TP1 puis retour à l'entrée = break-even.
-- **Bilan** : `/bilan` (30 jours, par stratégie et par actif, réel vs simulé avec `/r`). Le bilan hebdomadaire est envoyé automatiquement (total 7 jours, une ligne par stratégie, signaux écartés, « Validation : N trades sur ~100 pour juger »).
+- **Bilan** : `/bilan` (30 jours, par stratégie et par actif, réel vs simulé avec `/r`, RR visé contre R obtenu). Le bilan hebdomadaire est envoyé automatiquement (total 7 jours, une ligne par stratégie, signaux écartés, « Validation : N trades sur ~100 pour juger »).
 
 ## Format des alertes et heures
 

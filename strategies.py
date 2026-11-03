@@ -7,6 +7,8 @@ timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
   S2  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
   S3  Mean Reversion                  H1 (régime) > M15 (rejet des bandes de Bollinger)
 
+Fibonacci : S1 est construite autour ; S2 (premium/discount), S3 (extrémités du range) et S4 (profondeur du repli, plafond du TP3) l'utilisent en filtre (fib.py).
+
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
 import os
@@ -15,6 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from smc import body, mean_body, is_displacement, wick_sweep, close_beyond, fresh_break, mirror   # primitives SMC communes (S1 structure, S2, zones d'entrée)
+import fib as FB                                                                                    # Fibonacci : jambe de référence, profondeur, zones (S2, S3, S4)
 
 NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
@@ -90,6 +93,21 @@ S5_TREND_AGES_OK = ("naissante", "établie")   # âges acceptés (ajouter "mûre
 S5_VOL_FAST, S5_VOL_SLOW = 14, 100     # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
 S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0      # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
 S5_RISK_CAP_H1 = 0                     # plafond de risque en ATR H1 (0 = aucun, comme dans le crt-bot)
+
+# --- Fibonacci par stratégie (module fib.py) : chacune l'utilise là où il a un sens (STRATEGIES.md, « Fibonacci ») ---
+S2_FIB_FILTER = _flag("S2_FIB_FILTER", True)       # S2 : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe H4/H1 : discount pour un achat, premium pour une vente
+S2_FIB_MIN_DEPTH = 0.5                             # profondeur minimale de l'entrée dans la jambe (0,5 = équilibre)
+S2_FIB_MIN_ATR = 1.5                               # jambe d'au moins 1,5 x ATR H1 ; plus petite, le filtre n'a pas d'information et laisse passer
+S2_FIB_BARS = {"H4": 60, "H1": 120}                # profondeur de recherche de la jambe (bougies clôturées avant le sweep)
+S2_FIB_SWING_N = {"H4": 2, "H1": 3}                # fractale des swings de la jambe
+S3_FIB_FILTER = _flag("S3_FIB_FILTER", True)       # S3 : on ne prend le rejet des bandes qu'aux extrémités du range H1 (38,2 % extérieurs), jamais au milieu
+S3_FIB_BARS = 48                                   # le range = les 48 dernières bougies H1 clôturées
+S3_FIB_EDGE = 0.618                                # profondeur minimale de l'entrée dans le range (0,618 = les 38,2 % extérieurs)
+S3_FIB_MIN_ATR = 2.0                               # range d'au moins 2 x ATR H1 ; plus petit, le filtre laisse passer
+S4_FIB_FILTER = _flag("S4_FIB_FILTER", True)       # S4 figures de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe précédente
+S4_FIB_CONT_MAX = 0.618                            # profondeur maximale du repli
+S4_FIB_CAP_TP3 = _flag("S4_FIB_CAP_TP3", True)     # S4 figures de retournement : TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)
+S4_FIB_LB = 60                                     # recherche de l'origine de la jambe précédente : 60 bougies avant la figure
 
 
 # ==========================================================================
@@ -456,6 +474,23 @@ def htf_zone_hit(h4c, h1c, d, sweep_epoch, px, ext_px, a_h1):
     return None
 
 
+def s2_fib_check(d, entry, bias_tf, h4c, h1c, before, a_h1):
+    """Fibonacci de S2 : profondeur de l'entrée dans la jambe de référence (H4 si c'est lui qui donne le biais, sinon H1), calculée sur les
+    bougies clôturées avant le sweep. Un achat doit se faire dans le discount (sous l'équilibre de 50 %), une vente dans le premium.
+    Retourne {'ok', 'r', 'tf', 'eq', 'lo', 'hi'}, ou None si le filtre est désactivé ou sans information (jambe absente ou
+    inférieure à S2_FIB_MIN_ATR x ATR H1) : dans ce cas le signal n'est pas touché."""
+    if not S2_FIB_FILTER:
+        return None
+    tf, cs = ("H4", h4c) if bias_tf == "H4" else ("H1", h1c)
+    cs = [c for c in cs if c["epoch"] + GRAN[tf] <= before]
+    rng = FB.dealing_range(cs, S2_FIB_SWING_N[tf], S2_FIB_BARS[tf])
+    if rng is None or rng[1] - rng[0] < S2_FIB_MIN_ATR * a_h1:
+        return None
+    lo, hi = rng
+    r = FB.retrace(d, entry, lo, hi)
+    return {"ok": r >= S2_FIB_MIN_DEPTH, "r": r, "tf": tf, "eq": (lo + hi) / 2, "lo": lo, "hi": hi}
+
+
 def liquidity_targets(levels, m15c, d, entry, risk, a_m15):
     """[(nom, prix cible, distance en R)] du plus proche au plus lointain : liquidité opposée encore intacte, située
     entre S2_TP_MIN_R et S2_TP_MAX_R du risque. L'objectif est placé S2_TP_BUF_ATR x ATR M15 avant le niveau."""
@@ -575,6 +610,10 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     lv = build_levels(d, entry, sl, a_cf, a_h1, S2_RISK_CAP_H1)
     if lv is None:
         return None
+    fib_info = s2_fib_check(d, entry, bias_tf, h4c, h1c, sc["epoch"], a_h1)
+    if fib_info is not None and not fib_info["ok"]:
+        funnel["S2_fib"] += 1
+        return None                                   # entrée du mauvais côté de l'équilibre de la jambe (un achat en premium, une vente en discount)
     funnel["S2_signal"] += 1
     tp_lines, tp_src = [], "fixe"
     if S2_LIQ_TARGETS:
@@ -598,6 +637,8 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     if zone:
         zname = "bloc d'ordre" if zone["kind"] == "OB" else "FVG"
         details.append(f"✅ Sweep sur {zname} {zone['tf']} ({zone['lo']:.{dec}f} - {zone['hi']:.{dec}f})")
+    if fib_info:
+        details.append(f"✅ Entrée en {FB.side_word(d)} de la jambe {fib_info['tf']} (Fibonacci {fib_info['r'] * 100:.0f} % : {FB.zone_name(fib_info['r'])})")
     if bias == d:
         details.append(f"✅ Biais {bias_tf} {'haussier' if d == 'BUY' else 'baissier'} (structure)")
     elif bias is None:
@@ -615,9 +656,11 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     return _signal(
         "S2", "Sweep + CHoCH", d, entry, lv, cf, cf_n, f"{sc['epoch']}|{tc['epoch']}", details,
         lines=[{"y": px, "label": name, "kind": "range"}, {"y": ext_px, "label": "Sweep", "kind": "sweep"},
-               {"y": pivot, "label": "CHoCH", "kind": "info"}],
+               {"y": pivot, "label": "CHoCH", "kind": "info"}]
+              + ([{"y": fib_info["eq"], "label": f"Équilibre {fib_info['tf']} 50 %", "kind": "info"}] if fib_info else []),
         zones=zones, inval=ext_px, session=sess,
         extra={"liq": name, "h4": "aligné" if aligned else "contre", "poi": poi[1] if otype != d else "marché",
+               "fib": f"{fib_info['r'] * 100:.0f}%" if fib_info else "aucune",
                "biais": bias_tf if bias == d else ("contre" if bias else "aucun"),
                "zone": f"{zone['tf']} {zone['kind']}" if zone else "aucune", "tp": tp_src},
         short=f"{name} pris · CHoCH {cf_n}", trig=tc["epoch"], otype=otype, price_now=price,
@@ -747,6 +790,23 @@ def obstacle_filter(sig, provide, now):
 # ==========================================================================
 # S3  Mean Reversion (marché sans tendance)
 # ==========================================================================
+def s3_fib_check(d, entry, h1c, a_h1):
+    """Fibonacci de S3 : le range H1 est les S3_FIB_BARS dernières bougies clôturées (plus haut / plus bas). Un retour à la moyenne n'a de
+    sens qu'à une extrémité : l'entrée doit être dans les 38,2 % extérieurs du range (profondeur >= S3_FIB_EDGE, voir fib.retrace), un achat
+    près du bas, une vente près du haut. Retourne {'ok', 'r', 'eq', 'lo', 'hi'}, ou None si le filtre est désactivé ou sans information
+    (range inférieur à S3_FIB_MIN_ATR x ATR H1)."""
+    if not S3_FIB_FILTER:
+        return None
+    seg = h1c[-S3_FIB_BARS:]
+    if len(seg) < S3_FIB_BARS // 2:
+        return None
+    hi, lo = max(x["high"] for x in seg), min(x["low"] for x in seg)
+    if hi - lo < S3_FIB_MIN_ATR * a_h1:
+        return None
+    r = FB.retrace(d, entry, lo, hi)
+    return {"ok": r >= S3_FIB_EDGE, "r": r, "eq": (lo + hi) / 2, "lo": lo, "hi": hi}
+
+
 def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     h1, m15 = provide("H1"), provide("M15")
     if not (h1 and m15):
@@ -800,15 +860,22 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
         gain = lambda t: ((t - entry) if d == "BUY" else (entry - t)) / lv["risk"]
         if gain(mid) < S3_MIN_RR1 or gain(far) < S3_MIN_RR2:
             return None
+        fib_info = s3_fib_check(d, entry, h1c, a_h1)
+        if fib_info is not None and not fib_info["ok"]:
+            funnel["S3_fib"] += 1
+            return None                               # rejet au milieu du range : pas d'extrémité à ramener vers la moyenne
         funnel["S3_signal"] += 1
         return _signal(
             "S3", "Mean Reversion", d, entry, lv, m15, "M15", f"{c['epoch']}",
             [f"✅ Range H1 (ADX {a:.0f}, EMA 50 plate)",
              f"✅ Rejet de la bande de Bollinger {'basse' if d == 'BUY' else 'haute'} (RSI {min(recent_rsi) if d == 'BUY' else max(recent_rsi):.0f})",
-             f"✅ Heure favorable ({session_name(c['epoch'])})"],
+             f"✅ Heure favorable ({session_name(c['epoch'])})"]
+            + ([f"✅ Extrémité du range H1 ({S3_FIB_BARS} bougies) : Fibonacci {fib_info['r'] * 100:.0f} % ({'creux' if d == 'BUY' else 'sommet'} du range)"] if fib_info else []),
             rr_rule=[(1, S3_MIN_RR1), (2, S3_MIN_RR2)],
-            lines=[{"y": mid, "label": "Moyenne", "kind": "info"}, {"y": ext, "label": "Rejet", "kind": "sweep"}],
+            lines=[{"y": mid, "label": "Moyenne", "kind": "info"}, {"y": ext, "label": "Rejet", "kind": "sweep"}]
+                  + ([{"y": fib_info["eq"], "label": "Équilibre range 50 %", "kind": "info"}] if fib_info else []),
             zones=[{"lo": lo_b, "hi": up_b, "label": "Bollinger", "kind": "fib"}], inval=ext,
+            extra={"fib": f"{fib_info['r'] * 100:.0f}%" if fib_info else "aucune"},
             short=f"Rejet Bollinger {'basse' if d == 'BUY' else 'haute'} · RSI {min(recent_rsi) if d == 'BUY' else max(recent_rsi):.0f}", trig=c["epoch"],
             otype=otype, price_now=price, ttl=LIMIT_TTL["S3"] if otype != d else None,
             entry_note=f"Ordre limite sur la bande de Bollinger ({band:.{dec}f})" if otype != d else "")

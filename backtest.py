@@ -308,6 +308,8 @@ def report(results, days, spread_pct, split=None):
             L.append(T.fmt_summary(f"  {gold.name_of(sym)}", sub) if sub else f"  {gold.name_of(sym)} : aucun trade")
     L.append("Par stratégie :")
     L += breakdown(ts, "cascade")
+    L.append("RR visé et R obtenu par stratégie :")
+    L += T.target_lines(ts)
     L.append("Coût du spread par stratégie :")
     L += cost_lines(ts)
     for key in ["classe", "variante", "dir", "session", "liq", "h4", "poi", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):

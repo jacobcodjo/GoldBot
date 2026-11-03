@@ -195,7 +195,7 @@ adaptations listées en bas de section. Elle partage avec S2 les mêmes primitiv
 confirmation LTF (sweep d'un creux, cassure de structure avec déplacement, FVG, bloc d'ordre dans la zone).
 
 **Cascades** (une alerte par cascade et par sens) : D1 > H4 > H1, H4 > H1 > M15, H1 > M15 > M5. Le garde-fou « un trade par
-actif, stratégie et sens » écarte les doublons d'un même mouvement : la cascade la plus haute passe en premier.
+actif et par sens » écarte les doublons d'un même mouvement : la cascade la plus haute passe en premier.
 Les calculs sont écrits pour un achat ; une vente passe par le miroir des prix.
 
 **1. Tendance HTF** (`s5_trend`) : dernier sommet et dernier creux plus hauts que les précédents (fractale de 2 bougies,
@@ -304,6 +304,31 @@ la tendance, au moins 2 signes d'essoufflement sur 3 (divergence RSI, bougies qu
 
 > Stratégie contre la tendance, non validée : backtest (`--only S4`) avant de t'y fier.
 
+## Fibonacci par stratégie (module `fib.py`)
+
+S1 Pullback est construite autour de Fibonacci (retracement 50-79 % d'une impulsion). Les trois autres stratégies l'utilisent chacune là où il
+a un sens, en **filtre** : il ne crée jamais de signal, il en écarte. Chaque filtre est actif par défaut et se désactive par une variable.
+Sans information (jambe absente ou trop petite), le filtre laisse passer le signal. L'entonnoir compte les signaux écartés (`S2_fib`,
+`S3_fib`, `S4_fib`).
+
+| Stratégie | Usage de Fibonacci | Réglages (`strategies.py`) | Variable |
+|---|---|---|---|
+| S2 Sweep + CHoCH | **Premium / discount** : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe de référence (H4 si le biais vient du H4, sinon H1). Un achat dans le discount, une vente dans le premium. | `S2_FIB_MIN_DEPTH` 0,5 ; `S2_FIB_MIN_ATR` 1,5 ; `S2_FIB_BARS` ; `S2_FIB_SWING_N` | `S2_FIB_FILTER` |
+| S3 Mean Reversion | **Extrémités du range** : le rejet de la bande de Bollinger ne se prend que dans les 38,2 % extérieurs du range H1 (48 bougies), jamais au milieu. | `S3_FIB_EDGE` 0,618 ; `S3_FIB_BARS` 48 ; `S3_FIB_MIN_ATR` 2 | `S3_FIB_FILTER` |
+| S4 figures de continuation | **Profondeur du repli** : la figure ne doit pas reprendre plus de 61,8 % de la jambe qui la précède ; plus profond, c'est un début de retournement et la figure est écartée. | `S4_FIB_CONT_MAX` 0,618 ; `S4_FIB_LB` 60 | `S4_FIB_FILTER` |
+| S4 figures de retournement | **Plafond d'objectif** : TP3 (mesure de la figure) est plafonné à l'origine de la jambe précédente (100 %), tant que cette origine reste au-delà de TP2. | `S4_FIB_LB` 60 | `S4_FIB_CAP_TP3` |
+
+**Jambe de référence.** S2 : plus haut des sommets et plus bas des creux confirmés (fractales de 2 bougies en H4, 3 en H1) sur les 60 bougies H4
+ou 120 bougies H1 clôturées avant le sweep. S3 : plus haut et plus bas des 48 dernières bougies H1 clôturées. S4 : origine de la jambe cherchée
+sur les 60 bougies avant le début de la figure (continuation : plus haut avant la figure jusqu'au plus bas de la figure ; retournement : plus bas avant la figure).
+
+**Profondeur** (`fib.retrace`) : 0 au bord haut pour un achat (bas pour une vente), 0,5 à l'équilibre, 1 au bord opposé. Au-delà de 0,5, on est
+du bon côté. Zones nommées comme S1 : 50-61,8 % « Golden Zone », 61,8-79 % « OTE », au-delà « extrême ».
+
+**À tester avant de s'y fier** : ces seuils sont des choix de départ, non validés par un backtest. Pour comparer avec et sans :
+`python backtest.py --only S2 --split 0.6 --set strategies.S2_FIB_FILTER=true,false` (idem `S3_FIB_FILTER`, `S4_FIB_FILTER`, `S4_FIB_CAP_TP3`).
+Comparer les rendements **totaux** et non seulement le R par trade : un filtre qui réduit trop le nombre de trades n'est pas évaluable.
+
 ## Classes d'actifs (regroupement, sans filtre de stratégie)
 
 Chaque actif a une classe : **Or**, **Forex de session**, **Forex JPY**, **Forex calme**, **Cryptos**, **Indices synthétiques**. Elle sert à
@@ -322,6 +347,20 @@ moins 30 trades, puis fixe le résultat avec `SYMBOL_STRATEGIES`.
 
 ---
 
+## RR visé et R obtenu (rapport)
+
+Le rapport du backtest (section « RR visé et R obtenu par stratégie ») et le bilan `/bilan` donnent, pour chaque stratégie :
+- le **RR visé** : ratio gain/risque pondéré par la gestion de la position (50 % à TP1, 25 % à TP2, 25 % à TP3 ; sans TP3, 50 % et 50 %), avec le ratio
+  moyen de chaque objectif ;
+- le **R obtenu** moyen, après spread dans le backtest ;
+- le **taux d'atteinte** de TP1, TP2 et TP3 ;
+- la **capture** : part du RR visé réellement obtenue. Une capture faible, avec un RR visé élevé que le prix atteint rarement, montre des objectifs
+  trop ambitieux ; une capture proche de 100 % avec un taux de TP1 élevé montre au contraire que le bot pourrait viser plus loin.
+
+Même avec ces chiffres, le RR visé n'est pas un rendement : seul le R obtenu, sur assez de trades et sur deux périodes, compte.
+
+---
+
 ## Confluence (étiquette, hors stratégies)
 
 Quand deux stratégies ou plus signalent **le même actif dans le même sens** à moins de `CONFLUENCE_MIN` minutes d'écart
@@ -332,7 +371,8 @@ Quand deux stratégies ou plus signalent **le même actif dans le même sens** �
 - **Qui compte** : les trades des autres stratégies encore en attente ou ouverts, alertés dans la fenêtre, et les signaux trouvés au même
   scan. Un trade clôturé, annulé ou expiré ne compte pas. Une même stratégie ne se compte pas elle-même (S1 et son ancien code S5 = une seule ; S4 et son ancien code S7 = une seule).
 - **Une seule étiquette, sur la seconde alerte** : si S2 alerte à 10h00 puis S3 à 10h20, c'est l'alerte de S3 qui porte la confluence ;
-  celle de S2, déjà envoyée, n'est pas modifiée. Au même scan, les deux alertes la portent.
+  celle de S2, déjà envoyée, n'est pas modifiée. Au même scan, les deux alertes la portent. Avec `ONE_TRADE_PER_SIDE` (défaut), la seconde
+  alerte est bloquée : l'étiquette ne sort donc que pour des signaux trouvés au même scan (voir « Cohérence entre stratégies »).
 - **Mesure au backtest** : chaque trade enregistre `confluence` (ex. `S2+S3`, ou `aucune`) et le rapport ajoute une ligne par valeur.
   Pour comparer les fenêtres : `python backtest.py --sym all --split 0.6 --set gold.CONFLUENCE_MIN=0,30,60,120`.
   Compare le rendement par trade de `aucune` et des confluences, **sur les deux périodes** (`--split 0.6`) : il faut au moins
@@ -363,7 +403,11 @@ S1 (Pullback) et S2 n'entrent que sur réaction à un niveau ou une zone H4/H1 (
 
 ## Cohérence entre stratégies (v30)
 
-- **S1 et S5 fusionnées en Pullback** (variante classique supprimée) : un seul trade par actif et par sens ; **S4 et S7 fusionnées** : même règle.
+- **Un seul trade par actif et par sens, toutes stratégies confondues** (`ONE_TRADE_PER_SIDE`, actif par défaut ; `0` pour revenir à un trade par
+  stratégie) : deux stratégies d'accord sur le même mouvement ne doublent plus l'exposition. Au même scan, la première stratégie dans l'ordre
+  S1 à S4 passe, et l'étiquette de confluence signale l'accord des autres. **Limite** : une stratégie qui signale plus tard, alors que le trade
+  est déjà ouvert, est bloquée (« doublons » dans l'entonnoir) et l'accord n'est pas ajouté après coup à l'alerte déjà envoyée.
+- **S1 et son ancien code S5, S4 et son ancien code S7** : une seule stratégie chacune.
 - **Pas de sens opposé** sur un même actif (toutes stratégies, ordres en attente compris).
 - **Tendance** : la structure (S2, S5, alertes) vient d'une seule définition, `trend.py`. S2 garde son filtre EMA H4 (biais).
 - **Objectifs et obstacles** : un obstacle ramène TP1, mais aussi TP2 et TP3 s'ils sont au-delà. **Le ratio minimal de la stratégie est ensuite recontrôlé** sur les objectifs ramenés (Pullback 3 R vers TP2, Mean Reversion 0,8 R et 1,5 R, Figures 1 R ou 1,5 R vers TP3) ; en dessous, le signal est écarté (entonnoir `obst_rr`). S2 et le retournement n'ont pas de minimum explicite.

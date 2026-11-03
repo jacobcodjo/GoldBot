@@ -1187,11 +1187,16 @@ class ConfluenceStrategies(unittest.TestCase):
                       "otype": "BUY", "entry": px, "sl": px - 5, "tp1": px + 5, "tp2": px + 10, "tp3": px + 15,
                       "ltf": "M5", "gran": 300, "dec": 5, "ttl": None, "inval": None, "session": "Londres",
                       "key": f"{sym}|{strat}|{now}", "details": [], "short": "x", "extra": {}}, [])]
-        with mock.patch.object(gold, "scan", fake_scan):
-            tr, _, _ = B.run(m5, "frxEURUSD", spread_pct=0.0, warmup_days=0, progress=False)
-        trades = list(tr["active"].values()) + tr["closed"]
-        by = {t["strat"]: t["confluence"] for t in trades}
-        self.assertEqual(by, {"S2": "aucune", "S3": "S2+S3"})   # la seconde alerte porte la confluence, pas la première
+        for one_per_side in (False, True):
+            steps["n"] = 0
+            with mock.patch.object(gold, "scan", fake_scan), mock.patch.object(G, "ONE_TRADE_PER_SIDE", one_per_side):
+                tr, _, _ = B.run(m5, "frxEURUSD", spread_pct=0.0, warmup_days=0, progress=False)
+            trades = list(tr["active"].values()) + tr["closed"]
+            by = {t["strat"]: t["confluence"] for t in trades}
+            if one_per_side:     # un seul trade par actif et par sens : la seconde stratégie est bloquée, il reste le premier trade
+                self.assertEqual(by, {"S2": "aucune"})
+            else:                # une par stratégie : la seconde alerte porte la confluence, pas la première
+                self.assertEqual(by, {"S2": "aucune", "S3": "S2+S3"})
 
     def test_messages_des_quatre_formats(self):
         tfs = s5_series(4)
@@ -1759,8 +1764,13 @@ class TestCoherenceEntreStrategies(unittest.TestCase):
         self._add(tr, "frxEURUSD", "BUY", "Trend Pullback")
         self.assertEqual(G.risk_check(tr, "frxEURUSD", "BUY", 1e9, "Impulsion"), (False, "dedupe"))
         self.assertEqual(G.risk_check(tr, "frxEURUSD", "BUY", 1e9, "Trend Pullback"), (False, "dedupe"))
-        self.assertTrue(G.risk_check(tr, "frxEURUSD", "BUY", 1e9, "Sweep + CHoCH")[0])      # autre famille : autorisée
         self.assertEqual(S.LABEL_FAMILY["Impulsion"], S.LABEL_FAMILY["Trend Pullback"])
+        old_flag, G.ONE_TRADE_PER_SIDE = G.ONE_TRADE_PER_SIDE, False                         # règle par stratégie (ancien comportement)
+        try:
+            self.assertEqual(G.risk_check(tr, "frxEURUSD", "BUY", 1e9, "Impulsion"), (False, "dedupe"))
+            self.assertTrue(G.risk_check(tr, "frxEURUSD", "BUY", 1e9, "Sweep + CHoCH")[0])      # autre famille : autorisée
+        finally:
+            G.ONE_TRADE_PER_SIDE = old_flag
 
     def test_pas_de_sens_oppose_sur_un_actif(self):
         tr = {"active": {}, "closed": []}
@@ -1850,6 +1860,89 @@ class TestSmcPrimitives(unittest.TestCase):
         self.assertIs(S.wick_sweep, __import__("smc").wick_sweep)
         self.assertIs(S.is_displacement, __import__("smc").is_displacement)
         self.assertIs(S.mirror, __import__("smc").mirror)
+
+
+class UnTradeParSens(unittest.TestCase):
+    """Un seul trade par actif et par sens, toutes stratégies confondues."""
+
+    def setUp(self):
+        self.tr = {"active": {}, "closed": []}
+        k = "k1"
+        self.tr["active"][k] = T.new_trade("OR", k, "frxEURUSD", "EURUSD", "BUY", "BUY", 1, .9, 1.1, 1.2, 1.3, "M15", 900, 2,
+                                           "Pullback", 1e9, 3600)
+
+    def test_deux_strategies_meme_sens_ne_doublent_pas_l_exposition(self):
+        self.assertTrue(G.ONE_TRADE_PER_SIDE)                                              # actif par défaut
+        for label in ("Pullback", "Sweep + CHoCH", "Mean Reversion", "Figures & Retournement"):
+            self.assertEqual(G.risk_check(self.tr, "frxEURUSD", "BUY", 1e9, label), (False, "dedupe"), label)
+        self.assertTrue(G.risk_check(self.tr, "frxGBPUSD", "BUY", 1e9, "Sweep + CHoCH")[0])   # autre actif : autorisé
+        ok, why = G.risk_check(self.tr, "frxEURUSD", "SELL", 1e9, "Sweep + CHoCH")
+        self.assertFalse(ok)
+        self.assertIn("opposé", why)                                                          # le sens opposé reste refusé
+
+    def test_option_pour_revenir_a_une_par_strategie(self):
+        old, G.ONE_TRADE_PER_SIDE = G.ONE_TRADE_PER_SIDE, False
+        try:
+            self.assertEqual(G.risk_check(self.tr, "frxEURUSD", "BUY", 1e9, "Pullback"), (False, "dedupe"))
+            self.assertTrue(G.risk_check(self.tr, "frxEURUSD", "BUY", 1e9, "Sweep + CHoCH")[0])
+        finally:
+            G.ONE_TRADE_PER_SIDE = old
+
+    def test_un_trade_clos_libere_l_actif(self):
+        self.tr["closed"].append(self.tr["active"].pop("k1"))
+        self.assertTrue(G.risk_check(self.tr, "frxEURUSD", "BUY", 1e9, "Sweep + CHoCH")[0])
+
+    def test_confluence_signalee_meme_si_un_seul_trade(self):
+        sigs = [{"strat": "S1", "sym": "frxEURUSD", "dir": "BUY", "label": "Pullback", "key": "a", "extra": {}, "details": [], "short": "x"},
+                {"strat": "S2", "sym": "frxEURUSD", "dir": "BUY", "label": "Sweep + CHoCH", "key": "b", "extra": {}, "details": [], "short": "y"}]
+        empty = {"active": {}, "closed": []}
+        gold.add_confluence(sigs[0], empty, sigs, 1000)
+        self.assertEqual(sigs[0]["extra"].get("confluence"), "S1+S2")                        # le premier signal porte l'accord
+
+
+class RrVisePuisObtenu(unittest.TestCase):
+    """tracker.planned_rr / target_hits / target_lines : RR visé contre R obtenu."""
+
+    def trade(self, **kw):
+        base = dict(entry=100.0, sl=98.0, tp1=102.0, tp2=104.0, tp3=106.0, tp1_hit=False, stage=0, result="SL", r=-1.0,
+                    cascade="Pullback")
+        base.update(kw)
+        return base
+
+    def test_rr_vise_pondere(self):
+        self.assertEqual(T.planned_rr(self.trade()), (1.0, 2.0, 3.0, 1.75))                # 0,5 x 1 + 0,25 x 2 + 0,25 x 3
+        r = T.planned_rr(self.trade(tp1=101.0, tp2=103.0, tp3=None))                       # sans TP3 : 50 % à TP1, 50 % à TP2
+        self.assertEqual((r[0], r[1], r[2], r[3]), (0.5, 1.5, None, 1.0))
+        self.assertIsNone(T.planned_rr(self.trade(sl=100.0)))                              # risque nul
+
+    def test_objectifs_atteints(self):
+        self.assertEqual(T.target_hits(self.trade()), (False, False, False))
+        self.assertEqual(T.target_hits(self.trade(tp1_hit=True, stage=1, result="TP1+BE")), (True, False, False))
+        self.assertEqual(T.target_hits(self.trade(tp1_hit=True, stage=2, result="TP2+stop")), (True, True, False))
+        self.assertEqual(T.target_hits(self.trade(tp1_hit=True, stage=2, result="TP3")), (True, True, True))
+        self.assertEqual(T.target_hits(self.trade(tp3=None, tp1_hit=True, stage=1, result="TP2")), (True, True, False))
+
+    def test_lignes_par_strategie(self):
+        ts = [self.trade(tp1_hit=True, stage=2, result="TP3", r=1.75),
+              self.trade(),
+              self.trade(cascade="Mean Reversion", tp1=101.0, tp2=103.0, tp3=None, tp1_hit=True, stage=1, result="TP2", r=1.0)]
+        rows = T.target_lines(ts)
+        self.assertEqual(len(rows), 2)
+        mr, pb = rows                                                                      # ordre alphabétique des libellés
+        self.assertIn("Mean Reversion : RR visé 1.00 (TP1 0.5 · TP2 1.5 · TP3 -) · R obtenu +1.00", mr)
+        self.assertIn("capture 100 % du visé", mr)
+        self.assertIn("Pullback : RR visé 1.75", pb)
+        self.assertIn("R obtenu +0.38", pb)                                                # (1,75 - 1) / 2
+        self.assertIn("atteints TP1 50 % · TP2 50 % · TP3 50 % (2 trades)", pb)
+        self.assertEqual(T.target_lines([self.trade(r=None)]), [])                         # trade non clôturé : ignoré
+
+    def test_present_dans_le_bilan_et_le_rapport_du_backtest(self):
+        tr = {"active": {}, "closed": [dict(self.trade(tp1_hit=True, stage=2, result="TP3", r=1.75), t_close=1000, bot="OR")]}
+        txt = T.stats_text(tr, 2000)
+        self.assertIn("RR visé et R obtenu :", txt)
+        self.assertIn("Pullback : RR visé 1.75", txt)
+        rep = "\n".join(B.report([("frxEURUSD", {"closed": tr["closed"], "active": {}}, Counter(), Counter())], 30, 0.0))
+        self.assertIn("RR visé et R obtenu par stratégie :", rep)
 
 
 class TestCodesRenumerotes(unittest.TestCase):
@@ -2368,6 +2461,236 @@ class ChartPatterns(unittest.TestCase):
         self.assertEqual(gold.LABEL_CODE["Chart Patterns"], "S4")
         self.assertEqual(gold.ENTRY_MODES["S4"], "limit")
         self.assertIn("S4_signal", G.FUNNEL_ORDER)
+
+
+# ==========================================================================
+# Fibonacci par stratégie : S2 (premium / discount), S3 (extrémités du range), S4 (profondeur du repli, plafond du TP3)
+# ==========================================================================
+def range_candles(n, hi, lo, hi_i, lo_i, step=3600, t0=1_800_000_000, mid=None):
+    """n bougies plates autour de `mid`, avec un sommet isolé `hi` en hi_i et un creux isolé `lo` en lo_i (swings de fractale évidents)."""
+    mid = (hi + lo) / 2 if mid is None else mid
+    cs = [candle(t0 + step * i, mid, mid + 0.5, mid - 0.5, mid) for i in range(n)]
+    cs[hi_i] = candle(cs[hi_i]["epoch"], mid, hi, mid - 0.5, mid)
+    cs[lo_i] = candle(cs[lo_i]["epoch"], mid, mid + 0.5, lo, mid)
+    return cs
+
+
+class FibonacciModule(unittest.TestCase):
+    def test_jambe_de_reference(self):
+        import fib as FB
+        cs = range_candles(60, 110.0, 100.0, 20, 40)
+        self.assertEqual(FB.dealing_range(cs, 3, 120), (100.0, 110.0))
+        self.assertIsNone(FB.dealing_range(cs[:30], 3, 120))                       # pas de creux confirmé : pas de jambe
+        self.assertIsNone(FB.dealing_range([candle(i, 1, 1.5, 0.5, 1) for i in range(40)], 3, 120))   # série plate
+
+    def test_profondeur_vue_du_sens_du_trade(self):
+        import fib as FB
+        self.assertAlmostEqual(FB.retrace("BUY", 102.0, 100.0, 110.0), 0.8)        # un achat bas dans la jambe : profond
+        self.assertAlmostEqual(FB.retrace("BUY", 110.0, 100.0, 110.0), 0.0)
+        self.assertAlmostEqual(FB.retrace("SELL", 108.0, 100.0, 110.0), 0.8)       # une vente haute dans la jambe : profond
+        self.assertAlmostEqual(FB.retrace("SELL", 105.0, 100.0, 110.0), 0.5)
+        self.assertGreater(FB.retrace("BUY", 98.0, 100.0, 110.0), 1.0)             # sous la jambe : au-delà de 100 %
+        self.assertIsNone(FB.retrace("BUY", 100.0, 100.0, 100.0))
+
+    def test_noms_de_zones(self):
+        import fib as FB
+        self.assertEqual([FB.zone_name(r) for r in (0.2, 0.499, 0.5, 0.6, 0.618, 0.75, 0.79, 0.85, 1.2)],
+                         ["mauvais côté", "mauvais côté", "Golden Zone", "Golden Zone", "OTE", "OTE", "OTE", "extrême", "extrême"])
+        self.assertEqual((FB.side_word("BUY"), FB.side_word("SELL")), ("discount", "premium"))
+
+    def test_profondeur_d_un_repli(self):
+        import fib as FB
+        self.assertAlmostEqual(FB.pullback_depth(100.0, 90.0, 96.18), 0.618)
+        self.assertAlmostEqual(FB.pullback_depth(100.0, 90.0, 90.0), 0.0)
+        self.assertIsNone(FB.pullback_depth(90.0, 90.0, 95.0))                     # jambe nulle
+
+    def test_cles_d_entonnoir_declarees(self):
+        for k in ("S2_fib", "S3_fib", "S4_fib"):
+            self.assertIn(k, G.FUNNEL_ORDER)
+            self.assertIn(k, G.FUNNEL_LABEL)
+
+
+class FibonacciS2(unittest.TestCase):
+    """S2 : un achat se prend dans le discount (sous 50 %) de la jambe H4/H1, une vente dans le premium."""
+    T0 = 1_800_000_000
+    OFF = dict(S2_BIAS_FILTER=False, S2_HTF_ZONE=False, S2_LIQ_TARGETS=False)
+
+    def check(self, d, entry, tf="H1", a_h1=1.0, **kw):
+        step = 3600 if tf == "H1" else 14400
+        cs = range_candles(60, 110.0, 100.0, 20, 40, step=step, t0=self.T0)
+        h1c, h4c = (cs, []) if tf == "H1" else ([], cs)
+        return S.s2_fib_check(d, entry, tf, h4c, h1c, kw.get("before", self.T0 + step * 61), a_h1)
+
+    def test_achat_discount_accepte_premium_refuse(self):
+        r = self.check("BUY", 102.0)
+        self.assertTrue(r["ok"])
+        self.assertAlmostEqual(r["r"], 0.8)
+        self.assertEqual((r["lo"], r["hi"], r["eq"], r["tf"]), (100.0, 110.0, 105.0, "H1"))
+        self.assertFalse(self.check("BUY", 108.0)["ok"])                         # acheter en premium
+        self.assertTrue(self.check("BUY", 104.9)["ok"])                          # juste sous l'équilibre : encore dans le discount
+        self.assertFalse(self.check("BUY", 105.1)["ok"])                         # juste au-dessus de l'équilibre : déjà dans le premium
+
+    def test_vente_premium_accepte_discount_refuse(self):
+        self.assertTrue(self.check("SELL", 108.0)["ok"])
+        self.assertFalse(self.check("SELL", 102.0)["ok"])                        # vendre en discount
+
+    def test_jambe_h4_quand_le_biais_vient_du_h4(self):
+        r = self.check("BUY", 102.0, tf="H4")
+        self.assertEqual(r["tf"], "H4")
+        self.assertTrue(r["ok"])
+
+    def test_sans_information_le_filtre_laisse_passer(self):
+        self.assertIsNone(self.check("BUY", 108.0, a_h1=10.0))                   # jambe de 10 < 1,5 x ATR 10 : pas d'avis
+        self.assertIsNone(self.check("BUY", 108.0, before=self.T0 + 3600 * 35))   # le sommet de la jambe naît après le sweep : calcul sur le passé seulement
+        from unittest import mock
+        with mock.patch.object(S, "S2_FIB_FILTER", False):
+            self.assertIsNone(self.check("BUY", 108.0))                          # désactivé
+
+    def scan(self, **patches):
+        from unittest import mock
+        for pad in range(0, 60, 5):
+            m5 = s2_scenario(False, pad)
+            rp = B.Replay(m5)
+            with mock.patch.multiple(S, **patches):
+                for t in range(len(m5) - 40, len(m5)):
+                    funnel = Counter()
+                    provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
+                    sig = S.scan_s2(provide, m5[t]["epoch"] + 300, funnel, 2, kz=False, mode="limit")
+                    if sig or funnel["S2_fib"]:
+                        return sig, funnel
+        return None, Counter()
+
+    def test_signal_accepte_avec_ligne_et_detail(self):
+        ok = {"ok": True, "r": 0.7, "tf": "H1", "eq": 2000.0, "lo": 1990.0, "hi": 2010.0}
+        sig, funnel = self.scan(s2_fib_check=lambda *a, **k: ok, **self.OFF)
+        self.assertIsNotNone(sig)
+        self.assertTrue(any("Fibonacci 70 %" in x and "OTE" in x for x in sig["details"]))
+        self.assertEqual(sig["extra"]["fib"], "70%")
+        self.assertTrue(any(l["y"] == 2000.0 for l in sig["lines"]))
+        self.assertEqual(funnel["S2_fib"], 0)
+
+    def test_signal_ecarte_du_mauvais_cote(self):
+        bad = {"ok": False, "r": 0.2, "tf": "H1", "eq": 2000.0, "lo": 1990.0, "hi": 2010.0}
+        sig, funnel = self.scan(s2_fib_check=lambda *a, **k: bad, **self.OFF)
+        self.assertIsNone(sig)
+        self.assertGreaterEqual(funnel["S2_fib"], 1)
+
+    def test_filtre_desactive_ne_change_rien(self):
+        sig, funnel = self.scan(S2_FIB_FILTER=False, **self.OFF)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig["extra"]["fib"], "aucune")
+        self.assertFalse(any("Fibonacci" in x for x in sig["details"]))
+
+
+class FibonacciS3(unittest.TestCase):
+    """S3 : le rejet des bandes de Bollinger ne se prend qu'aux extrémités (38,2 % extérieurs) du range H1 de 48 bougies."""
+
+    def check(self, d, entry, a_h1=1.0, n=60):
+        return S.s3_fib_check(d, entry, range_candles(n, 110.0, 100.0, 20, 40, t0=1_800_000_000), a_h1)   # sommet et creux dans les 48 dernières bougies
+
+    def test_extremites_acceptees_milieu_refuse(self):
+        self.assertTrue(self.check("BUY", 101.0)["ok"])                          # près du bas du range
+        self.assertTrue(self.check("SELL", 109.0)["ok"])                         # près du haut du range
+        mid = self.check("BUY", 105.0)
+        self.assertFalse(mid["ok"])                                              # au milieu : rien à ramener vers la moyenne
+        self.assertFalse(self.check("SELL", 105.0)["ok"])
+        self.assertFalse(self.check("BUY", 108.0)["ok"])                         # achat en haut du range
+        self.assertAlmostEqual(mid["r"], 0.5)
+        self.assertEqual(mid["eq"], 105.0)
+
+    def test_frontiere_618(self):
+        self.assertTrue(self.check("BUY", 103.8)["ok"])                          # profondeur 0,62
+        self.assertFalse(self.check("BUY", 104.0)["ok"])                         # profondeur 0,60
+
+    def test_sans_information_le_filtre_laisse_passer(self):
+        self.assertIsNone(self.check("BUY", 105.0, a_h1=10.0))                   # range de 10 < 2 x ATR 10
+        self.assertIsNone(S.s3_fib_check("BUY", 105.0, range_candles(10, 110.0, 100.0, 2, 5), 1.0))   # trop peu de bougies
+        from unittest import mock
+        with mock.patch.object(S, "S3_FIB_FILTER", False):
+            self.assertIsNone(self.check("BUY", 105.0))
+
+    def test_le_range_est_les_48_dernieres_bougies(self):
+        # le sommet à 110 date de plus de 48 bougies : il ne fait plus partie du range, qui devient [100, 105,5]
+        cs = range_candles(80, 110.0, 100.0, 5, 70, t0=1_800_000_000)
+        r = S.s3_fib_check("BUY", 101.0, cs, 1.0)
+        self.assertEqual((r["lo"], r["hi"]), (100.0, 105.5))
+        self.assertTrue(r["ok"])
+
+
+class FibonacciS4(unittest.TestCase):
+    """S4 : figures de continuation filtrées par la profondeur du repli ; TP3 des retournements plafonné à l'origine de la jambe précédente."""
+    FLAG = [(0, 100), (50, 100), (60, 90), (66, 92.5), (70, 90.8), (76, 92.9), (82, 91.4), (88, 93.1), (94, 91.4), (108, 85)]
+
+    def setUp(self):
+        self.cp = ChartPatterns("test_double_sommet_vente")                      # on réutilise ses séries synthétiques et son setUp
+        self.cp.setUp()
+        self.addCleanup(self.cp.doCleanups)
+
+    def test_jambe_precedente_continuation_et_retournement(self):
+        import patterns
+        cs = [candle(i, 95, 96, 94, 95) for i in range(30)]
+        cs[3] = candle(3, 99, 100, 98, 99)                                       # origine : plus haut avant la figure
+        cs[12] = candle(12, 91, 92, 90, 91)                                      # fin de jambe : plus bas jusqu'à la fin de la figure
+        d = {"s": 1, "start": 10, "end": 20, "kind": "continuation"}
+        self.assertEqual(patterns.prior_leg(S, d, cs), (100, 90))
+        cs2 = [candle(i, 95, 96, 94, 95) for i in range(30)]
+        cs2[4] = candle(4, 85, 86, 84, 85)                                       # origine d'une jambe haussière
+        self.assertEqual(patterns.prior_leg(S, dict(d, kind="retournement"), cs2), (84, None))
+        # espace miroir (figure haussière, s = -1) : les prix sont retournés
+        d2 = {"s": -1, "start": 10, "end": 20, "kind": "retournement"}
+        cs3 = [candle(i, 95, 96, 94, 95) for i in range(30)]
+        cs3[5] = candle(5, 99, 100, 98, 99)                                      # plus haut avant la figure = origine miroir (-100)
+        self.assertEqual(patterns.prior_leg(S, d2, cs3), (-100, None))
+
+    def test_plafond_tp3_du_retournement(self):
+        from unittest import mock
+        res = {}
+        for cap in (False, True):
+            with mock.patch.object(S, "S4_FIB_CAP_TP3", cap), mock.patch("reversal.detect", return_value=None):
+                sigs, _ = self.cp.replay(self.cp.DOUBLE_TOP)
+            self.assertIsNotNone(sigs)
+            res[cap] = sigs[0]
+        off, on = res[False], res[True]
+        self.assertGreater(on["tp3"], off["tp3"])                                # vente : l'objectif est plus proche (plafonné)
+        self.assertTrue(on["tp1"] > on["tp2"] > on["tp3"])                       # l'ordre des objectifs reste valide
+        self.assertEqual((on["tp1"], on["tp2"]), (off["tp1"], off["tp2"]))       # TP1 et TP2 ne bougent pas
+        self.assertTrue(any("TP3 plafonné" in x for x in on["details"]))
+        self.assertFalse(any("TP3 plafonné" in x for x in off["details"]))
+
+    def test_continuation_repli_leger_accepte(self):
+        from unittest import mock
+        with mock.patch("reversal.detect", return_value=None):
+            sigs, funnel = self.cp.replay(self.FLAG, start=330)
+        self.assertIsNotNone(sigs)
+        self.assertEqual(sigs[0]["extra"]["famille"], "continuation")
+        self.assertTrue(any("Repli de" in x and "Fibonacci" in x for x in sigs[0]["details"]))
+        self.assertEqual(funnel["S4_fib"], 0)
+
+    def test_continuation_repli_trop_profond_ecarte(self):
+        from unittest import mock
+        import patterns
+        # jambe précédente à peine plus haute que la figure : le repli reprend ~89 % de la jambe
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(93.5, 90.0)):
+            sigs, _ = self.cp.replay(self.FLAG, start=330)
+            self.assertIsNone(sigs)
+            m15 = self.cp.m15_series(self.FLAG)
+            seen = Counter()
+            for e in range(330, len(m15) - 1):
+                provide = lambda tf, force=False, _e=e: {"M15": m15[:_e + 1], "H1": self.cp.agg(m15, 4, _e), "H4": self.cp.agg(m15, 16, _e), "D1": None}[tf]
+                S.scan_s4(provide, m15[e]["epoch"] + 900, seen, 2, True, "market")
+            self.assertGreaterEqual(seen["S4_fib"], 1)
+            self.assertEqual(seen["S4_signal"], 0)
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(93.5, 90.0)), \
+                mock.patch.object(S, "S4_FIB_FILTER", False):
+            sigs, _ = self.cp.replay(self.FLAG, start=330)
+            self.assertIsNotNone(sigs)                                           # filtre désactivé : la figure repasse
+
+    def test_les_retournements_ne_sont_pas_filtres_par_la_profondeur(self):
+        from unittest import mock
+        import patterns
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(80.0, None)):
+            sigs, _ = self.cp.replay(self.cp.DOUBLE_TOP)
+        self.assertIsNotNone(sigs)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ Toutes les figures sont écrites pour une cassure BAISSIÈRE ; les figures hauss
 """
 import os
 
+import fib as FB
+
 
 def _f(name, default):
     try:
@@ -276,6 +278,23 @@ def candidates(h, l, c, flip):
     return out
 
 
+def prior_leg(S, d, csc):
+    """Jambe qui précède la figure d, en espace miroir « baissier » (la figure casse vers le bas ; s = -1 retourne les prix).
+    Continuation : le prix baissait avant la figure ; retourne (origine = plus haut avant la figure, fin = plus bas jusqu'à la fin de la figure).
+    Retournement : le prix montait ; retourne (origine = plus bas avant la figure, None). None si la fenêtre est vide.
+    Fenêtre de recherche : S.S4_FIB_LB bougies avant le début de la figure."""
+    s, a, b = d["s"], max(0, d["start"] - S.S4_FIB_LB), d["start"]
+    if b >= len(csc) or a > b:
+        return None
+    hm = [x["high"] if s == 1 else -x["low"] for x in csc]
+    lm = [x["low"] if s == 1 else -x["high"] for x in csc]
+    if d["kind"] == "continuation":
+        io = max(range(a, b + 1), key=lambda i: hm[i])
+        return hm[io], min(lm[io:d["end"] + 1])
+    io = min(range(a, b + 1), key=lambda i: lm[i])
+    return lm[io], None
+
+
 def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: None):
     """Confirmation M15 de la cassure de la figure d (détectée sur csc, bougies clôturées de `tf`) : une des 2 dernières bougies M15
     clôturées finit au-delà de la ligne, la précédente non. Retourne le signal ou None."""
@@ -297,11 +316,29 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
     if cur is None:
         return None
     funnel["S4_cassure"] += 1
+    # Fibonacci, figure de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe qui la précède.
+    # Plus profond, ce n'est plus une pause dans la tendance mais un début de retournement : la figure est écartée.
+    fib_note, leg = None, prior_leg(S, d, csc) if (S.S4_FIB_FILTER or S.S4_FIB_CAP_TP3) else None
+    if S.S4_FIB_FILTER and d["kind"] == "continuation" and leg and leg[0] - leg[1] >= 2 * d["atr"]:
+        depth = FB.pullback_depth(leg[0], leg[1], d["slref"])
+        if depth is not None and depth > S.S4_FIB_CONT_MAX:
+            funnel["S4_fib"] += 1
+            return None
+        if depth is not None:
+            fib_note = f"✅ Repli de {max(depth, 0) * 100:.0f} % de la jambe précédente (Fibonacci, maximum {S.S4_FIB_CONT_MAX * 100:.1f} %)"
     t_now = m15[-1]["epoch"] + S.GRAN["M15"]
     price = m15[-1]["close"]
     sl = s * (d["slref"] + SL_BUF_ATR * d["atr"])
     ref = lvl(cur["epoch"] + S.GRAN["M15"])
     tps = [s * (ref - m * d["height"]) for m in TP_FRACTIONS]
+    # Fibonacci, figure de retournement : la mesure de la figure ne doit pas dépasser l'origine de la jambe précédente (100 %) ; un
+    # retournement reprend rarement plus que la jambe entière lors du premier mouvement. TP3 est plafonné à cette origine tant qu'elle reste
+    # au-delà de TP2 ; sinon on n'y touche (le ratio minimal écarte alors les cas où l'objectif est trop proche).
+    if S.S4_FIB_CAP_TP3 and d["kind"] == "retournement" and leg and leg[0] is not None:
+        tp2_m, tp3_m = ref - TP_FRACTIONS[1] * d["height"], ref - TP_FRACTIONS[2] * d["height"]
+        if tp3_m < leg[0] < tp2_m:
+            tps[2] = s * leg[0]
+            fib_note = "ℹ️ TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)"
     zone = s * lvl(t_now)                          # retest de la ligne cassée
     otype, entry = S.pick_entry(dr, price, zone, sl, mode)
     if otype != dr:
@@ -335,7 +372,8 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
          f"✅ Cassure confirmée en M15 ({'sous' if dr == 'SELL' else 'au-dessus de'} la ligne)",
          f"✅ Objectif = hauteur de la figure ({d['height']:.{dec}f})"]
         + (["✅ Confluence : retournement possible (sweep sur niveau majeur + cassure de structure H1)"] if conf else [])
-        + ([f"ℹ️ Pas de confluence de retournement : ratio minimal {S4_NOCONF_MIN_RR:g} exigé"] if conf is False else []),
+        + ([f"ℹ️ Pas de confluence de retournement : ratio minimal {S4_NOCONF_MIN_RR:g} exigé"] if conf is False else [])
+        + ([fib_note] if fib_note else []),
         rr_rule=[(3, min_rr)],
         lines=[{"y": s * ref, "label": f"{d['name']} · cassure", "kind": "info"}],
         inval=sl, short=f"{d['name']} {tf} · {fam}", trig=cur["epoch"], otype=otype, price_now=price,

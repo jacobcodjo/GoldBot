@@ -309,6 +309,53 @@ def fmt_summary(label, s):
             f"(moy {s['avg']:+.2f} R) · PF {pf} · DD max {s['dd']:.1f} R")
 
 
+def planned_rr(t):
+    """Ratios gain/risque visés d'un trade, avec le même découpage que la gestion : (rr1, rr2, rr3, rr pondéré).
+    Un objectif absent (TP1 déjà dépassé à l'entrée, pas de TP3) vaut None ; le RR pondéré est la somme part x ratio, c'est-à-dire
+    ce que rapporterait la position si tous ses objectifs étaient atteints. None si le risque est nul."""
+    risk = risk_of(t)
+    if risk <= 0:
+        return None
+    rr = [abs(t[k] - t["entry"]) / risk if t.get(k) is not None else None for k in ("tp1", "tp2", "tp3")]
+    has1, has3 = rr[0] is not None, rr[2] is not None
+    p1 = PARTIAL_AT_TP1 if has1 else 0.0
+    p2 = PARTIAL_AT_TP2 if (PARTIAL_AT_TP2 > 0 and has3) else 1.0 - p1
+    p3 = 1.0 - p1 - p2 if has3 else 0.0
+    weighted = sum(p * r for p, r in ((p1, rr[0]), (p2, rr[1]), (p3, rr[2])) if p and r is not None)
+    return rr[0], rr[1], rr[2], weighted
+
+
+def target_hits(t):
+    """(TP1, TP2, TP3) atteints ? Un trade clôturé « TP2 » (tout sorti à TP2, sans TP3) a atteint TP2 sans passer par le stade 2."""
+    res = t.get("result")
+    tp3 = res == "TP3"
+    tp2 = tp3 or res == "TP2" or t.get("stage", 0) >= 2
+    tp1 = bool(t.get("tp1_hit")) or tp2
+    return tp1, tp2, tp3
+
+
+def target_lines(ts, key="cascade", indent="  "):
+    """Une ligne par groupe : RR visé (pondéré, et par objectif) contre R obtenu, taux d'atteinte de chaque objectif et part du RR visé
+    réellement capturée. Sert à voir si les objectifs sont réalistes : un RR visé élevé que le prix n'atteint presque jamais est un décor."""
+    rows = []
+    for val in sorted({str(t.get(key)) for t in ts if t.get(key) is not None}):
+        sub = [t for t in ts if str(t.get(key)) == val and t.get("r") is not None and planned_rr(t)]
+        if not sub:
+            continue
+        plans = [planned_rr(t) for t in sub]
+        mean = lambda xs: sum(xs) / len(xs) if xs else None
+        r1, r2, r3 = (mean([p[i] for p in plans if p[i] is not None]) for i in range(3))
+        planned = mean([p[3] for p in plans])
+        got = mean([t["r"] for t in sub])
+        hits = [target_hits(t) for t in sub]
+        rate = lambda i: 100 * sum(1 for h in hits if h[i]) / len(hits)
+        fmt = lambda x: "-" if x is None else f"{x:.1f}"
+        capture = f" · capture {100 * got / planned:.0f} % du visé" if planned > 0 else ""
+        rows.append(f"{indent}{val} : RR visé {planned:.2f} (TP1 {fmt(r1)} · TP2 {fmt(r2)} · TP3 {fmt(r3)}) · R obtenu {got:+.2f} · "
+                    f"atteints TP1 {rate(0):.0f} % · TP2 {rate(1):.0f} % · TP3 {rate(2):.0f} % ({len(sub)} trades){capture}")
+    return rows
+
+
 def taken_label(t):
     return {True: "pris", False: "ignoré"}.get(t.get("taken"), "non renseigné")
 
@@ -329,6 +376,10 @@ def stats_text(tr, now, days=30, groups=("bot", "cascade")):
             sub = summarize([t for t in ts if t["statut"] == val])
             if sub:
                 lines.append(fmt_summary(f"· {val}", sub))
+    if "cascade" in groups:
+        rows = target_lines(ts)
+        if rows:
+            lines += ["RR visé et R obtenu :"] + rows
     own = [t for t in ts if t.get("own_r") is not None]
     if own:
         lines.append(f"Mes résultats réels : {len(own)} trades · {sum(t['own_r'] for t in own):+.1f} R "
