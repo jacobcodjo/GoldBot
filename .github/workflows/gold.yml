@@ -65,7 +65,6 @@ jobs:
           ENTRY_MODE: ${{ vars.ENTRY_MODE }}
           ENTRY_MODES: ${{ vars.ENTRY_MODES }}
           CONFLUENCE_MIN: ${{ vars.CONFLUENCE_MIN }}
-          CLASS_FILTER: ${{ vars.CLASS_FILTER }}
           INTRADAY: ${{ vars.INTRADAY }}
           INTRADAY_RUNNERS: ${{ vars.INTRADAY_RUNNERS }}
           CRYPTO_INTRADAY: ${{ vars.CRYPTO_INTRADAY }}
@@ -74,8 +73,6 @@ jobs:
           REVERSAL_ALERTS: ${{ vars.REVERSAL_ALERTS }}
           REVERSAL_MIN_SIGNS: ${{ vars.REVERSAL_MIN_SIGNS }}
           PULLBACK_ADX_MIN: ${{ vars.PULLBACK_ADX_MIN }}
-          CLASS_STRATEGIES: ${{ vars.CLASS_STRATEGIES }}
-          TIER_MAX: ${{ vars.TIER_MAX }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
