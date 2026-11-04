@@ -1,4 +1,4 @@
-"""Stratégies S1, S2, S4 et S8 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
+"""Stratégies S1, S2, S3 et S4 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
 
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
@@ -6,9 +6,9 @@ timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
   S1  Pullback                    structure HTF > impulsion + repli Fibonacci 50-79 % > entrée LTF (sweep, FVG/bloc d'ordre ; objectifs sur extensions)
   S2  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
 
-  S8  CRT (Candle Range Theory)       H4/H1 (C1, C2) > M15 (cassure de structure après la clôture de C2)
+  S4  CRT (Candle Range Theory)       H4/H1 (C1, C2) > M15 (cassure de structure après la clôture de C2)
 
-Fibonacci : S1 est construite autour ; S2 (premium/discount) et S4 (profondeur du repli, plafond du TP3) l'utilisent en filtre (fib.py).
+Fibonacci : S1 est construite autour ; S2 (premium/discount) et S3 (profondeur du repli, plafond du TP3) l'utilisent en filtre (fib.py).
 
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from smc import body, mean_body, is_displacement, wick_sweep, close_beyond, fresh_break, mirror   # primitives SMC communes (S1 structure, S2, zones d'entrée)
-import fib as FB                                                                                    # Fibonacci : jambe de référence, profondeur, zones (S2, S4)
+import fib as FB                                                                                    # Fibonacci : jambe de référence, profondeur, zones (S2, S3)
 
 NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
@@ -91,12 +91,12 @@ S2_FIB_MIN_DEPTH = 0.5                             # profondeur minimale de l'en
 S2_FIB_MIN_ATR = 1.5                               # jambe d'au moins 1,5 x ATR H1 ; plus petite, le filtre n'a pas d'information et laisse passer
 S2_FIB_BARS = {"H4": 60, "H1": 120}                # profondeur de recherche de la jambe (bougies clôturées avant le sweep)
 S2_FIB_SWING_N = {"H4": 2, "H1": 3}                # fractale des swings de la jambe
-S4_FIB_FILTER = _flag("S4_FIB_FILTER", True)       # S4 figures de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe précédente
-S4_FIB_CONT_MAX = 0.618                            # profondeur maximale du repli
-S4_FIB_CAP_TP3 = _flag("S4_FIB_CAP_TP3", True)     # S4 figures de retournement : TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)
-S4_FIB_LB = 60                                     # recherche de l'origine de la jambe précédente : 60 bougies avant la figure
+S3_FIB_FILTER = _flag("S3_FIB_FILTER", True)       # S3 figures de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe précédente
+S3_FIB_CONT_MAX = 0.618                            # profondeur maximale du repli
+S3_FIB_CAP_TP3 = _flag("S3_FIB_CAP_TP3", True)     # S3 figures de retournement : TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)
+S3_FIB_LB = 60                                     # recherche de l'origine de la jambe précédente : 60 bougies avant la figure
 
-# --- S8 CRT (Candle Range Theory) pur : voir crt.py ---
+# --- S4 CRT (Candle Range Theory) pur : voir crt.py ---
 CRT_REFS = ("H4", "H1")             # bougies de référence C1 / C2 ; la confirmation est toujours en M15
 CRT_MIN_RANGE_ATR = 0.8             # range de C1 d'au moins 0,8 x ATR de son timeframe (sinon l'objectif est trop proche)
 CRT_MAX_RANGE_ATR = 3.5             # et d'au plus 3,5 x ATR (au-delà, la bougie est une impulsion, pas un range)
@@ -107,8 +107,8 @@ CRT_TP3_EXT = 0.5                   # TP3 = bord opposé de C1 + 50 % de son ran
 CRT_MIN_RR = 3.0                    # ratio gain/risque minimal (1 pour 3), calculé sur TP2
 CRT_RISK_CAP_H1 = 4.0               # risque maximal : 4 x ATR H1
 
-# --- Timeframe de confirmation / d'entrée, par stratégie : M15 ou M5 (variables S1_CONFIRM_TF ... S8_CONFIRM_TF) ---
-# Vide = comportement historique : M15 pour S1 (cascade selon INTRADAY), S4, S8 ; S2 suit INTRADAY (M15 si actif, sinon M5).
+# --- Timeframe de confirmation / d'entrée, par stratégie : M15 ou M5 (variables S1_CONFIRM_TF ... S4_CONFIRM_TF) ---
+# Vide = comportement historique : M15 pour S1 (cascade selon INTRADAY), S3, S4 ; S2 suit INTRADAY (M15 si actif, sinon M5).
 # M5 : la cassure de structure, le bloc d'ordre, le FVG, le stop et le suivi de fraîcheur se calculent sur les bougies M5 (cadre H4/H1
 # inchangé) : entrée plus précoce et stop plus serré, mais plus de bruit, et le spread pèse davantage. Les durées exprimées en bougies
 # M15 sont converties (x 3 en M5) par bars().
@@ -119,12 +119,12 @@ def _tf(name):
 
 S1_CONFIRM_TF = _tf("S1_CONFIRM_TF")
 S2_CONFIRM_TF = _tf("S2_CONFIRM_TF")
+S3_CONFIRM_TF = _tf("S3_CONFIRM_TF")
 S4_CONFIRM_TF = _tf("S4_CONFIRM_TF")
-S8_CONFIRM_TF = _tf("S8_CONFIRM_TF")
 
 
 def confirm_tf(code):
-    """Timeframe de confirmation de la stratégie `code` (S2, S4, S8) : 'M15' ou 'M5' ; vide = comportement historique."""
+    """Timeframe de confirmation de la stratégie `code` (S2, S3, S4) : 'M15' ou 'M5' ; vide = comportement historique."""
     v = globals().get(f"{code}_CONFIRM_TF") or ""
     if v in ("M15", "M5"):
         return v
@@ -270,7 +270,7 @@ def is_late(d, price, trig_close, a_ltf):
 LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
 LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
 LIMIT_MAX_ATR = 1.5         # zone d'entrée à plus de 1,5 ATR du prix actuel : signal écarté (trop de retracement requis)
-LIMIT_TTL = {"S2": 3600, "S5": 86400, "S4": 10800, "S8": 3600}   # validité de l'ordre limite, en secondes
+LIMIT_TTL = {"S2": 3600, "S5": 86400, "S3": 10800, "S4": 3600}   # validité de l'ordre limite, en secondes
 
 
 def ob_zone(cs, lo_i, hi_i, d):
@@ -683,7 +683,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
 # ==========================================================================
 # Cadre intraday : obstacles majeurs H4 / H1
 # ==========================================================================
-OBST_ENTRY_STRATS = ("S1", "S2")  # entrent sur réaction à un niveau ; S4 (retest de sa propre ligne ou du creux/sommet cassé) et S8 (objectifs sur le range de C1) en sont exemptées
+OBST_ENTRY_STRATS = ("S1", "S2")  # entrent sur réaction à un niveau ; S3 (retest de sa propre ligne ou du creux/sommet cassé) et S4 (objectifs sur le range de C1) en sont exemptées
 OBST_TOL_ATR = 0.5                      # l'entrée doit être à moins de 0,5 ATR H1 d'un niveau (ou dans une zone) du bon côté
 OBST_MIN_RR = 1.0                       # obstacle opposé à moins de 1 R de l'entrée : signal écarté
 OBST_BUF_ATR = 0.1                      # TP1 placé 0,1 ATR H1 avant l'obstacle
@@ -1050,14 +1050,14 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
 
 
 
-STRAT_LABELS = {"S1": "Pullback", "S2": "Sweep + CHoCH", "S4": "Figures & Retournement", "S8": "CRT"}
-# S5, S6 et S7 sont d'anciens codes (alias ou libellés de trades déjà enregistrés) : le premier code libre est S8.
-# S3 (Mean Reversion) est supprimée : son code n'est pas réattribué, et ses trades déjà enregistrés gardent leur libellé.
-RETIRED_LABELS = {"S3": "Mean Reversion"}
+STRAT_LABELS = {"S1": "Pullback", "S2": "Sweep + CHoCH", "S3": "Figures & Retournement", "S4": "CRT"}
+# Numérotation continue S1 à S4. S5, S6, S7 et S8 sont d'anciens codes (alias ou libellés de trades déjà enregistrés).
+# Mean Reversion (ancienne S3) est supprimée : elle garde le code « MR » (S3 est maintenant Figures & Retournement), et ses trades déjà enregistrés gardent leur libellé.
+RETIRED_LABELS = {"MR": "Mean Reversion"}
 # Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback » ; Chart Patterns et S7 (Reversal)
-# en S4 « Figures & Retournement ». Les anciens codes, libellés et
+# en S3 « Figures & Retournement » ; l'ancien code S8 (CRT) est devenu S4. Les anciens codes, libellés et
 # trades enregistrés restent reconnus (configuration GitHub, trades en cours dans trades.json).
-STRAT_ALIAS = {"S5": "S1", "S7": "S4"}
+STRAT_ALIAS = {"S5": "S1", "S7": "S3", "S8": "S4"}
 STRAT_FAMILY = dict(STRAT_ALIAS)
 LABEL_FAMILY = {"Trend Pullback": "Pullback", "Impulsion": "Pullback", "Chart Patterns": "Figures & Retournement", "Reversal": "Figures & Retournement"}
 
@@ -1072,18 +1072,18 @@ def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market"):
     return out
 
 
-from patterns import scan_s4   # noqa: E402  (S4 Chart Patterns ; patterns.py importe strategies à l'appel, pas à l'import)
+from patterns import scan_s3   # noqa: E402  (S3 Chart Patterns ; patterns.py importe strategies à l'appel, pas à l'import)
 
-from crt import scan_crt   # noqa: E402  (S8 CRT ; crt.py importe strategies à l'appel, pas à l'import)
+from crt import scan_crt   # noqa: E402  (S4 CRT ; crt.py importe strategies à l'appel, pas à l'import)
 
-STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S4", scan_s4), ("S8", scan_crt)]
+STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_crt)]
 
 
 def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
     """Évalue les stratégies (toutes, ou celles de `only`) et renvoie les signaux trouvés.
     dec : décimales du prix de l'actif (affichage uniquement).
     modes : {"S1": "limit"|"market", ...} (défaut : marché).
-    kz : False pour un actif 24/7 (cryptos) : S2 et S8 ne sont alors pas limitées aux heures de session."""
+    kz : False pour un actif 24/7 (cryptos) : S2 et S4 ne sont alors pas limitées aux heures de session."""
     out = []
     for name, fn in STRATEGIES:
         if only and name not in only:

@@ -1,7 +1,7 @@
 """Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH + indices Volatility de Deriv : 5 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
 Stratégies (détail dans STRATEGIES.md) :
-  S1 Pullback (structure + Fibonacci) · S2 Sweep + CHoCH · S4 Figures & Retournement · S8 CRT
+  S1 Pullback (structure + Fibonacci) · S2 Sweep + CHoCH · S3 Figures & Retournement · S4 CRT
 Un passage = un scan (à déclencher toutes les 5 minutes par un cron externe, voir README.md).
 """
 import json, os, random, sys, time
@@ -84,7 +84,7 @@ def spread_pct(sym):
 
 
 def canon_codes(codes, known_only=False):
-    """Codes de stratégie normalisés, sans doublon, dans l'ordre : l'ancien code S5 devient S1 (fusion en « Pullback »), S7 devient S4."""
+    """Codes de stratégie normalisés, sans doublon, dans l'ordre : l'ancien code S5 devient S1 (fusion en « Pullback »), S7 devient S3, S8 (CRT) devient S4."""
     out = []
     for c in codes:
         c = S.STRAT_ALIAS.get(c, c)
@@ -94,7 +94,7 @@ def canon_codes(codes, known_only=False):
 
 
 def parse_sym_strats(text):
-    """'frxEURUSD:S1,S2;cryBTCUSD:S2,S4' -> {'frxEURUSD': ['S1','S2'], 'cryBTCUSD': ['S2','S4']}."""
+    """'frxEURUSD:S1,S2;cryBTCUSD:S2,S3' -> {'frxEURUSD': ['S1','S2'], 'cryBTCUSD': ['S2','S3']}."""
     out = {}
     for part in (text or "").split(";"):
         sym, _, lst = part.partition(":")
@@ -103,8 +103,8 @@ def parse_sym_strats(text):
     return out
 
 
-ENTRY_MODES = {"S1": "limit", "S2": "limit", "S4": "limit", "S8": "limit"}   # défaut : ordres limites partout
-for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S4:market"
+ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit"}   # défaut : ordres limites partout
+for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S3:market"
     _k, _, _v = _p.partition(":")
     _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
     if _k in ENTRY_MODES and _v.strip().lower() in ("limit", "market"):
@@ -188,11 +188,11 @@ def dec_of(sym):
 
 
 def is_247(sym):
-    """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S2 et S8."""
+    """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S2 et S4."""
     return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
-    """'S1,S2' -> ['S1', 'S2'] ; vide ou absent -> toutes les stratégies (S1, S2, S4, S8 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
-    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S4", "S8"]
+    """'S1,S2' -> ['S1', 'S2'] ; vide ou absent -> toutes les stratégies (S1, S2, S3, S4 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
+    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4"]
 
 
 ENABLED = parse_strategies(os.getenv("STRATEGIES"))
@@ -210,7 +210,7 @@ def parse_confluence(text, default=60.0):
 CONFLUENCE_MIN = parse_confluence(os.getenv("CONFLUENCE_MIN"))   # minutes ; 0 = pas d'étiquette de confluence
 LABEL_CODE = {v: k for k, v in S.STRAT_LABELS.items()}
 LABELS_ALL = {**S.RETIRED_LABELS, **S.STRAT_LABELS}   # libellés, y compris des stratégies supprimées (trades déjà enregistrés)
-LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S4", "Reversal": "S4", "Asian Breakout": "AB", "Mean Reversion": "S3"})   # « AB » : ancienne stratégie supprimée, sans code actif      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S2 » (trades enregistrés sans code)
+LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S3", "Reversal": "S3", "Asian Breakout": "AB", "Mean Reversion": "MR"})   # « AB » : ancienne stratégie supprimée, sans code actif      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S2 » (trades enregistrés sans code)
 GRAN = S.GRAN
 COUNTS = {"M5": 300, "M15": 400}         # bougies téléchargées à chaque scan
 COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York ; D1 en 00h GMT pour les indices synthétiques), ~100 jours
@@ -729,7 +729,7 @@ def add_confluence(sig, tr, batch, now):
 def reversal_alert(sym, provide, now, state):
     """Texte d'une alerte d'information « retournement possible » (voir reversal.py), ou None. Un message par sweep ; ni ordre,
     ni suivi, ni contrôle de risque. Tous les actifs, indices synthétiques compris."""
-    if not REV.ENABLED or "S4" in ENABLED:   # S4 envoie le même retournement en ordre
+    if not REV.ENABLED or "S3" in ENABLED:   # S3 envoie le même retournement en ordre
         return None
     rev = REV.detect(provide, now)
     if not rev:

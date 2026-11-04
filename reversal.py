@@ -153,7 +153,7 @@ def message(rev, name, dec, clock=""):
     return "\n".join(lines)
 
 
-# ----------------------------- Retournement : l'alerte devient un ordre (partie « retournement » de S4) -----------------------------
+# ----------------------------- Retournement : l'alerte devient un ordre (partie « retournement » de S3) -----------------------------
 def _f(name, default):
     try:
         return float(os.getenv(name) or default)
@@ -165,7 +165,7 @@ S7_RISK_CAP_ATR = _f("S7_RISK_CAP_ATR", 3.0)       # risque maximal : 3 x ATR H1
 S7_SL_BUF_ATR = 0.2                                 # marge du stop au-delà de l'extrême du sweep (en ATR H1)
 S7_ENTRY_MAX_ATR = _f("S7_ENTRY_MAX_ATR", 1.0)      # retest du creux (sommet) cassé à plus de 1 ATR H1 du prix : signal écarté
 S7_LIMIT_TTL = 7200                                 # validité de l'ordre limite, en secondes
-STRAT, LABEL = "S4", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S4 (STRAT_ALIAS : S7 -> S4)
+STRAT, LABEL = "S3", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S3 (STRAT_ALIAS : S7 -> S3)
 
 
 def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
@@ -175,8 +175,8 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     rev = rev or detect(provide, now)
     if not rev:
         return None
-    funnel["S4_retournement"] += 1
-    cf_n = S.confirm_tf("S4")                      # timeframe d'entrée : M15 (défaut) ou M5 (m15 / m15c / a_m15 : bougies et ATR de ce timeframe)
+    funnel["S3_retournement"] += 1
+    cf_n = S.confirm_tf("S3")                      # timeframe d'entrée : M15 (défaut) ou M5 (m15 / m15c / a_m15 : bougies et ATR de ce timeframe)
     m15, h1 = provide(cf_n), provide("H1")
     if not m15 or not h1:
         return None
@@ -206,7 +206,7 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
                 for lab, t, px_tp in (("TP2", t2, lv["tp"][1]), ("TP3", t3, lv["tp"][2])) if t]
     if not tp_lines:
         tp_lines = ["🎯 Pas de liquidité opposée intacte à 2-6 R : TP2 / TP3 à 2 R / 3 R"]
-    funnel["S4_signal"] += 1
+    funnel["S3_signal"] += 1
     word = {"BUY": "haussière", "SELL": "baissière"}[rev["trend_dir"]]
     taken = "sommet" if d == "SELL" else "creux"
     broke = "sous le dernier creux" if d == "SELL" else "au-dessus du dernier sommet"

@@ -2,7 +2,7 @@
 
 Module autonome : aucune entrée/sortie réseau, aucune dépendance aux stratégies. Chaque stratégie s'en sert là où cela a un sens :
 S1 a sa propre implémentation (retracement 50-79 % d'une impulsion), S2 l'utilise comme filtre de position (premium / discount),
-S4 comme filtre de profondeur (continuation) et plafond d'objectif (retournement).
+S3 comme filtre de profondeur (continuation) et plafond d'objectif (retournement).
 """
 
 GOLDEN_FROM = 0.5      # 50 % -> 61,8 % : « Golden Zone »

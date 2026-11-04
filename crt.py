@@ -1,5 +1,5 @@
-"""S8 CRT (Candle Range Theory) pur : le range d'une bougie de référence (C1) est balayé par la bougie suivante (C2), qui clôture à
-l'intérieur de ce range ; on entre en M15 (ou M5, S8_CONFIRM_TF) sur la cassure de structure qui suit la clôture de C2, vers le milieu puis le bord opposé de C1.
+"""S4 CRT (Candle Range Theory) pur : le range d'une bougie de référence (C1) est balayé par la bougie suivante (C2), qui clôture à
+l'intérieur de ce range ; on entre en M15 (ou M5, S4_CONFIRM_TF) sur la cassure de structure qui suit la clôture de C2, vers le milieu puis le bord opposé de C1.
 
   C1  bougie de référence H4 ou H1 (la dernière clôturée avant C2) : son range est la jambe de livraison.
   C2  bougie clôturée qui dépasse le plus haut (vente) ou le plus bas (achat) de C1 et clôture DANS le range de C1.
@@ -115,7 +115,7 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
         details.append(f"✅ Killzone {sess}")
     details.append(f"🎯 Objectifs sur C1 : milieu {tp1:.{dec}f}, bord opposé {tp2:.{dec}f}, bord opposé + {S.CRT_TP3_EXT * 100:.0f} % du range {tp3:.{dec}f}")
     return S._signal(
-        "S8", "CRT", d, entry, lv, m15, cf_n, f"{tf}|{c2['epoch']}", details,
+        "S4", "CRT", d, entry, lv, m15, cf_n, f"{tf}|{c2['epoch']}", details,
         lines=[{"y": hi1, "label": f"C1 haut {tf}", "kind": "range"}, {"y": lo1, "label": f"C1 bas {tf}", "kind": "range"},
                {"y": mid, "label": "Milieu C1", "kind": "info"}, {"y": ext_px, "label": "Sweep C2", "kind": "sweep"},
                {"y": pivot, "label": "CHoCH", "kind": "info"}],
@@ -123,15 +123,15 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
         inval=ext_px, session=sess,
         extra={"ref": tf, "c1": f"{lo1:.{dec}f}-{hi1:.{dec}f}", "poi": poi[1] if otype != d else "marché", "tp": "range C1"},
         short=f"CRT {tf} · C2 clôturée dans C1 · CHoCH {cf_n}", trig=tc["epoch"], otype=otype, price_now=price,
-        ttl=S.LIMIT_TTL["S8"] if otype != d else None,
+        ttl=S.LIMIT_TTL["S4"] if otype != d else None,
         entry_note=S.poi_note(poi, cf_n, dec) if otype != d else "",
         rr_rule=[(2, S.CRT_MIN_RR)])
 
 
 def scan_crt(provide, now, funnel, dec=2, kz=True, mode="market"):
-    """S8 CRT : une liste de signaux (au plus un par bougie de référence : H4 et H1), vide s'il n'y a rien."""
+    """S4 CRT : une liste de signaux (au plus un par bougie de référence : H4 et H1), vide s'il n'y a rien."""
     import strategies as S
-    cf_n = S.confirm_tf("S8")                         # confirmation : M15 (défaut) ou M5 (m15 / m15c / a_m15 : bougies et ATR de ce timeframe)
+    cf_n = S.confirm_tf("S4")                         # confirmation : M15 (défaut) ou M5 (m15 / m15c / a_m15 : bougies et ATR de ce timeframe)
     m15, h1 = provide(cf_n), provide("H1")
     if not (m15 and h1):
         return []
