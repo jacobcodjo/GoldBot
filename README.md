@@ -6,8 +6,8 @@ Bot d'**alertes Telegram** pour l'or, 15 paires forex (7 majeures contre USD, 8 
 |---|---|---|
 | S1 | Pullback (structure + retracement Fibonacci 50-79 %) | H4 > H1 > M15 |
 | S2 | Sweep + CHoCH (SMC) | H4/H1 > M15 > M5 |
-| S3 | Mean Reversion | H1 > M15 |
 | S4 | Figures & Retournement (figures chartistes + retournement contre une tendance H4 mûre ; ex-Chart Patterns et Reversal) | H1/H4 > M15 |
+| S8 | CRT (Candle Range Theory : C1/C2 en H4 ou H1, cassure de structure après C2) | H4/H1 > M15 |
 
 Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à TP3 avec ratio, graphique) et suit leur résultat en R. Aucune stratégie n'est garantie ; les paramètres sont des points de départ à valider par backtest.
 
@@ -23,7 +23,7 @@ Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à
 
 - **Par défaut, toutes les stratégies actives tournent sur chaque actif**, indices synthétiques compris. Les distances sont en ATR, mais les règles ont été pensées pour l'or : compare actif par actif au backtest et retire ceux qui ne tiennent pas (variable `SYMBOLS`).
 - **Exposition par devise** : un trade compte long ou short sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; or acheté = short USD) ; 2 trades au plus dans le même sens sur une même devise. BTC et ETH : 2 au plus dans le même sens. Pas de limite pour les indices.
-- **Cryptos et indices (24h/24)** : pas de rollover ni de fermeture de week-end ; seules les annonces USD bloquent les alertes (pas les indices) ; S2 et S3 sans limite d'horaire de session.
+- **Cryptos et indices (24h/24)** : pas de rollover ni de fermeture de week-end ; seules les annonces USD bloquent les alertes (pas les indices) ; S2 et S8 sans limite d'horaire de session.
 - **Indices Volatility** : prix généré aléatoirement, insensible aux news, sans récapitulatif du matin. Rien ne garantit qu'une stratégie ait un avantage sur un prix aléatoire : valide au backtest (`--sym synth`) avant de te fier aux alertes. La variante Pullback « classique » (EMA/ADX) n'a pas de sens sur un prix généré ; la variante « structure » y est imposée. D1 = bougie daily de Deriv (00h GMT). **Récapitulatif du soir** : chaque jour, 4 h avant la clôture de cette bougie (`SYNTH_RECAP_HEURES`), un message par classe (« Volatility Indices », « Volatility (1s) Indices »).
 - **Spreads par défaut** (estimations, `SPREAD_PCT` ou `SPREAD_TABLE`) : or 0,015 %, majeures 0,006 %, croisements 0,007 à 0,014 %, BTC/ETH 0,05 %, indices 0,02 %.
 
@@ -36,7 +36,9 @@ Les actifs sont regroupés en classes (Or, Forex de session, Forex JPY, Forex ca
 | Fichier | Rôle |
 |---|---|
 | `gold.py` | Scan, client Deriv, alertes et commandes Telegram, suivi |
-| `strategies.py` | Stratégies S1, S2 et S3 (S4 y est enregistrée), indicateurs, sessions |
+| `strategies.py` | Stratégies S1 et S2 (S4 et S8 y sont enregistrées), indicateurs, sessions |
+| `crt.py` | Stratégie S8 CRT (Candle Range Theory) : C1/C2 en H4 ou H1, cassure M15 |
+| `fib.py` | Fibonacci : jambe de référence, profondeur, zones (filtres de S2 et S4) |
 | `patterns.py` | S4 : figures sur H1/H4, cassure confirmée en M15, confluence avec le retournement |
 | `reversal.py` | Retournement possible (message d'information) et ordre de retournement de S4 |
 | `trend.py` | Tendance et âge (D1, H4, H1) pour les récapitulatifs |
@@ -60,16 +62,17 @@ Les actifs sont regroupés en classes (Or, Forex de session, Forex JPY, Forex ca
 
 | Variable | Rôle (défaut) |
 |---|---|
-| `STRATEGIES` | Stratégies actives, ex. `S2,S3` (défaut `S1,S2,S3,S4` ; l'ancien `S5` est lu comme `S1`, l'ancien `S7` comme `S4`) |
+| `STRATEGIES` | Stratégies actives, ex. `S2,S4` (défaut `S1,S2,S4,S8` ; l'ancien `S3`, Mean Reversion, est supprimé : il est ignoré ; l'ancien `S5` est lu comme `S1`, l'ancien `S7` comme `S4`) |
 | `SYMBOLS` | Actifs suivis (défaut : les 28 ci-dessus) |
-| `SYMBOL_STRATEGIES` | Stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S3` |
+| `SYMBOL_STRATEGIES` | Stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4` |
 | `SYMBOL_STRATEGIES` | Stratégies imposées actif par actif (voir « Classes d'actifs »). Les anciennes variables `CLASS_FILTER`, `CLASS_STRATEGIES` et `TIER_MAX` sont ignorées |
 | `PULLBACK_ADX_MIN` | ADX H4 minimal de Pullback (0 = désactivé, défaut). L'ancienne variable `PULLBACK_VARIANT` est ignorée : la variante « classique » est supprimée |
-| `ENTRY_MODE` / `ENTRY_MODES` | `auto` (défaut : ordres limites), `market` ou `limit` ; par stratégie, ex. `S2:market,S3:market` |
+| `ENTRY_MODE` / `ENTRY_MODES` | `auto` (défaut : ordres limites), `market` ou `limit` ; par stratégie, ex. `S2:market,S4:market` |
 | `INTRADAY` | `0` désactive le cadre intraday ; `INTRADAY_RUNNERS=1` laisse courir le reste après TP1 en fin de séance ; `CRYPTO_INTRADAY=1` y soumet les cryptos |
 | `REVERSAL_ALERTS`, `REVERSAL_MIN_SIGNS` | Message d'information de retournement (défaut actif ; 2 signes sur 3) |
 | `S6_RISK_CAP_ATR`, `S6_MIN_RR`, `S6_NOCONF_MIN_RR`, `S6_TOL_ATR`, `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR` | Réglages de S4 : figures et retournement (les noms `S6_*` et `S7_*` sont conservés tels quels, même après la renumérotation des stratégies ; voir STRATEGIES.md) |
-| `S2_FIB_FILTER`, `S3_FIB_FILTER`, `S4_FIB_FILTER`, `S4_FIB_CAP_TP3` | Fibonacci des stratégies S2, S3 et S4 (défaut actif ; `0` pour désactiver ; voir STRATEGIES.md, « Fibonacci par stratégie ») |
+| `S2_FIB_FILTER`, `S4_FIB_FILTER`, `S4_FIB_CAP_TP3` | Fibonacci des stratégies S2 et S4 (défaut actif ; `0` pour désactiver ; voir STRATEGIES.md, « Fibonacci par stratégie ») |
+| `S1_CONFIRM_TF`, `S2_CONFIRM_TF`, `S4_CONFIRM_TF`, `S8_CONFIRM_TF` | Timeframe de confirmation / d'entrée de chaque stratégie : `M15` ou `M5` (vide = historique : M15, sauf S2 qui suit `INTRADAY`). Voir STRATEGIES.md, « Confirmation en M15 ou en M5 » |
 | `ONE_TRADE_PER_SIDE` | `1` (défaut) : un seul trade par actif et par sens, toutes stratégies confondues ; `0` : un par stratégie |
 | `CONFLUENCE_MIN` | Fenêtre de confluence entre stratégies, en minutes (défaut 60, `0` désactive) |
 | `SPREAD_PCT`, `SPREAD_TABLE` | Spread supposé en % du prix : global, ou par actif ex. `frxXAUUSD=0.02,cryBTCUSD=0.04` (prioritaire) |
@@ -110,7 +113,6 @@ Par défaut, chaque alerte est un **ordre limite** posé au retest d'une zone (b
 |---|---|---|
 | Pullback | bloc d'ordre M15 (sinon FVG M15) | 2 h |
 | Sweep + CHoCH | bloc d'ordre M5 (sinon FVG M5) | 1 h |
-| Mean Reversion | bande de Bollinger rejetée | 1 h 30 |
 | Figures & Retournement (figure) | ligne de la figure cassée | 3 h |
 | Figures & Retournement (retournement) | dernier creux (sommet) H1 cassé | 2 h |
 
@@ -120,7 +122,7 @@ Le bot signale « Ordre limite touché », « Ordre annulé » (TP1 atteint sans
 
 Contexte et obstacles majeurs en H4/H1, confirmation en M15, trade de la journée.
 
-- **Entrée sur réaction à un niveau** (S1, S2) : à moins de 0,5 ATR H1 d'un niveau ou dans une zone H4/H1 du bon côté, sinon « hors niveau H4/H1 ». S3 et S4 n'y sont pas soumises.
+- **Entrée sur réaction à un niveau** (S1, S2) : à moins de 0,5 ATR H1 d'un niveau ou dans une zone H4/H1 du bon côté, sinon « hors niveau H4/H1 ». S4 et S8 n'y sont pas soumises.
 - **Objectif avant le prochain obstacle** (toutes) : TP1 ne dépasse jamais le prochain obstacle opposé (sommet/creux H1/H4, plus haut/bas de la veille, zone d'offre ou de demande). À moins de 1 R de l'entrée : signal écarté ; sinon TP1 est ramené 0,1 ATR H1 avant l'obstacle, et les objectifs au-delà aussi ; le ratio minimal de la stratégie est alors recontrôlé et le signal écarté s'il n'est plus atteint. Après TP1, stop à l'entrée.
 - **Fin de séance** (forex et or) : trades clôturés au plus tard à 16h45 New York ou 10 h après l'ouverture, **même après TP1** ; ordre en attente annulé au même moment. Cryptos et indices : aucune fin de séance.
 - Les seuils sont des choix de départ. Pour comparer : backtest avec `INTRADAY` vide, puis `0` (ou `--no-intraday`).

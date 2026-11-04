@@ -1,7 +1,7 @@
 """Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH + indices Volatility de Deriv : 5 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
 Stratégies (détail dans STRATEGIES.md) :
-  S1 Pullback (structure + Fibonacci) · S2 Sweep + CHoCH · S3 Mean Reversion · S4 Figures & Retournement
+  S1 Pullback (structure + Fibonacci) · S2 Sweep + CHoCH · S4 Figures & Retournement · S8 CRT
 Un passage = un scan (à déclencher toutes les 5 minutes par un cron externe, voir README.md).
 """
 import json, os, random, sys, time
@@ -94,7 +94,7 @@ def canon_codes(codes, known_only=False):
 
 
 def parse_sym_strats(text):
-    """'frxEURUSD:S1,S2;cryBTCUSD:S2,S3' -> {'frxEURUSD': ['S1','S2'], 'cryBTCUSD': ['S2','S3']}."""
+    """'frxEURUSD:S1,S2;cryBTCUSD:S2,S4' -> {'frxEURUSD': ['S1','S2'], 'cryBTCUSD': ['S2','S4']}."""
     out = {}
     for part in (text or "").split(";"):
         sym, _, lst = part.partition(":")
@@ -103,8 +103,8 @@ def parse_sym_strats(text):
     return out
 
 
-ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit"}   # défaut : ordres limites partout
-for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S3:market"
+ENTRY_MODES = {"S1": "limit", "S2": "limit", "S4": "limit", "S8": "limit"}   # défaut : ordres limites partout
+for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S4:market"
     _k, _, _v = _p.partition(":")
     _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
     if _k in ENTRY_MODES and _v.strip().lower() in ("limit", "market"):
@@ -188,11 +188,11 @@ def dec_of(sym):
 
 
 def is_247(sym):
-    """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S2 et S3."""
+    """Cryptos et indices synthétiques : marché ouvert 24h/24 et 7j/7, donc pas de filtre de session pour S2 et S8."""
     return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
-    """'S1,S2' -> ['S1', 'S2'] ; vide ou absent -> toutes les stratégies (S1, S2, S3, S4 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
-    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4"]
+    """'S1,S2' -> ['S1', 'S2'] ; vide ou absent -> toutes les stratégies (S1, S2, S4, S8 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
+    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S4", "S8"]
 
 
 ENABLED = parse_strategies(os.getenv("STRATEGIES"))
@@ -209,7 +209,8 @@ def parse_confluence(text, default=60.0):
 
 CONFLUENCE_MIN = parse_confluence(os.getenv("CONFLUENCE_MIN"))   # minutes ; 0 = pas d'étiquette de confluence
 LABEL_CODE = {v: k for k, v in S.STRAT_LABELS.items()}
-LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S4", "Reversal": "S4", "Asian Breakout": "AB"})   # « AB » : ancienne stratégie supprimée, sans code actif      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S2 » (trades enregistrés sans code)
+LABELS_ALL = {**S.RETIRED_LABELS, **S.STRAT_LABELS}   # libellés, y compris des stratégies supprimées (trades déjà enregistrés)
+LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S4", "Reversal": "S4", "Asian Breakout": "AB", "Mean Reversion": "S3"})   # « AB » : ancienne stratégie supprimée, sans code actif      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S2 » (trades enregistrés sans code)
 GRAN = S.GRAN
 COUNTS = {"M5": 300, "M15": 400}         # bougies téléchargées à chaque scan
 COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York ; D1 en 00h GMT pour les indices synthétiques), ~100 jours
@@ -568,7 +569,7 @@ def message_minimal(sig, tid):
 def message_essentiel(sig, tid):
     """3 lignes : type d'ordre, actif, stratégie (avec la confluence), heure ; niveaux ; validité et numéro."""
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
-    names = [sig["label"]] + [S.STRAT_LABELS.get(x, x) for x in (sig.get("confluence") or [])]
+    names = [sig["label"]] + [LABELS_ALL.get(x, x) for x in (sig.get("confluence") or [])]
     strat = ("⚡ " if len(names) > 1 else "") + " + ".join(names)
     tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
     entry = c(sig["entry"]) if is_limit(sig) else f"Marché {c(sig['entry'])}"
@@ -709,7 +710,7 @@ def confluence_with(sig, tr, batch, now):
         if o is not sig and o.get("sym") == sig["sym"] and o["dir"] == sig["dir"] and o.get("strat") not in (None, own) \
                 and fam(o["strat"]) != fam(own):
             found[o["strat"]] = 0.0
-    return sorted((c, S.STRAT_LABELS.get(c, c), a) for c, a in found.items())
+    return sorted((c, LABELS_ALL.get(c, c), a) for c, a in found.items())
 
 
 def add_confluence(sig, tr, batch, now):

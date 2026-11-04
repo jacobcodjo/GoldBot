@@ -1,7 +1,7 @@
 """Fibonacci : jambe de référence, profondeur d'un prix dans la jambe, zone nommée (voir STRATEGIES.md, « Fibonacci »).
 
 Module autonome : aucune entrée/sortie réseau, aucune dépendance aux stratégies. Chaque stratégie s'en sert là où cela a un sens :
-S1 a sa propre implémentation (retracement 50-79 % d'une impulsion), S2 et S3 l'utilisent comme filtre de position (premium / discount),
+S1 a sa propre implémentation (retracement 50-79 % d'une impulsion), S2 l'utilise comme filtre de position (premium / discount),
 S4 comme filtre de profondeur (continuation) et plafond d'objectif (retournement).
 """
 

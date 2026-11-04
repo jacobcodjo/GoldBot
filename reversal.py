@@ -176,7 +176,8 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     if not rev:
         return None
     funnel["S4_retournement"] += 1
-    m15, h1 = provide("M15"), provide("H1")
+    cf_n = S.confirm_tf("S4")                      # timeframe d'entrée : M15 (défaut) ou M5 (m15 / m15c / a_m15 : bougies et ATR de ce timeframe)
+    m15, h1 = provide(cf_n), provide("H1")
     if not m15 or not h1:
         return None
     m15c = m15[:-1]
@@ -210,7 +211,7 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     taken = "sommet" if d == "SELL" else "creux"
     broke = "sous le dernier creux" if d == "SELL" else "au-dessus du dernier sommet"
     return S._signal(
-        STRAT, LABEL, d, entry, lv, m15, "M15", f"{rev['epoch']}",
+        STRAT, LABEL, d, entry, lv, m15, cf_n, f"{rev['epoch']}",
         [f"✅ Tendance H4 {word} mûre ({rev['legs']} jambes), encore intacte",
          f"✅ Sweep : {taken} H1 {rev['level'][0]:.{dec}f} ({rev['level'][1]}) pris puis rejeté",
          f"✅ Cassure de structure H1 : clôture {broke} ({rev['pivot']:.{dec}f})",

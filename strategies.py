@@ -1,13 +1,14 @@
-"""Stratégies S1, S2, S3 et S4 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
+"""Stratégies S1, S2, S4 et S8 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
 
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
 
   S1  Pullback                    structure HTF > impulsion + repli Fibonacci 50-79 % > entrée LTF (sweep, FVG/bloc d'ordre ; objectifs sur extensions)
   S2  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
-  S3  Mean Reversion                  H1 (régime) > M15 (rejet des bandes de Bollinger)
 
-Fibonacci : S1 est construite autour ; S2 (premium/discount), S3 (extrémités du range) et S4 (profondeur du repli, plafond du TP3) l'utilisent en filtre (fib.py).
+  S8  CRT (Candle Range Theory)       H4/H1 (C1, C2) > M15 (cassure de structure après la clôture de C2)
+
+Fibonacci : S1 est construite autour ; S2 (premium/discount) et S4 (profondeur du repli, plafond du TP3) l'utilisent en filtre (fib.py).
 
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
@@ -17,7 +18,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from smc import body, mean_body, is_displacement, wick_sweep, close_beyond, fresh_break, mirror   # primitives SMC communes (S1 structure, S2, zones d'entrée)
-import fib as FB                                                                                    # Fibonacci : jambe de référence, profondeur, zones (S2, S3, S4)
+import fib as FB                                                                                    # Fibonacci : jambe de référence, profondeur, zones (S2, S4)
 
 NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
@@ -44,16 +45,6 @@ S2_SWEEP_BARS = 8                      # le sweep M15 date de 8 bougies M15 au p
 S2_PIVOT_BARS = 36                     # pivot M5 à moins de 36 bougies M5 (3 h) du sommet/creux du sweep
 S2_SESSIONS = ("Londres", "New York", "London Close")
 S2_RISK_CAP_H1 = 1.5
-
-# --- S3 Mean Reversion ---
-S3_ADX_MAX = 20                        # ADX(14) du H1 sous 20
-S3_FLAT_ATR = 0.6                      # EMA 50 du H1 : variation sur 12 bougies sous 0,6 x ATR H1
-S3_BB_N, S3_BB_K = 20, 2.0
-S3_RSI_N, S3_RSI_LOW, S3_RSI_HIGH = 14, 30, 70
-S3_BUF_ATR = 0.3
-S3_HOURS = [(20, 26), (11, 15)]        # 20h-02h et 11h-15h New York (26 = 02h du lendemain)
-S3_MIN_RR1, S3_MIN_RR2 = 0.8, 1.5      # ratios minimaux vers TP1 et TP2
-S3_RISK_CAP_H1 = 1.0
 
 # --- S1 Pullback (ex-S5 Impulsion + retracement Fibonacci, portée du crt-bot : impulse.py ; l'ancienne variante « classique » EMA/ADX est supprimée) ---
 try:
@@ -100,14 +91,49 @@ S2_FIB_MIN_DEPTH = 0.5                             # profondeur minimale de l'en
 S2_FIB_MIN_ATR = 1.5                               # jambe d'au moins 1,5 x ATR H1 ; plus petite, le filtre n'a pas d'information et laisse passer
 S2_FIB_BARS = {"H4": 60, "H1": 120}                # profondeur de recherche de la jambe (bougies clôturées avant le sweep)
 S2_FIB_SWING_N = {"H4": 2, "H1": 3}                # fractale des swings de la jambe
-S3_FIB_FILTER = _flag("S3_FIB_FILTER", True)       # S3 : on ne prend le rejet des bandes qu'aux extrémités du range H1 (38,2 % extérieurs), jamais au milieu
-S3_FIB_BARS = 48                                   # le range = les 48 dernières bougies H1 clôturées
-S3_FIB_EDGE = 0.618                                # profondeur minimale de l'entrée dans le range (0,618 = les 38,2 % extérieurs)
-S3_FIB_MIN_ATR = 2.0                               # range d'au moins 2 x ATR H1 ; plus petit, le filtre laisse passer
 S4_FIB_FILTER = _flag("S4_FIB_FILTER", True)       # S4 figures de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe précédente
 S4_FIB_CONT_MAX = 0.618                            # profondeur maximale du repli
 S4_FIB_CAP_TP3 = _flag("S4_FIB_CAP_TP3", True)     # S4 figures de retournement : TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)
 S4_FIB_LB = 60                                     # recherche de l'origine de la jambe précédente : 60 bougies avant la figure
+
+# --- S8 CRT (Candle Range Theory) pur : voir crt.py ---
+CRT_REFS = ("H4", "H1")             # bougies de référence C1 / C2 ; la confirmation est toujours en M15
+CRT_MIN_RANGE_ATR = 0.8             # range de C1 d'au moins 0,8 x ATR de son timeframe (sinon l'objectif est trop proche)
+CRT_MAX_RANGE_ATR = 3.5             # et d'au plus 3,5 x ATR (au-delà, la bougie est une impulsion, pas un range)
+CRT_PIVOT_BARS = 16                 # le swing M15 cassé date de 16 bougies M15 (4 h) au plus avant l'extrême de C2
+CRT_SESSIONS = ("Londres", "New York", "London Close")   # sessions de la cassure M15 (sauf actifs 24/7)
+CRT_SL_BUF_ATR = 0.15               # marge du stop au-delà de l'extrême de C2 (x ATR M15)
+CRT_TP3_EXT = 0.5                   # TP3 = bord opposé de C1 + 50 % de son range
+CRT_MIN_RR = 3.0                    # ratio gain/risque minimal (1 pour 3), calculé sur TP2
+CRT_RISK_CAP_H1 = 4.0               # risque maximal : 4 x ATR H1
+
+# --- Timeframe de confirmation / d'entrée, par stratégie : M15 ou M5 (variables S1_CONFIRM_TF ... S8_CONFIRM_TF) ---
+# Vide = comportement historique : M15 pour S1 (cascade selon INTRADAY), S4, S8 ; S2 suit INTRADAY (M15 si actif, sinon M5).
+# M5 : la cassure de structure, le bloc d'ordre, le FVG, le stop et le suivi de fraîcheur se calculent sur les bougies M5 (cadre H4/H1
+# inchangé) : entrée plus précoce et stop plus serré, mais plus de bruit, et le spread pèse davantage. Les durées exprimées en bougies
+# M15 sont converties (x 3 en M5) par bars().
+def _tf(name):
+    v = (os.getenv(name) or "").strip().upper()
+    return v if v in ("M15", "M5") else ""
+
+
+S1_CONFIRM_TF = _tf("S1_CONFIRM_TF")
+S2_CONFIRM_TF = _tf("S2_CONFIRM_TF")
+S4_CONFIRM_TF = _tf("S4_CONFIRM_TF")
+S8_CONFIRM_TF = _tf("S8_CONFIRM_TF")
+
+
+def confirm_tf(code):
+    """Timeframe de confirmation de la stratégie `code` (S2, S4, S8) : 'M15' ou 'M5' ; vide = comportement historique."""
+    v = globals().get(f"{code}_CONFIRM_TF") or ""
+    if v in ("M15", "M5"):
+        return v
+    return "M5" if (code == "S2" and not INTRADAY) else "M15"
+
+
+def bars(n_m15, tf):
+    """Durée de n_m15 bougies M15 exprimée en bougies du timeframe `tf` (M15 -> n_m15, M5 -> 3 x n_m15)."""
+    return n_m15 * (GRAN["M15"] // GRAN[tf])
 
 
 # ==========================================================================
@@ -186,15 +212,6 @@ def adx(cs, n=14):
     return a
 
 
-def bollinger(closes, i, n=S3_BB_N, k=S3_BB_K):
-    """(bande basse, moyenne, bande haute) à la bougie d'index i, ou None."""
-    if i + 1 < n:
-        return None
-    w = closes[i + 1 - n:i + 1]
-    m, sd = sum(w) / n, statistics.pstdev(w)
-    return m - k * sd, m, m + k * sd
-
-
 def swings(cs, kind, n):
     """Index des swings confirmés (fractales) : plus haut/bas strict sur n bougies de chaque côté.
     `cs` ne doit contenir que des bougies clôturées."""
@@ -226,11 +243,6 @@ def asia_window(now):
     return int(start.timestamp()), int(end.timestamp())
 
 
-def in_hours(epoch, windows):
-    h = datetime.fromtimestamp(epoch, NY).hour
-    return any(a <= h < b or a <= h + 24 < b for a, b in windows)
-
-
 # ==========================================================================
 # Niveaux d'entrée, stop et objectifs
 # ==========================================================================
@@ -258,7 +270,7 @@ def is_late(d, price, trig_close, a_ltf):
 LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
 LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
 LIMIT_MAX_ATR = 1.5         # zone d'entrée à plus de 1,5 ATR du prix actuel : signal écarté (trop de retracement requis)
-LIMIT_TTL = {"S2": 3600, "S3": 5400, "S5": 86400, "S4": 10800}   # validité de l'ordre limite, en secondes
+LIMIT_TTL = {"S2": 3600, "S5": 86400, "S4": 10800, "S8": 3600}   # validité de l'ordre limite, en secondes
 
 
 def ob_zone(cs, lo_i, hi_i, d):
@@ -525,7 +537,7 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
     a_h1, a_m15, a_m5 = atr(h1c), atr(m15c), atr(m5c)
     if min(a_h1, a_m15, a_m5) <= 0:
         return None
-    if INTRADAY:      # confirmation (CHoCH, bloc d'ordre, FVG) en M15 ; sinon en M5
+    if confirm_tf("S2") == "M15":      # confirmation (CHoCH, bloc d'ordre, FVG) en M15 (cadre intraday) ou en M5
         cf, cfc, a_cf, cf_n, pivot_bars = m15, m15c, a_m15, "M15", S2_PIVOT_BARS_M15
     else:
         cf, cfc, a_cf, cf_n, pivot_bars = m5, m5c, a_m5, "M5", S2_PIVOT_BARS
@@ -671,7 +683,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
 # ==========================================================================
 # Cadre intraday : obstacles majeurs H4 / H1
 # ==========================================================================
-OBST_ENTRY_STRATS = ("S1", "S2")  # entrent sur réaction à un niveau ; S3 (range H1), S4 (retest de sa propre ligne ou du creux/sommet cassé) en sont exemptées
+OBST_ENTRY_STRATS = ("S1", "S2")  # entrent sur réaction à un niveau ; S4 (retest de sa propre ligne ou du creux/sommet cassé) et S8 (objectifs sur le range de C1) en sont exemptées
 OBST_TOL_ATR = 0.5                      # l'entrée doit être à moins de 0,5 ATR H1 d'un niveau (ou dans une zone) du bon côté
 OBST_MIN_RR = 1.0                       # obstacle opposé à moins de 1 R de l'entrée : signal écarté
 OBST_BUF_ATR = 0.1                      # TP1 placé 0,1 ATR H1 avant l'obstacle
@@ -784,101 +796,6 @@ def obstacle_filter(sig, provide, now):
         sig["details"] = list(sig["details"]) + [f"🧱 Obstacle {nm} à {px:.{dec}f} : objectifs ramenés avant ce niveau (TP final {new:.{dec}f})"]
         if not rr_ok(sig):
             return "obst_rr"                                        # l'obstacle a ramené les objectifs sous le ratio minimal de la stratégie
-    return None
-
-
-# ==========================================================================
-# S3  Mean Reversion (marché sans tendance)
-# ==========================================================================
-def s3_fib_check(d, entry, h1c, a_h1):
-    """Fibonacci de S3 : le range H1 est les S3_FIB_BARS dernières bougies clôturées (plus haut / plus bas). Un retour à la moyenne n'a de
-    sens qu'à une extrémité : l'entrée doit être dans les 38,2 % extérieurs du range (profondeur >= S3_FIB_EDGE, voir fib.retrace), un achat
-    près du bas, une vente près du haut. Retourne {'ok', 'r', 'eq', 'lo', 'hi'}, ou None si le filtre est désactivé ou sans information
-    (range inférieur à S3_FIB_MIN_ATR x ATR H1)."""
-    if not S3_FIB_FILTER:
-        return None
-    seg = h1c[-S3_FIB_BARS:]
-    if len(seg) < S3_FIB_BARS // 2:
-        return None
-    hi, lo = max(x["high"] for x in seg), min(x["low"] for x in seg)
-    if hi - lo < S3_FIB_MIN_ATR * a_h1:
-        return None
-    r = FB.retrace(d, entry, lo, hi)
-    return {"ok": r >= S3_FIB_EDGE, "r": r, "eq": (lo + hi) / 2, "lo": lo, "hi": hi}
-
-
-def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
-    h1, m15 = provide("H1"), provide("M15")
-    if not (h1 and m15):
-        return None
-    h1c, m15c = h1[:-1], m15[:-1]
-    if len(h1c) < 70 or len(m15c) < 60:
-        return None
-    a = adx(h1c)
-    closes_h1 = [c["close"] for c in h1c]
-    e50 = ema(closes_h1, 50)
-    a_h1, a_m15 = atr(h1c), atr(m15c)
-    if a is None or e50[-1] is None or e50[-13] is None or a_h1 <= 0 or a_m15 <= 0:
-        return None
-    if a >= S3_ADX_MAX or abs(e50[-1] - e50[-13]) >= S3_FLAT_ATR * a_h1:
-        return None
-    funnel["S3_regime"] += 1
-    k = len(m15c) - 1
-    for i in range(k, k - FRESH, -1):                 # bougie de rejet : l'une des 2 dernières clôturées
-        c = m15c[i]
-        if kz and not in_hours(c["epoch"], S3_HOURS):
-            continue
-        closes = [x["close"] for x in m15c[:i + 1]]
-        bb = bollinger(closes, i)
-        rsis = rsi_series(closes, S3_RSI_N)
-        if bb is None or rsis[-1] is None:
-            continue
-        lo_b, mid, up_b = bb
-        recent_rsi = [r for r in rsis[-2:] if r is not None]
-        if c["low"] < lo_b and c["close"] > lo_b and c["close"] > c["open"] and min(recent_rsi) <= S3_RSI_LOW:
-            d = "BUY"
-        elif c["high"] > up_b and c["close"] < up_b and c["close"] < c["open"] and max(recent_rsi) >= S3_RSI_HIGH:
-            d = "SELL"
-        else:
-            continue
-        price = m15[-1]["close"]
-        ext = c["low"] if d == "BUY" else c["high"]
-        sl = ext - S3_BUF_ATR * a_m15 if d == "BUY" else ext + S3_BUF_ATR * a_m15
-        far = up_b if d == "BUY" else lo_b
-        band = lo_b if d == "BUY" else up_b             # retest de la bande de Bollinger rejetée
-        otype, entry = pick_entry(d, price, band, sl, mode)
-        if otype != d:
-            if abs(price - entry) > LIMIT_MAX_ATR * a_m15:
-                funnel["stale"] += 1
-                return None
-        elif is_late(d, price, c["close"], a_m15):
-            funnel["stale"] += 1
-            return None
-        lv = build_levels(d, entry, sl, a_m15, a_h1, S3_RISK_CAP_H1, tps=[mid, far, None])
-        if lv is None:
-            return None
-        gain = lambda t: ((t - entry) if d == "BUY" else (entry - t)) / lv["risk"]
-        if gain(mid) < S3_MIN_RR1 or gain(far) < S3_MIN_RR2:
-            return None
-        fib_info = s3_fib_check(d, entry, h1c, a_h1)
-        if fib_info is not None and not fib_info["ok"]:
-            funnel["S3_fib"] += 1
-            return None                               # rejet au milieu du range : pas d'extrémité à ramener vers la moyenne
-        funnel["S3_signal"] += 1
-        return _signal(
-            "S3", "Mean Reversion", d, entry, lv, m15, "M15", f"{c['epoch']}",
-            [f"✅ Range H1 (ADX {a:.0f}, EMA 50 plate)",
-             f"✅ Rejet de la bande de Bollinger {'basse' if d == 'BUY' else 'haute'} (RSI {min(recent_rsi) if d == 'BUY' else max(recent_rsi):.0f})",
-             f"✅ Heure favorable ({session_name(c['epoch'])})"]
-            + ([f"✅ Extrémité du range H1 ({S3_FIB_BARS} bougies) : Fibonacci {fib_info['r'] * 100:.0f} % ({'creux' if d == 'BUY' else 'sommet'} du range)"] if fib_info else []),
-            rr_rule=[(1, S3_MIN_RR1), (2, S3_MIN_RR2)],
-            lines=[{"y": mid, "label": "Moyenne", "kind": "info"}, {"y": ext, "label": "Rejet", "kind": "sweep"}]
-                  + ([{"y": fib_info["eq"], "label": "Équilibre range 50 %", "kind": "info"}] if fib_info else []),
-            zones=[{"lo": lo_b, "hi": up_b, "label": "Bollinger", "kind": "fib"}], inval=ext,
-            extra={"fib": f"{fib_info['r'] * 100:.0f}%" if fib_info else "aucune"},
-            short=f"Rejet Bollinger {'basse' if d == 'BUY' else 'haute'} · RSI {min(recent_rsi) if d == 'BUY' else max(recent_rsi):.0f}", trig=c["epoch"],
-            otype=otype, price_now=price, ttl=LIMIT_TTL["S3"] if otype != d else None,
-            entry_note=f"Ordre limite sur la bande de Bollinger ({band:.{dec}f})" if otype != d else "")
     return None
 
 
@@ -1049,12 +966,21 @@ def _s5_unflip(r):
     return out
 
 
+def s1_cascades():
+    """Cascades (tendance, impulsion + Fibonacci, entrée) de S1 : celles du cadre intraday ou les anciennes. Avec S1_CONFIRM_TF=M5, même
+    tendance et même impulsion, seul le timeframe d'entrée devient M5 (les cascades qui deviennent identiques ne sont gardées qu'une fois)."""
+    cascades = S5_CASCADES_INTRADAY if INTRADAY else S5_CASCADES
+    if S1_CONFIRM_TF == "M5":
+        cascades = list(dict.fromkeys((h, m, "M5") for h, m, _ in cascades))
+    return cascades
+
+
 def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
     """Retourne la LISTE des signaux (une par cascade et par sens : D1>H4>H1, H4>H1>M15, H1>M15>M5), la cascade la plus
     haute en premier ; le garde-fou « un trade par actif, stratégie et sens » écarte les doublons d'un même mouvement.
     Pas de filtre de killzone : l'impulsion se juge sur la structure, pas sur l'heure (kz est ignoré)."""
     out = []
-    for htf_n, mtf_n, ltf_n in (S5_CASCADES_INTRADAY if INTRADAY else S5_CASCADES):
+    for htf_n, mtf_n, ltf_n in s1_cascades():
         htf, mtf = provide(htf_n), provide(mtf_n)
         if not htf or not mtf:
             continue
@@ -1124,7 +1050,10 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
 
 
 
-STRAT_LABELS = {"S1": "Pullback", "S2": "Sweep + CHoCH", "S3": "Mean Reversion", "S4": "Figures & Retournement"}
+STRAT_LABELS = {"S1": "Pullback", "S2": "Sweep + CHoCH", "S4": "Figures & Retournement", "S8": "CRT"}
+# S5, S6 et S7 sont d'anciens codes (alias ou libellés de trades déjà enregistrés) : le premier code libre est S8.
+# S3 (Mean Reversion) est supprimée : son code n'est pas réattribué, et ses trades déjà enregistrés gardent leur libellé.
+RETIRED_LABELS = {"S3": "Mean Reversion"}
 # Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback » ; Chart Patterns et S7 (Reversal)
 # en S4 « Figures & Retournement ». Les anciens codes, libellés et
 # trades enregistrés restent reconnus (configuration GitHub, trades en cours dans trades.json).
@@ -1145,14 +1074,16 @@ def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market"):
 
 from patterns import scan_s4   # noqa: E402  (S4 Chart Patterns ; patterns.py importe strategies à l'appel, pas à l'import)
 
-STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_s4)]
+from crt import scan_crt   # noqa: E402  (S8 CRT ; crt.py importe strategies à l'appel, pas à l'import)
+
+STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S4", scan_s4), ("S8", scan_crt)]
 
 
 def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):
     """Évalue les stratégies (toutes, ou celles de `only`) et renvoie les signaux trouvés.
     dec : décimales du prix de l'actif (affichage uniquement).
     modes : {"S1": "limit"|"market", ...} (défaut : marché).
-    kz : False pour un actif 24/7 (cryptos) : S2 et S3 ne sont alors pas limitées aux heures de session."""
+    kz : False pour un actif 24/7 (cryptos) : S2 et S8 ne sont alors pas limitées aux heures de session."""
     out = []
     for name, fn in STRATEGIES:
         if only and name not in only:

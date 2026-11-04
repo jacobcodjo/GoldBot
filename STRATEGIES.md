@@ -1,7 +1,7 @@
 # Stratégies du bot (or, paires majeures, BTC et ETH)
 
 Quatre stratégies indépendantes, évaluées à chaque scan (toutes les 5 minutes). Chacune a son nom dans les
-alertes Telegram (le code S1, S2, S3 et S4 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
+alertes Telegram (le code S1, S2, S4 et S8 sert seulement aux réglages : variable `STRATEGIES`, option `--only`), son propre suivi et ses propres statistiques. Les noms entre parenthèses sont les
 paramètres de `strategies.py` (modifiables, et testables avec `backtest.py --set`).
 
 > **Important.** Aucune stratégie n'a un taux de réussite élevé garanti. Les valeurs ci-dessous sont des
@@ -18,8 +18,15 @@ Depuis la suppression d'Asian Breakout, les stratégies sont numérotées sans t
 |---|---|---|
 | S1 (et S5) | **S1** | Pullback |
 | S3 | **S2** | Sweep + CHoCH |
-| S4 | **S3** | Mean Reversion |
+| S4 | *(supprimée)* | Mean Reversion : voir ci-dessous |
 | S6 (et S7) | **S4** | Figures & Retournement |
+
+**S3 supprimée (Mean Reversion).** La stratégie est retirée du bot ; les codes ne sont pas renumérotés : les stratégies actives sont S1, S2, S4 et S8,
+pour que `STRATEGIES`, `SYMBOL_STRATEGIES` et `ENTRY_MODES` gardent leur sens. Un `S3` encore écrit dans ces variables est ignoré (il ne lance rien).
+Les trades Mean Reversion déjà enregistrés restent suivis et reconnus par leur libellé. Les variables `S3_FIB_FILTER` et `S3_CONFIRM_TF` ne servent plus.
+
+**S8 CRT** : stratégie ajoutée après coup. Les codes S5, S6 et S7 sont d'anciens codes (alias de fusion ou libellés de trades déjà enregistrés) : le premier code
+libre est S8, ce qui évite qu'un `S5` écrit dans `STRATEGIES`, `SYMBOL_STRATEGIES` ou `ENTRY_MODES` change de sens.
 
 Anciens codes de fusion : `S5` est lu comme `S1`, `S7` comme `S4`. Les noms des variables d'environnement ne changent pas : `S6_*` (figures)
 et `S7_*` (retournement) gardent leur nom pour ne pas perdre les valeurs déjà saisies dans GitHub. Les trades déjà enregistrés sont reconnus par
@@ -40,7 +47,7 @@ sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; l'or ach
 même sens sur une même devise ; BTC et ETH forment un groupe : 2 trades au plus dans le même sens.
 
 **Cryptos** : marché 24h/24, 7j/7. Les heures de session (killzones de Sweep + CHoCH, heures favorables de
-Mean Reversion) ne s'appliquent pas à elles, et les fenêtres de rollover, vendredi soir, dimanche et NFP non plus.
+CRT) ne s'appliquent pas à elles, et les fenêtres de rollover, vendredi soir, dimanche et NFP non plus.
 La plage asiatique (liquidité de S2) et les niveaux PDH/PDL gardent leur définition en heure de New York.
 
 ## Conventions communes
@@ -60,7 +67,7 @@ La plage asiatique (liquidité de S2) et les niveaux PDH/PDL gardent leur défin
 - **Ordres limites** (défaut, `ENTRY_MODE=auto`) : l'entrée est un ordre limite au retest d'une zone propre à chaque
   stratégie, à condition que la zone soit entre le stop et le prix actuel, sinon l'ordre est au marché.
   L'ordre est **annulé** si TP1 est atteint avant l'entrée, si une bougie clôture au-delà du stop, si le marché ferme pour
-  le week-end, ou après sa durée de validité (S1 24 h, S2 1 h, S3 1 h 30, S4 3 h, ou 2 h pour son ordre de retournement : `LIMIT_TTL`). Une zone à plus de
+  le week-end, ou après sa durée de validité (S1 24 h, S2 1 h, S4 3 h, S8 1 h, ou 2 h pour son ordre de retournement : `LIMIT_TTL`). Une zone à plus de
   1,5 x ATR du prix écarte le signal (`LIMIT_MAX_ATR`). Les ordres limites améliorent le prix d'entrée mais manquent
   les mouvements qui ne reviennent pas : compare les rendements **totaux** au backtest, pas seulement par trade.
   Le suivi ne considère l'ordre posé qu'à partir de la bougie suivant l'alerte.
@@ -161,29 +168,6 @@ TP2 = 2 R, TP3 = 3 R (TP2 + 1 R si TP2 est plus loin que 2 R). Une liquidité op
 (ex. `H1 OB`) et `tp` (`liquidité`/`fixe`) de chaque trade. Les filtres cumulés rendent S2 beaucoup plus sélective :
 vérifie sur plusieurs mois que le nombre de trades reste exploitable avant de les garder tous.
 
-## Mean Reversion (code S3) · H1 > M15
-
-**Idée** : quand l'or oscille sans direction, un rejet net des bandes de Bollinger ramène le prix vers la
-moyenne. C'est la stratégie la plus risquée si une tendance démarre : le régime est donc filtré strictement.
-
-**1. Régime H1 (marché sans tendance)**
-- ADX(14) du H1 < 20 (`S3_ADX_MAX`).
-- EMA 50 du H1 quasi plate : variation sur 12 bougies < 0,6 x ATR H1 (`S3_FLAT_ATR`).
-
-**2. Heures** : 20h-02h ou 11h-15h New York (`S3_HOURS`). Pas d'entrée aux ouvertures de Londres et de New York.
-
-**3. Bougie de rejet M15** (l'une des 2 dernières clôturées)
-- Achat : la mèche passe sous la bande de Bollinger basse (20, 2), la bougie **clôture dans les bandes**, elle
-  est haussière, et le RSI(14) a été ≤ 30 sur cette bougie ou la précédente.
-- Vente : l'inverse (bande haute, bougie baissière, RSI ≥ 70).
-
-**Entrée** : ordre **limite** sur la bande de Bollinger rejetée. **Stop** : au-delà de la mèche de rejet + 0,3 x ATR M15
-(`S3_BUF_ATR`).
-**Objectifs** : TP1 = moyenne mobile 20 de Bollinger, TP2 = bande opposée, **pas de TP3** (50 % à TP1, le reste
-à TP2). **Rejet du signal** si le ratio vers TP1 est < 0,8 ou vers TP2 < 1,5, ou si le risque dépasse 1 x ATR H1.
-**Invalidation** : clôture M15 au-delà de la mèche de rejet.
-
-
 ---
 
 ### Règles de Pullback (ex-S5, Impulsion + Fibonacci) · HTF > MTF > LTF
@@ -283,7 +267,7 @@ bougies M15 clôturées finit au-delà de la ligne, la précédente non). Module
 
 > **Important.** Ces seuils sont des points de départ classiques, **non optimisés ni validés** sur l'or. Lance le backtest
 > (`backtest.yml`, option `--only S4`) avant de t'y fier, et compare chaque figure (`extra.figure` dans le rapport).
-> Retire la stratégie sans toucher au code avec `STRATEGIES=S1,S2,S3`.
+> Retire la stratégie sans toucher au code avec `STRATEGIES=S1,S2,S8`.
 
 ### Partie retournement (ex-S7 Reversal) · H4 > H1 > M15
 
@@ -297,36 +281,77 @@ la tendance, au moins 2 signes d'essoufflement sur 3 (divergence RSI, bougies qu
 - **Objectifs** : sur la liquidité opposée intacte, comme S2 : TP1 = 1 R, TP2 = première liquidité entre 2 R et 6 R (sinon 2 R), TP3 = liquidité suivante à 3 R ou plus (sinon 3 R). Ramenés avant le prochain obstacle par le cadre intraday.
 - **Contre la tendance H4** : le message le rappelle (taille réduite conseillée) et `extra.contre_tendance` est enregistré.
 - **Un ordre par sweep** (clé = bougie de l'extrême). Quand S4 est active, l'alerte d'information n'est plus envoyée (même événement) ;
-  `STRATEGIES=S1,S2,S3` la rétablit. `REVERSAL_ALERTS=0` supprime seulement le message d'information (S4 n'en dépend pas).
+  `STRATEGIES=S1,S2,S8` la rétablit. `REVERSAL_ALERTS=0` supprime seulement le message d'information (S4 n'en dépend pas).
 - **Tous les actifs, indices synthétiques compris** (S4). Sur un indice synthétique le prix est généré : les niveaux et figures y ont
   moins de sens, le backtest dira si S4 y tient (`--sym` pour les isoler).
 - **Entonnoir** : `S4_retournement` (retournements détectés) ; les signaux comptent dans `S4_signal`.
 
 > Stratégie contre la tendance, non validée : backtest (`--only S4`) avant de t'y fier.
 
+## CRT (code S8) · H4/H1 > M15 : Candle Range Theory pur
+
+Le range d'une bougie de référence est balayé, puis livré dans l'autre sens. Pas de biais de tendance ni de zone H4/H1 : le CRT se lit sur deux
+bougies. Code : `crt.py` ; réglages `CRT_*` dans `strategies.py`.
+
+| Étape | Règle |
+|---|---|
+| C1 | Dernière bougie H4 (ou H1) clôturée avant C2. Son range doit faire entre 0,8 et 3,5 x ATR de son timeframe (`CRT_MIN_RANGE_ATR`, `CRT_MAX_RANGE_ATR`). |
+| C2 | Bougie clôturée qui dépasse **un seul** côté de C1 et **clôture dans le range de C1**. Dépasser les deux côtés (englobante) ou clôturer hors du range n'est pas un CRT. |
+| C3 | Bougie en formation : la livraison se fait pendant C3. La confirmation M15 doit arriver avant sa clôture. |
+| Entrée | Première clôture M15 au-delà du dernier swing M15 (CHoCH avec déplacement), **après la clôture de C2** et à moins de `CRT_PIVOT_BARS` bougies de l'extrême de C2. Si le prix reprend l'extrême de C2 pendant C3, le sweep est annulé. Ordre limite sur le bloc d'ordre ou le FVG M15 s'il y en a un, sinon au marché. Sessions : Londres, New York, London Close (`CRT_SESSIONS`, sauf actifs 24/7). |
+| Stop | Au-delà de l'extrême de C2, plus 0,15 x ATR M15 (`CRT_SL_BUF_ATR`). |
+| Objectifs | TP1 milieu de C1, TP2 bord opposé de C1, TP3 bord opposé + 50 % du range (`CRT_TP3_EXT`). |
+| Ratio | Minimum 1 pour 3 calculé sur TP2 (`CRT_MIN_RR`). Beaucoup de CRT sont écartés par ce ratio quand l'entrée est au marché : l'ordre limite sur le FVG ou le bloc d'ordre le rend atteignable. |
+
+Différences avec S2 : S2 balaie des niveaux de liquidité (veille, Asie, equal highs/lows) avec un biais de structure et une zone H4/H1, et vise la liquidité
+opposée. S8 ne regarde que le range de C1 et vise ses repères (milieu, bord opposé). Les deux peuvent signaler le même retournement : la règle « un trade par actif et par sens » les départage.
+
+Absent par rapport au CRT de tes autres bots : l'entrée « OTE de C2 » (mode strict) et le Breaker (la zone d'entrée est le bloc d'ordre, puis le FVG).
+S8 n'entre pas dans le filtre d'obstacles majeurs, qui déplacerait TP1 : ses objectifs sont ceux de C1.
+
+## Confirmation en M15 ou en M5 (un réglage par stratégie)
+
+Chaque stratégie a son timeframe de confirmation / d'entrée, réglable séparément. Le cadre H4 / H1 ne change pas : seuls la cassure de structure,
+le bloc d'ordre, le FVG, le stop et la fraîcheur du signal passent sur les bougies M5.
+
+| Stratégie | Variable | Ce qui passe en M5 | Défaut (vide) |
+|---|---|---|---|
+| S1 Pullback | `S1_CONFIRM_TF` | Entrée de chaque cascade (sweep, cassure, FVG, bloc d'ordre) : `H4 > H1 > M5` en intraday. Seule la valeur `M5` a un effet. | Cascade selon `INTRADAY` (`H4 > H1 > M15`) |
+| S2 Sweep + CHoCH | `S2_CONFIRM_TF` | CHoCH, bloc d'ordre et FVG (le sweep reste détecté en M15) ; pivot cherché sur 36 bougies M5 au lieu de 12 | M15 en intraday, sinon M5 |
+| S4 Figures & Retournement | `S4_CONFIRM_TF` | Confirmation de la cassure de la figure (les figures restent H1 / H4) ; entrée du retournement | M15 |
+| S8 CRT | `S8_CONFIRM_TF` | Cassure de structure après C2, zone d'entrée ; pivot cherché sur 48 bougies M5 au lieu de 16 | M15 |
+
+Valeurs : `M15` ou `M5` ; toute autre valeur est ignorée (comportement par défaut). Les durées écrites en bougies M15 sont converties (x 3 en M5).
+
+**Ce que M5 change.** Entrée plus précoce, stop plus serré (ratio plus facile à atteindre, notamment pour le 1 pour 3 de S8), mais cassures plus bruyantes
+et spread plus lourd par rapport au stop. Les objectifs de S8 (milieu, bord de C1) et ceux de S1 (impulsion) ne dépendent pas du timeframe d'entrée.
+
+**À tester avant de s'y fier** : un passage en M5 doit se comparer au backtest, avec un spread réaliste, stratégie par stratégie :
+`python backtest.py --only S2 --split 0.6 --set strategies.S2_CONFIRM_TF=M15,M5` (idem `S1_CONFIRM_TF` avec `,M5`, `S4_CONFIRM_TF`, `S8_CONFIRM_TF`).
+On ne garde M5 que là où le rendement **total** monte, pas seulement le R par trade.
+
 ## Fibonacci par stratégie (module `fib.py`)
 
 S1 Pullback est construite autour de Fibonacci (retracement 50-79 % d'une impulsion). Les trois autres stratégies l'utilisent chacune là où il
 a un sens, en **filtre** : il ne crée jamais de signal, il en écarte. Chaque filtre est actif par défaut et se désactive par une variable.
 Sans information (jambe absente ou trop petite), le filtre laisse passer le signal. L'entonnoir compte les signaux écartés (`S2_fib`,
-`S3_fib`, `S4_fib`).
+`S4_fib`).
 
 | Stratégie | Usage de Fibonacci | Réglages (`strategies.py`) | Variable |
 |---|---|---|---|
 | S2 Sweep + CHoCH | **Premium / discount** : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe de référence (H4 si le biais vient du H4, sinon H1). Un achat dans le discount, une vente dans le premium. | `S2_FIB_MIN_DEPTH` 0,5 ; `S2_FIB_MIN_ATR` 1,5 ; `S2_FIB_BARS` ; `S2_FIB_SWING_N` | `S2_FIB_FILTER` |
-| S3 Mean Reversion | **Extrémités du range** : le rejet de la bande de Bollinger ne se prend que dans les 38,2 % extérieurs du range H1 (48 bougies), jamais au milieu. | `S3_FIB_EDGE` 0,618 ; `S3_FIB_BARS` 48 ; `S3_FIB_MIN_ATR` 2 | `S3_FIB_FILTER` |
 | S4 figures de continuation | **Profondeur du repli** : la figure ne doit pas reprendre plus de 61,8 % de la jambe qui la précède ; plus profond, c'est un début de retournement et la figure est écartée. | `S4_FIB_CONT_MAX` 0,618 ; `S4_FIB_LB` 60 | `S4_FIB_FILTER` |
 | S4 figures de retournement | **Plafond d'objectif** : TP3 (mesure de la figure) est plafonné à l'origine de la jambe précédente (100 %), tant que cette origine reste au-delà de TP2. | `S4_FIB_LB` 60 | `S4_FIB_CAP_TP3` |
 
 **Jambe de référence.** S2 : plus haut des sommets et plus bas des creux confirmés (fractales de 2 bougies en H4, 3 en H1) sur les 60 bougies H4
-ou 120 bougies H1 clôturées avant le sweep. S3 : plus haut et plus bas des 48 dernières bougies H1 clôturées. S4 : origine de la jambe cherchée
+ou 120 bougies H1 clôturées avant le sweep. S4 : origine de la jambe cherchée
 sur les 60 bougies avant le début de la figure (continuation : plus haut avant la figure jusqu'au plus bas de la figure ; retournement : plus bas avant la figure).
 
 **Profondeur** (`fib.retrace`) : 0 au bord haut pour un achat (bas pour une vente), 0,5 à l'équilibre, 1 au bord opposé. Au-delà de 0,5, on est
 du bon côté. Zones nommées comme S1 : 50-61,8 % « Golden Zone », 61,8-79 % « OTE », au-delà « extrême ».
 
 **À tester avant de s'y fier** : ces seuils sont des choix de départ, non validés par un backtest. Pour comparer avec et sans :
-`python backtest.py --only S2 --split 0.6 --set strategies.S2_FIB_FILTER=true,false` (idem `S3_FIB_FILTER`, `S4_FIB_FILTER`, `S4_FIB_CAP_TP3`).
+`python backtest.py --only S2 --split 0.6 --set strategies.S2_FIB_FILTER=true,false` (idem `S4_FIB_FILTER`, `S4_FIB_CAP_TP3`).
 Comparer les rendements **totaux** et non seulement le R par trade : un filtre qui réduit trop le nombre de trades n'est pas évaluable.
 
 ## Classes d'actifs (regroupement, sans filtre de stratégie)
@@ -337,7 +362,7 @@ stratégie** : le filtre par classe (variables `CLASS_FILTER`, `CLASS_STRATEGIES
 marquage « 🧪 À tester ») est supprimé, et ces variables sont ignorées si elles existent encore dans GitHub. Le classement qu'il appliquait
 n'avait jamais été validé par backtest.
 
-Pour restreindre un actif précis, `SYMBOL_STRATEGIES` (ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S3`) ; un actif absent reçoit toutes les stratégies
+Pour restreindre un actif précis, `SYMBOL_STRATEGIES` (ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S4`) ; un actif absent reçoit toutes les stratégies
 actives (variable `STRATEGIES`). Indices synthétiques : prix généré par un algorithme, aucune liquidité réelle, aucune stratégie n'y a de base
 logique : à traiter comme une expérience.
 
@@ -364,16 +389,16 @@ Même avec ces chiffres, le RR visé n'est pas un rendement : seul le R obtenu, 
 ## Confluence (étiquette, hors stratégies)
 
 Quand deux stratégies ou plus signalent **le même actif dans le même sens** à moins de `CONFLUENCE_MIN` minutes d'écart
-(60 par défaut ; `0` pour désactiver), l'alerte le dit : une ligne « ⚡ Confluence : S3 Mean Reversion (il y a 10 min) »
-(format complet), « confluence S3 » dans le résumé (formats compact et contexte), « ⚡S3 » dans l'en-tête (format minimal).
+(60 par défaut ; `0` pour désactiver), l'alerte le dit : une ligne « ⚡ Confluence : S4 Figures & Retournement (il y a 10 min) »
+(format complet), « confluence S4 » dans le résumé (formats compact et contexte), « ⚡S4 » dans l'en-tête (format minimal).
 
 - **Information seulement** : rien n'est filtré, chaque stratégie alerte comme avant, avec ses propres niveaux.
 - **Qui compte** : les trades des autres stratégies encore en attente ou ouverts, alertés dans la fenêtre, et les signaux trouvés au même
   scan. Un trade clôturé, annulé ou expiré ne compte pas. Une même stratégie ne se compte pas elle-même (S1 et son ancien code S5 = une seule ; S4 et son ancien code S7 = une seule).
-- **Une seule étiquette, sur la seconde alerte** : si S2 alerte à 10h00 puis S3 à 10h20, c'est l'alerte de S3 qui porte la confluence ;
+- **Une seule étiquette, sur la seconde alerte** : si S2 alerte à 10h00 puis S4 à 10h20, c'est l'alerte de S4 qui porte la confluence ;
   celle de S2, déjà envoyée, n'est pas modifiée. Au même scan, les deux alertes la portent. Avec `ONE_TRADE_PER_SIDE` (défaut), la seconde
   alerte est bloquée : l'étiquette ne sort donc que pour des signaux trouvés au même scan (voir « Cohérence entre stratégies »).
-- **Mesure au backtest** : chaque trade enregistre `confluence` (ex. `S2+S3`, ou `aucune`) et le rapport ajoute une ligne par valeur.
+- **Mesure au backtest** : chaque trade enregistre `confluence` (ex. `S2+S4`, ou `aucune`) et le rapport ajoute une ligne par valeur.
   Pour comparer les fenêtres : `python backtest.py --sym all --split 0.6 --set gold.CONFLUENCE_MIN=0,30,60,120`.
   Compare le rendement par trade de `aucune` et des confluences, **sur les deux périodes** (`--split 0.6`) : il faut au moins
   30 trades par ligne, et une confluence qui ne tient que sur une période est du sur-ajustement.
@@ -397,7 +422,7 @@ Trend Pullback (EMA 50/200 du H4) : les deux lectures peuvent différer.
 ## Cadre intraday (par défaut)
 
 Toutes les stratégies sont des stratégies de la journée : obstacles majeurs en H4 / H1, confirmation en M15 (Pullback structure : cascade H4>H1>M15 uniquement ; S2 : CHoCH, bloc d'ordre et FVG en M15), puis clôture de fin de séance (16h45 New York, ou 10 h après l'ouverture) pour le forex et l'or, y compris le reste d'un trade dont TP1 est atteint (`INTRADAY_RUNNERS=1` le laisse courir). Les cryptos et les indices synthétiques, ouverts 24h/24, n'ont pas de fin de séance : ils courent jusqu'au TP final (`CRYPTO_INTRADAY=1` coupe aussi les cryptos).
-S1 (Pullback) et S2 n'entrent que sur réaction à un niveau ou une zone H4/H1 (tolérance 0,5 ATR H1) ; S3 en est exemptée. Pour toutes, TP1 ne dépasse jamais le prochain obstacle opposé : à moins de 1 R, le signal est écarté ; sinon TP1 est ramené 0,1 ATR H1 avant lui.
+S1 (Pullback) et S2 n'entrent que sur réaction à un niveau ou une zone H4/H1 (tolérance 0,5 ATR H1) ; S4 et S8 en sont exemptées. Pour toutes, TP1 ne dépasse jamais le prochain obstacle opposé : à moins de 1 R, le signal est écarté ; sinon TP1 est ramené 0,1 ATR H1 avant lui.
 `INTRADAY=0` restaure l'ancien comportement (cascades M5, confirmation S2 en M5, pas de filtre d'obstacles, pas de clôture de fin de séance). Les seuils sont des choix de départ, non validés par un backtest.
 
 
@@ -410,7 +435,7 @@ S1 (Pullback) et S2 n'entrent que sur réaction à un niveau ou une zone H4/H1 (
 - **S1 et son ancien code S5, S4 et son ancien code S7** : une seule stratégie chacune.
 - **Pas de sens opposé** sur un même actif (toutes stratégies, ordres en attente compris).
 - **Tendance** : la structure (S2, S5, alertes) vient d'une seule définition, `trend.py`. S2 garde son filtre EMA H4 (biais).
-- **Objectifs et obstacles** : un obstacle ramène TP1, mais aussi TP2 et TP3 s'ils sont au-delà. **Le ratio minimal de la stratégie est ensuite recontrôlé** sur les objectifs ramenés (Pullback 3 R vers TP2, Mean Reversion 0,8 R et 1,5 R, Figures 1 R ou 1,5 R vers TP3) ; en dessous, le signal est écarté (entonnoir `obst_rr`). S2 et le retournement n'ont pas de minimum explicite.
+- **Objectifs et obstacles** : un obstacle ramène TP1, mais aussi TP2 et TP3 s'ils sont au-delà. **Le ratio minimal de la stratégie est ensuite recontrôlé** sur les objectifs ramenés (Pullback 3 R vers TP2, Figures 1 R ou 1,5 R vers TP3) ; en dessous, le signal est écarté (entonnoir `obst_rr`). S2 et le retournement n'ont pas de minimum explicite.
 - **S2** : le filtre de biais s'applique avant le choix du sweep ; les sweeps valides sont essayés du plus récent au plus ancien. Pas de second contrôle d'entrée sur niveau H4/H1 quand la zone est déjà exigée au sweep.
 - **La veille** : PDH/PDL de S2 et filtre d'obstacles utilisent la même bougie D1.
 - **Setups filtrés** (volatilité, obstacle, news) : refus transitoire, réexaminé jusqu'à `MAX_AGE_MIN` ; la clé de la variante structure inclut le déclencheur.

@@ -295,8 +295,8 @@ def prior_leg(S, d, csc):
     return lm[io], None
 
 
-def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: None):
-    """Confirmation M15 de la cassure de la figure d (détectée sur csc, bougies clôturées de `tf`) : une des 2 dernières bougies M15
+def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: None, cf_n="M15"):
+    """Confirmation (M15 ou M5, `cf_n` ; m15c / m15 / a_m15 sont les bougies et l'ATR de ce timeframe) de la cassure de la figure d (détectée sur csc, bougies clôturées de `tf`) : une des 2 dernières bougies
     clôturées finit au-delà de la ligne, la précédente non. Retourne le signal ou None."""
     s, dr = d["s"], d["dir"]
     (i1, v1), (i2, v2) = d["level"]
@@ -310,7 +310,7 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
     cur = None
     for i in range(k, max(k - S.FRESH, 0), -1):
         c0, c1 = m15c[i], m15c[i - 1]
-        if s * c0["close"] < lvl(c0["epoch"] + S.GRAN["M15"]) - buf and s * c1["close"] >= lvl(c1["epoch"] + S.GRAN["M15"]) - buf:
+        if s * c0["close"] < lvl(c0["epoch"] + S.GRAN[cf_n]) - buf and s * c1["close"] >= lvl(c1["epoch"] + S.GRAN[cf_n]) - buf:
             cur = c0
             break
     if cur is None:
@@ -326,10 +326,10 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
             return None
         if depth is not None:
             fib_note = f"✅ Repli de {max(depth, 0) * 100:.0f} % de la jambe précédente (Fibonacci, maximum {S.S4_FIB_CONT_MAX * 100:.1f} %)"
-    t_now = m15[-1]["epoch"] + S.GRAN["M15"]
+    t_now = m15[-1]["epoch"] + S.GRAN[cf_n]
     price = m15[-1]["close"]
     sl = s * (d["slref"] + SL_BUF_ATR * d["atr"])
-    ref = lvl(cur["epoch"] + S.GRAN["M15"])
+    ref = lvl(cur["epoch"] + S.GRAN[cf_n])
     tps = [s * (ref - m * d["height"]) for m in TP_FRACTIONS]
     # Fibonacci, figure de retournement : la mesure de la figure ne doit pas dépasser l'origine de la jambe précédente (100 %) ; un
     # retournement reprend rarement plus que la jambe entière lors du premier mouvement. TP3 est plafonné à cette origine tant qu'elle reste
@@ -367,9 +367,9 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
     funnel["S4_signal"] += 1
     fam = d["kind"]
     return S._signal(
-        "S4", "Figures & Retournement", dr, entry, lv, m15, "M15", f"{d['name']}|{tf}|{cur['epoch']}",
+        "S4", "Figures & Retournement", dr, entry, lv, m15, cf_n, f"{d['name']}|{tf}|{cur['epoch']}",
         [f"✅ Figure {tf} : {d['name']} ({fam})",
-         f"✅ Cassure confirmée en M15 ({'sous' if dr == 'SELL' else 'au-dessus de'} la ligne)",
+         f"✅ Cassure confirmée en {cf_n} ({'sous' if dr == 'SELL' else 'au-dessus de'} la ligne)",
          f"✅ Objectif = hauteur de la figure ({d['height']:.{dec}f})"]
         + (["✅ Confluence : retournement possible (sweep sur niveau majeur + cassure de structure H1)"] if conf else [])
         + ([f"ℹ️ Pas de confluence de retournement : ratio minimal {S4_NOCONF_MIN_RR:g} exigé"] if conf is False else [])
@@ -387,7 +387,8 @@ def scan_s4(provide, now, funnel, dec=2, kz=True, mode="market"):
     """S4 Figures & Retournement : figures H1 / H4 (cassure confirmée en M15) et retournement possible (ex-S7). Retourne une liste de signaux (au plus un par sens), ou None.
     `kz` n'a pas d'effet : la confirmation n'est pas limitée à des heures de session."""
     import strategies as S
-    m15 = provide("M15")
+    cf_n = S.confirm_tf("S4")                       # confirmation de la cassure : M15 (défaut) ou M5
+    m15 = provide(cf_n)
     if not m15:
         return None
     m15c = m15[:-1]
@@ -416,7 +417,7 @@ def scan_s4(provide, now, funnel, dec=2, kz=True, mode="market"):
         for flip in (False, True):
             for d in candidates(h, l, c, flip):
                 funnel["S4_figure"] += 1
-                sig = _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn)
+                sig = _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn, cf_n)
                 if not sig:
                     continue
                 risk = abs(sig["entry"] - sig["sl"])

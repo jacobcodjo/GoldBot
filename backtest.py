@@ -415,7 +415,7 @@ def main():
     ap.add_argument("--warmup-days", type=float, default=35)
     ap.add_argument("--split", type=float, default=None, help="fraction de la période pour la période 1 (ex. 0.6)")
     ap.add_argument("--set", action="append", help="grille : module.NOM=v1,v2 (répétable)")
-    ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S3\" (défaut : toutes les stratégies actives)")
+    ap.add_argument("--sym-strats", help="stratégies par actif, ex. \"frxEURUSD:S1,S2;cryBTCUSD:S2,S4\" (défaut : toutes les stratégies actives)")
     ap.add_argument("--no-intraday", action="store_true",
                     help="désactive le cadre intraday (cascades M5, confirmation S2 en M5, pas de clôture de fin de séance, pas de filtre d'obstacles)")
     ap.add_argument("--seed", type=int, default=1)
