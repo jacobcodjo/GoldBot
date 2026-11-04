@@ -47,9 +47,12 @@ jobs:
           S6_TOL_ATR: ${{ vars.S6_TOL_ATR }}
           S6_NOCONF_MIN_RR: ${{ vars.S6_NOCONF_MIN_RR }}
           S2_FIB_FILTER: ${{ vars.S2_FIB_FILTER }}
-          S3_FIB_FILTER: ${{ vars.S3_FIB_FILTER }}
           S4_FIB_FILTER: ${{ vars.S4_FIB_FILTER }}
           S4_FIB_CAP_TP3: ${{ vars.S4_FIB_CAP_TP3 }}
+          S1_CONFIRM_TF: ${{ vars.S1_CONFIRM_TF }}
+          S2_CONFIRM_TF: ${{ vars.S2_CONFIRM_TF }}
+          S4_CONFIRM_TF: ${{ vars.S4_CONFIRM_TF }}
+          S8_CONFIRM_TF: ${{ vars.S8_CONFIRM_TF }}
           S7_RISK_CAP_ATR: ${{ vars.S7_RISK_CAP_ATR }}
           CONFLUENCE_MIN: ${{ vars.CONFLUENCE_MIN }}
           ENTRY_MODE: ${{ vars.ENTRY_MODE }}
