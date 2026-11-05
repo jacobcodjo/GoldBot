@@ -50,18 +50,24 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STRATEGIES: ${{ vars.STRATEGIES }}
-          S6_RISK_CAP_ATR: ${{ vars.S6_RISK_CAP_ATR }}
-          S6_MIN_RR: ${{ vars.S6_MIN_RR }}
           S6_TOL_ATR: ${{ vars.S6_TOL_ATR }}
-          S6_NOCONF_MIN_RR: ${{ vars.S6_NOCONF_MIN_RR }}
-          S2_FIB_FILTER: ${{ vars.S2_FIB_FILTER }}
-          S3_FIB_FILTER: ${{ vars.S3_FIB_FILTER }}
-          S3_FIB_CAP_TP3: ${{ vars.S3_FIB_CAP_TP3 }}
           S1_CONFIRM_TF: ${{ vars.S1_CONFIRM_TF }}
+          S1_MIN_RR: ${{ vars.S1_MIN_RR }}
+          S1_RISK_CAP_H1: ${{ vars.S1_RISK_CAP_H1 }}
+          S1_ADX_MIN: ${{ vars.S1_ADX_MIN }}
+          S1_D1_ALIGN: ${{ vars.S1_D1_ALIGN }}
+          S1_OBST_ENTRY: ${{ vars.S1_OBST_ENTRY }}
+          S2_BIAS_FILTER: ${{ vars.S2_BIAS_FILTER }}
+          S2_HTF_ZONE: ${{ vars.S2_HTF_ZONE }}
+          S2_FIB_FILTER: ${{ vars.S2_FIB_FILTER }}
+          S2_MIN_RR: ${{ vars.S2_MIN_RR }}
+          S2_RISK_CAP_H1: ${{ vars.S2_RISK_CAP_H1 }}
+          S2_MAX_AGE_MIN: ${{ vars.S2_MAX_AGE_MIN }}
+          S2_VOL_MIN_RATIO: ${{ vars.S2_VOL_MIN_RATIO }}
+          S2_SWEEP_MIN_ATR: ${{ vars.S2_SWEEP_MIN_ATR }}
           S2_CONFIRM_TF: ${{ vars.S2_CONFIRM_TF }}
           S3_CONFIRM_TF: ${{ vars.S3_CONFIRM_TF }}
           S4_CONFIRM_TF: ${{ vars.S4_CONFIRM_TF }}
-          S7_RISK_CAP_ATR: ${{ vars.S7_RISK_CAP_ATR }}
           SYMBOLS: ${{ vars.SYMBOLS }}
           SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
           ONE_TRADE_PER_SIDE: ${{ vars.ONE_TRADE_PER_SIDE }}
@@ -79,8 +85,6 @@ jobs:
           PULLBACK_VARIANT: ${{ vars.PULLBACK_VARIANT }}
           RECAP_FORMAT: ${{ vars.RECAP_FORMAT }}
           REVERSAL_ALERTS: ${{ vars.REVERSAL_ALERTS }}
-          REVERSAL_MIN_SIGNS: ${{ vars.REVERSAL_MIN_SIGNS }}
-          PULLBACK_ADX_MIN: ${{ vars.PULLBACK_ADX_MIN }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
@@ -89,7 +93,6 @@ jobs:
           CALENDAR_URL: ${{ vars.CALENDAR_URL }}
           SYNTH_RECAP_HEURES: ${{ vars.SYNTH_RECAP_HEURES }}
           ALERT_FUSEAU_NOM: ${{ vars.ALERT_FUSEAU_NOM }}
-          MAX_AGE_MIN: ${{ vars.MAX_AGE_MIN }}
           WEEKEND_EXIT: ${{ vars.WEEKEND_EXIT }}
 
       # Une seule révision (orpheline, écrasée à chaque fois) : le dépôt ne grossit pas.
