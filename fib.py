@@ -1,8 +1,6 @@
-"""Fibonacci : jambe de référence, profondeur d'un prix dans la jambe, zone nommée (voir STRATEGIES.md, « Fibonacci »).
+"""Fibonacci de position : jambe de référence et profondeur d'un prix dans la jambe (utilisé par le filtre premium / discount de S2).
 
-Module autonome : aucune entrée/sortie réseau, aucune dépendance aux stratégies. Chaque stratégie s'en sert là où cela a un sens :
-S1 a sa propre implémentation (retracement 50-79 % d'une impulsion), S2 l'utilise comme filtre de position (premium / discount),
-S3 comme filtre de profondeur (continuation) et plafond d'objectif (retournement).
+Module autonome : aucune entrée/sortie réseau, aucune dépendance aux stratégies.
 """
 
 GOLDEN_FROM = 0.5      # 50 % -> 61,8 % : « Golden Zone »
@@ -56,11 +54,3 @@ def zone_name(r):
 def side_word(d):
     """« discount » pour un achat, « premium » pour une vente."""
     return "discount" if d == "BUY" else "premium"
-
-
-def pullback_depth(origin, end, extreme):
-    """Profondeur d'un repli, en espace miroir « baissier » : jambe qui descend de `origin` (haut) à `end` (bas), repli qui remonte
-    jusqu'à `extreme`. 0 = pas de repli, 0,5 = la moitié de la jambe, 1 = jambe entièrement reprise. None si la jambe est nulle."""
-    if origin <= end:
-        return None
-    return (extreme - end) / (origin - end)

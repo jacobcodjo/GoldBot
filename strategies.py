@@ -8,8 +8,6 @@ timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
 
   S4  CRT (Candle Range Theory)       H4/H1 (C1, C2) > M15 (cassure de structure après la clôture de C2)
 
-Fibonacci : S1 est construite autour ; S2 (premium/discount) et S3 (profondeur du repli, plafond du TP3) l'utilisent en filtre (fib.py).
-
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
 import os
@@ -17,8 +15,8 @@ import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import fib as FB                                                                                    # Fibonacci de position (S2 : premium / discount)
 from smc import body, mean_body, is_displacement, wick_sweep, close_beyond, fresh_break, mirror   # primitives SMC communes (S1 structure, S2, zones d'entrée)
-import fib as FB                                                                                    # Fibonacci : jambe de référence, profondeur, zones (S2, S3)
 
 NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
@@ -29,11 +27,7 @@ DISP_MULT = 1.2           # corps de la bougie de cassure >= 1,2 x corps moyen (
 FRESH = 2                 # la bougie de déclenchement doit être l'une des 2 dernières clôturées
 BUF_ATR = 0.15            # marge du stop au-delà de l'extrême : 0,15 x ATR du timeframe d'entrée
 MIN_RISK_ATR = 0.5        # risque minimal : 0,5 x ATR du timeframe d'entrée (sinon le stop est éloigné)
-CHASE_ATR = 0.75          # le prix ne doit pas avoir fui de plus de 0,75 x ATR de la clôture de déclenchement
 TP_MULTS = (1.0, 2.0, 3.0)  # TP1, TP2, TP3 en multiples du risque (valeurs par défaut de build_levels)
-VOL_MIN_RATIO = 0.5       # signal écarté si l'ATR H1 actuel < 0,5 x sa médiane récente (marché mort : le spread domine) ; 0 = off
-VOL_LOOKBACK = 240        # fenêtre (en bougies H1) de la médiane de l'ATR
-
 KILLZONES_NY = [("Asie", 20, 24), ("Asie", 0, 2), ("Londres", 2, 5), ("New York", 7, 10), ("London Close", 10, 12)]
 
 H4_EMA_FAST = 50                       # EMA du H4 utilisée par le biais h4_ema_bias (S2)
@@ -42,15 +36,10 @@ H4_EMA_FAST = 50                       # EMA du H4 utilisée par le biais h4_ema
 # --- S2 Prise de liquidité + CHoCH ---
 S2_EQ_TOL_ATR = 0.15                   # equal highs/lows : deux swings H1 à moins de 0,15 ATR H1
 S2_SWEEP_BARS = 8                      # le sweep M15 date de 8 bougies M15 au plus (2 h)
+S2_SESSIONS = ("Londres", "New York", "London Close")   # killzones : Londres 02h-05h, New York 07h-10h, London Close 10h-12h (marchés à séance)
 S2_PIVOT_BARS = 36                     # pivot M5 à moins de 36 bougies M5 (3 h) du sommet/creux du sweep
-S2_SESSIONS = ("Londres", "New York", "London Close")
-S2_RISK_CAP_H1 = 1.5
 
 # --- S1 Pullback (ex-S5 Impulsion + retracement Fibonacci, portée du crt-bot : impulse.py ; l'ancienne variante « classique » EMA/ADX est supprimée) ---
-try:
-    S5_ADX_MIN = float(os.getenv("PULLBACK_ADX_MIN") or 0)   # ADX(14) H4 minimal de la variante structure (0 = désactivé, comme avant)
-except ValueError:
-    S5_ADX_MIN = 0.0
 S5_CASCADES = [("D1", "H4", "H1"), ("H4", "H1", "M15"), ("H1", "M15", "M5")]   # (tendance, impulsion + Fibonacci, entrée)
 
 
@@ -72,40 +61,40 @@ S5_IMPULSE_DISP = 1.5                  # une bougie de la jambe >= 1,5 x corps m
 S5_IMPULSE_MAX_AGE = 48                # l'extrême de l'impulsion date de 48 bougies d'impulsion clôturées au plus
 S5_DISP = 1.2                          # déplacement de la bougie de cassure d'entrée (x corps moyen)
 S5_SL_BUF_ATR = 0.15                   # marge du stop au-delà de l'extrême du sweep (x ATR du timeframe d'entrée)
-S5_MIN_RR = 3.0                        # ratio gain/risque minimal (1 pour 3)
-S5_RR_ON = "tp2"                       # cible sur laquelle porte ce ratio : "tp1" ou "tp2"
 S5_FRESH = 2                           # la cassure d'entrée est l'une des 2 dernières bougies clôturées
-S5_MAX_PROGRESS = 0.5                  # ordre limite écarté si le prix a déjà fait plus de 50 % du chemin entrée -> TP1
 S5_LATE_CANDLES, S5_LATE_DIST, S5_LATE_PROGRESS = 2, 0.5, 0.25   # entrée tardive (le prix vient de quitter le bloc d'ordre)
 S5_FVG_DISP = 1.5                      # bougie centrale du FVG >= 1,5 x corps moyen
 S5_FVG_MIN_ATR = 0.1                   # taille minimale du FVG (x ATR du timeframe d'entrée)
-# Tendance de S5 : définition unique de trend.py (BOS par clôture, âge en jambes), partagée avec S2 et les alertes.
-S5_TREND_AGES_OK = ("naissante", "établie")   # âges acceptés (ajouter "mûre" pour tout accepter)
-S5_VOL_FAST, S5_VOL_SLOW = 14, 100     # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
-S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0      # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
-S5_RISK_CAP_H1 = 0                     # plafond de risque en ATR H1 (0 = aucun, comme dans le crt-bot)
 
-# --- Fibonacci par stratégie (module fib.py) : chacune l'utilise là où il a un sens (STRATEGIES.md, « Fibonacci ») ---
-S2_FIB_FILTER = _flag("S2_FIB_FILTER", True)       # S2 : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe H4/H1 : discount pour un achat, premium pour une vente
-S2_FIB_MIN_DEPTH = 0.5                             # profondeur minimale de l'entrée dans la jambe (0,5 = équilibre)
-S2_FIB_MIN_ATR = 1.5                               # jambe d'au moins 1,5 x ATR H1 ; plus petite, le filtre n'a pas d'information et laisse passer
-S2_FIB_BARS = {"H4": 60, "H1": 120}                # profondeur de recherche de la jambe (bougies clôturées avant le sweep)
-S2_FIB_SWING_N = {"H4": 2, "H1": 3}                # fractale des swings de la jambe
-S3_FIB_FILTER = _flag("S3_FIB_FILTER", True)       # S3 figures de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe précédente
-S3_FIB_CONT_MAX = 0.618                            # profondeur maximale du repli
-S3_FIB_CAP_TP3 = _flag("S3_FIB_CAP_TP3", True)     # S3 figures de retournement : TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)
-S3_FIB_LB = 60                                     # recherche de l'origine de la jambe précédente : 60 bougies avant la figure
+
+def _num(name, default):
+    try:
+        v = (os.getenv(name) or "").strip()
+        return float(v) if v else default
+    except ValueError:
+        return default
+
+
+# --- Garde-fous de S1 (tous propres à S1 ; points de départ, non validés par un backtest)
+S5_MIN_RR = _num("S1_MIN_RR", 3.0)       # ratio gain/risque minimal sur TP2 (0 = désactivé)
+S5_RISK_CAP_H1 = _num("S1_RISK_CAP_H1", 2.0)   # risque maximal en ATR H1 (0 = aucun)
+S5_MAX_PROGRESS = 0.5                    # ordre limite écarté si le prix a déjà fait plus de 50 % du chemin entrée -> TP1
+S5_SESSIONS = ("Londres", "New York", "London Close")   # session de la bougie de déclenchement (marchés à séance seulement)
+S5_VOL_FAST, S5_VOL_SLOW = 14, 100       # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
+S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0        # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
+S5_TREND_AGES_OK = ("naissante", "établie")   # âges de tendance acceptés (« mûre » est écartée)
+S5_ADX_MIN = _num("S1_ADX_MIN", 20.0)    # ADX(14) minimal du timeframe de tendance (0 = désactivé)
+S5_D1_ALIGN = _flag("S1_D1_ALIGN", True)  # pas de trade contre une tendance D1 claire (sans effet si la tendance de la cascade est le D1)
+S5_OBST_ENTRY = _flag("S1_OBST_ENTRY", True)   # (intraday) entrée sur réaction à un niveau ou une zone H4/H1
+OBST_MIN_RR = 1.0                        # obstacle opposé à moins de 1 R de l'entrée : signal écarté
+OBST_BUF_ATR = 0.1                       # TP1 placé 0,1 ATR H1 avant l'obstacle
+# Tendance de S5 : définition unique de trend.py (BOS par clôture, âge en jambes), partagée avec S2 et les alertes.
 
 # --- S4 CRT (Candle Range Theory) pur : voir crt.py ---
 CRT_REFS = ("H4", "H1")             # bougies de référence C1 / C2 ; la confirmation est toujours en M15
-CRT_MIN_RANGE_ATR = 0.8             # range de C1 d'au moins 0,8 x ATR de son timeframe (sinon l'objectif est trop proche)
-CRT_MAX_RANGE_ATR = 3.5             # et d'au plus 3,5 x ATR (au-delà, la bougie est une impulsion, pas un range)
 CRT_PIVOT_BARS = 16                 # le swing M15 cassé date de 16 bougies M15 (4 h) au plus avant l'extrême de C2
-CRT_SESSIONS = ("Londres", "New York", "London Close")   # sessions de la cassure M15 (sauf actifs 24/7)
 CRT_SL_BUF_ATR = 0.15               # marge du stop au-delà de l'extrême de C2 (x ATR M15)
 CRT_TP3_EXT = 0.5                   # TP3 = bord opposé de C1 + 50 % de son range
-CRT_MIN_RR = 3.0                    # ratio gain/risque minimal (1 pour 3), calculé sur TP2
-CRT_RISK_CAP_H1 = 4.0               # risque maximal : 4 x ATR H1
 
 # --- Timeframe de confirmation / d'entrée, par stratégie : M15 ou M5 (variables S1_CONFIRM_TF ... S4_CONFIRM_TF) ---
 # Vide = comportement historique : M15 pour S1 (cascade selon INTRADAY), S3, S4 ; S2 suit INTRADAY (M15 si actif, sinon M5).
@@ -246,30 +235,22 @@ def asia_window(now):
 # ==========================================================================
 # Niveaux d'entrée, stop et objectifs
 # ==========================================================================
-def build_levels(d, entry, sl, a_ltf, a_h1, cap_h1, tps=None):
-    """Applique le risque minimal (stop élargi si trop proche) et le plafond (signal rejeté si le
-    risque dépasse cap_h1 x ATR H1). tps : liste de 3 objectifs ; sinon 1R / 2R / 3R."""
+def build_levels(d, entry, sl, a_ltf, tps=None):
+    """Applique le risque minimal (stop élargi si trop proche). tps : liste de 3 objectifs ; sinon 1R / 2R / 3R."""
     risk = abs(entry - sl)
     floor = MIN_RISK_ATR * a_ltf
     if risk < floor:
         sl = entry - floor if d == "BUY" else entry + floor
         risk = floor
-    if risk <= 0 or (a_h1 > 0 and risk > cap_h1 * a_h1):
+    if risk <= 0:
         return None
     sgn = 1 if d == "BUY" else -1
     return {"sl": sl, "risk": risk, "tp": tps or [entry + sgn * m * risk for m in TP_MULTS]}
 
 
-def is_late(d, price, trig_close, a_ltf):
-    """Vrai si le prix a déjà trop fui dans le sens du trade depuis la clôture de déclenchement."""
-    move = (price - trig_close) if d == "BUY" else (trig_close - price)
-    return a_ltf > 0 and move > CHASE_ATR * a_ltf
-
-
 # --- Ordres limites (entrée au retest d'une zone plutôt qu'au marché) ---
 LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
 LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
-LIMIT_MAX_ATR = 1.5         # zone d'entrée à plus de 1,5 ATR du prix actuel : signal écarté (trop de retracement requis)
 LIMIT_TTL = {"S2": 3600, "S5": 86400, "S3": 10800, "S4": 3600}   # validité de l'ordre limite, en secondes
 
 
@@ -348,16 +329,6 @@ def pick_entry(d, price, zone, sl, mode):
     return d, price
 
 
-def vol_ratio(h1c):
-    """ATR H1 actuel rapporté à sa médiane sur les ~240 dernières bougies H1 (1 = volatilité normale)."""
-    n = len(h1c)
-    if n < 60:
-        return 1.0
-    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - VOL_LOOKBACK), n + 1, 6)]
-    med = statistics.median(pts) if pts else 0.0
-    return atr(h1c) / med if med > 0 else 1.0
-
-
 def _signal(strat, label, d, price, lv, ltf, ltf_n, key, details, **kw):
     sig = {"strat": strat, "label": label, "dir": d, "otype": d, "entry": price, "price_now": price, "ttl": None,
            "entry_note": "", "sl": lv["sl"],
@@ -383,10 +354,23 @@ def h4_ema_bias(h4):
 # S2  Sweep + CHoCH (prise de liquidité, dans le sens du biais, sur une zone H1/H4, puis cassure de structure)
 # ==========================================================================
 S2_FRESH_LEVELS = True      # un niveau déjà pris (mèche au-delà depuis sa formation) n'est plus de la liquidité ; False = ancien comportement
-S2_BIAS_FILTER = True       # trade seulement dans le sens du biais de structure (BOS) H4, sinon H1 si le H4 n'a pas de tendance claire
-S2_HTF_ZONE = True          # le sweep doit toucher un bloc d'ordre / FVG H4 ou H1 non retesté, dans le sens du trade
 S2_HTF_BARS = {"H4": 40, "H1": 72}   # profondeur de recherche des zones (bougies clôturées)
 S2_HTF_TOL_ATR = 0.25       # tolérance de contact avec la zone, en ATR H1
+S2_BIAS_FILTER = _flag("S2_BIAS_FILTER", True)   # trade seulement dans le sens du biais de structure (BOS) H4, sinon H1 si le H4 n'a pas de tendance claire
+S2_HTF_ZONE = _flag("S2_HTF_ZONE", True)         # le sweep doit toucher un bloc d'ordre / FVG H4 ou H1 non retesté, dans le sens du trade
+S2_FIB_FILTER = _flag("S2_FIB_FILTER", True)       # l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe H4/H1 : discount pour un achat, premium pour une vente
+S2_FIB_MIN_DEPTH = 0.5                             # profondeur minimale de l'entrée dans la jambe (0,5 = équilibre)
+S2_FIB_MIN_ATR = 1.5                               # jambe d'au moins 1,5 x ATR H1 ; plus petite, le filtre n'a pas d'information et laisse passer
+S2_FIB_BARS = {"H4": 60, "H1": 120}                # profondeur de recherche de la jambe (bougies clôturées avant le sweep)
+S2_FIB_SWING_N = {"H4": 2, "H1": 3}                # fractale des swings de la jambe
+S2_MIN_RR = _num("S2_MIN_RR", S5_MIN_RR)           # ratio gain/risque minimal sur TP2 : le même que S1 par défaut (0 = désactivé)
+S2_RISK_CAP_H1 = _num("S2_RISK_CAP_H1", 1.5)       # risque maximal en ATR H1 (0 = aucun)
+S2_LIMIT_MAX_ATR = 1.5                             # ordre limite à plus de 1,5 ATR de confirmation du prix actuel : signal écarté
+S2_CHASE_ATR = 0.75                                # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR de la clôture de déclenchement
+S2_MAX_AGE_MIN = _num("S2_MAX_AGE_MIN", 20.0)      # signal plus vieux (clôture du déclencheur) que 20 minutes : écarté (0 = désactivé)
+S2_VOL_MIN_RATIO = _num("S2_VOL_MIN_RATIO", 0.5)   # écarté si l'ATR H1 actuel < 0,5 x sa médiane récente (marché mort : le spread domine) ; 0 = off
+S2_VOL_LOOKBACK = 240                              # fenêtre (en bougies H1) de la médiane de l'ATR
+S2_SWEEP_MIN_ATR = _num("S2_SWEEP_MIN_ATR", 0.1)   # la mèche doit dépasser le niveau d'au moins 0,1 ATR M15 (0 = n'importe quelle mèche)
 S2_HTF_UNTOUCHED = True     # zone non retestée : aucune mèche n'est revenue dedans ; False = seulement non invalidée par une clôture
 S2_LIQ_TARGETS = True       # TP2 / TP3 sur la liquidité opposée intacte (sinon 2 R / 3 R fixes)
 S2_TP_MIN_R, S2_TP_MAX_R = 2.0, 6.0  # une liquidité opposée n'est retenue comme objectif qu'entre 2 R et 6 R
@@ -503,6 +487,22 @@ def s2_fib_check(d, entry, bias_tf, h4c, h1c, before, a_h1):
     return {"ok": r >= S2_FIB_MIN_DEPTH, "r": r, "tf": tf, "eq": (lo + hi) / 2, "lo": lo, "hi": hi}
 
 
+def s2_is_late(d, price, trig_close, a_ltf):
+    """Vrai si le prix a déjà trop fui dans le sens du trade depuis la clôture de déclenchement."""
+    move = (price - trig_close) if d == "BUY" else (trig_close - price)
+    return a_ltf > 0 and move > S2_CHASE_ATR * a_ltf
+
+
+def vol_ratio(h1c):
+    """ATR H1 actuel rapporté à sa médiane sur les ~240 dernières bougies H1 (1 = volatilité normale)."""
+    n = len(h1c)
+    if n < 60:
+        return 1.0
+    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - S2_VOL_LOOKBACK), n + 1, 6)]
+    med = statistics.median(pts) if pts else 0.0
+    return atr(h1c) / med if med > 0 else 1.0
+
+
 def liquidity_targets(levels, m15c, d, entry, risk, a_m15):
     """[(nom, prix cible, distance en R)] du plus proche au plus lointain : liquidité opposée encore intacte, située
     entre S2_TP_MIN_R et S2_TP_MAX_R du risque. L'objectif est placé S2_TP_BUF_ATR x ATR M15 avant le niveau."""
@@ -541,6 +541,9 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
         cf, cfc, a_cf, cf_n, pivot_bars = m15, m15c, a_m15, "M15", S2_PIVOT_BARS_M15
     else:
         cf, cfc, a_cf, cf_n, pivot_bars = m5, m5c, a_m5, "M5", S2_PIVOT_BARS
+    if S2_VOL_MIN_RATIO and vol_ratio(h1c) < S2_VOL_MIN_RATIO:
+        funnel["S2_vol"] += 1
+        return None                                   # marché trop calme : le spread domine
     levels = liquidity_levels(h1c, d1, m15c, now, a_h1)
     if not levels:
         return None
@@ -553,6 +556,8 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
                 continue
             if not wick_sweep(c, px, kind):
                 continue
+            if S2_SWEEP_MIN_ATR and ((c["high"] - px) if kind == "high" else (px - c["low"])) < S2_SWEEP_MIN_ATR * a_m15:
+                continue                              # mèche à peine au-delà du niveau : pas un vrai balayage de stops
             later = m15c[i + 1:]
             if any(close_beyond(x, px, kind == "high") for x in later):
                 continue                              # le niveau a été franchi pour de bon
@@ -573,8 +578,17 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
     for cand in sorted(cands, key=lambda x: -x[0]["epoch"]):
         sig = _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_h1, a_m15, a_cf, pivot_bars,
                         funnel, dec, kz, mode)
-        if sig is not None:
-            return sig
+        if sig is None:
+            continue
+        if S2_MAX_AGE_MIN and sig.get("trig_close") and (now - sig["trig_close"]) / 60 > S2_MAX_AGE_MIN:
+            funnel["S2_age"] += 1                     # déclencheur trop ancien (retard du cron ou du workflow)
+            continue
+        if INTRADAY:
+            why = obstacle_filter(sig, provide, now, "S2", not S2_HTF_ZONE, S2_MIN_RR)
+            if why:
+                funnel[why] += 1                      # obstacle H4/H1 trop proche devant l'objectif (ou entrée hors niveau sans zone exigée)
+                continue
+        return sig
     return None
 
 
@@ -603,7 +617,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
         return None
     sess = session_name(tc["epoch"])
     if kz and sess not in S2_SESSIONS:
-        return None
+        return None                                   # cassure hors killzone
     zone = htf_zone_hit(h4c, h1c, d, sc["epoch"], px, ext_px, a_h1) if S2_HTF_ZONE else None
     if S2_HTF_ZONE and zone is None:
         return None                                   # le sweep n'a touché aucune zone d'intérêt H1/H4
@@ -613,20 +627,22 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     poi = entry_zone(cfc, ext_i, trig - 1, d)
     otype, entry = pick_entry(d, price, poi[0] if poi else None, sl, mode)
     if otype != d:
-        if abs(price - entry) > LIMIT_MAX_ATR * a_cf:
-            funnel["stale"] += 1
-            return None
-    elif is_late(d, price, tc["close"], a_cf):
-        funnel["stale"] += 1
-        return None
-    lv = build_levels(d, entry, sl, a_cf, a_h1, S2_RISK_CAP_H1)
+        if abs(price - entry) > S2_LIMIT_MAX_ATR * a_cf:
+            funnel["S2_stale"] += 1
+            return None                               # zone d'entrée trop loin du prix : trop de retracement requis
+    elif s2_is_late(d, price, tc["close"], a_cf):
+        funnel["S2_stale"] += 1
+        return None                                   # le prix a déjà fui après la cassure
+    lv = build_levels(d, entry, sl, a_cf)
     if lv is None:
         return None
+    if S2_RISK_CAP_H1 and a_h1 > 0 and lv["risk"] > S2_RISK_CAP_H1 * a_h1:
+        funnel["S2_risque"] += 1
+        return None                                   # stop trop large pour la volatilité H1
     fib_info = s2_fib_check(d, entry, bias_tf, h4c, h1c, sc["epoch"], a_h1)
     if fib_info is not None and not fib_info["ok"]:
         funnel["S2_fib"] += 1
         return None                                   # entrée du mauvais côté de l'équilibre de la jambe (un achat en premium, une vente en discount)
-    funnel["S2_signal"] += 1
     tp_lines, tp_src = [], "fixe"
     if S2_LIQ_TARGETS:
         t2, t3 = None, None
@@ -643,14 +659,16 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
         opp.sort(key=lambda x: abs(x[1] - entry))
         if opp:
             tp_lines.append(f"Liquidité opposée  {opp[0][0]} {opp[0][1]:.{dec}f}")
+    if S2_MIN_RR and abs(lv["tp"][1] - entry) / lv["risk"] < S2_MIN_RR:
+        funnel["S2_rr"] += 1
+        return None                                   # ratio gain/risque sur TP2 sous le minimum
+    funnel["S2_signal"] += 1
     emab = h4_ema_bias(h4)
     aligned = emab == (-1 if d == "SELL" else 1)
     details = [f"✅ Liquidité prise : {name} {px:.{dec}f} (mèche {ext_px:.{dec}f})"]
     if zone:
         zname = "bloc d'ordre" if zone["kind"] == "OB" else "FVG"
         details.append(f"✅ Sweep sur {zname} {zone['tf']} ({zone['lo']:.{dec}f} - {zone['hi']:.{dec}f})")
-    if fib_info:
-        details.append(f"✅ Entrée en {FB.side_word(d)} de la jambe {fib_info['tf']} (Fibonacci {fib_info['r'] * 100:.0f} % : {FB.zone_name(fib_info['r'])})")
     if bias == d:
         details.append(f"✅ Biais {bias_tf} {'haussier' if d == 'BUY' else 'baissier'} (structure)")
     elif bias is None:
@@ -658,6 +676,8 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     else:
         details.append(f"⚠️ Contre le biais {bias_tf} (contre-tendance)")
     details.append(f"✅ CHoCH {cf_n} sous {pivot:.{dec}f}" if d == "SELL" else f"✅ CHoCH {cf_n} au-dessus de {pivot:.{dec}f}")
+    if fib_info:
+        details.append(f"✅ Entrée en {FB.side_word(d)} de la jambe {fib_info['tf']} (Fibonacci {fib_info['r'] * 100:.0f} % : {FB.zone_name(fib_info['r'])})")
     if kz:
         details.append(f"✅ Killzone {sess}")
     if not S2_BIAS_FILTER:
@@ -672,9 +692,9 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
               + ([{"y": fib_info["eq"], "label": f"Équilibre {fib_info['tf']} 50 %", "kind": "info"}] if fib_info else []),
         zones=zones, inval=ext_px, session=sess,
         extra={"liq": name, "h4": "aligné" if aligned else "contre", "poi": poi[1] if otype != d else "marché",
-               "fib": f"{fib_info['r'] * 100:.0f}%" if fib_info else "aucune",
                "biais": bias_tf if bias == d else ("contre" if bias else "aucun"),
-               "zone": f"{zone['tf']} {zone['kind']}" if zone else "aucune", "tp": tp_src},
+               "zone": f"{zone['tf']} {zone['kind']}" if zone else "aucune", "tp": tp_src,
+               "fib": f"{fib_info['r'] * 100:.0f}%" if fib_info else "aucune"},
         short=f"{name} pris · CHoCH {cf_n}", trig=tc["epoch"], otype=otype, price_now=price,
         ttl=LIMIT_TTL["S2"] if otype != d else None,
         entry_note=poi_note(poi, cf_n, dec) if otype != d else "")
@@ -683,10 +703,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
 # ==========================================================================
 # Cadre intraday : obstacles majeurs H4 / H1
 # ==========================================================================
-OBST_ENTRY_STRATS = ("S1", "S2")  # entrent sur réaction à un niveau ; S3 (retest de sa propre ligne ou du creux/sommet cassé) et S4 (objectifs sur le range de C1) en sont exemptées
 OBST_TOL_ATR = 0.5                      # l'entrée doit être à moins de 0,5 ATR H1 d'un niveau (ou dans une zone) du bon côté
-OBST_MIN_RR = 1.0                       # obstacle opposé à moins de 1 R de l'entrée : signal écarté
-OBST_BUF_ATR = 0.1                      # TP1 placé 0,1 ATR H1 avant l'obstacle
 OBST_SWING_N = {"H4": 2, "H1": 3}
 OBST_BARS = {"H4": 60, "H1": 120}
 
@@ -736,69 +753,6 @@ def htf_obstacles(provide, now):
     return {"sup": sup, "res": res, "atr": a}
 
 
-def rr_ok(sig):
-    """Vrai si les objectifs actuels du signal respectent le ratio gain/risque minimal de sa stratégie (`rr_rule` : liste de
-    (rang de l'objectif 1-3, ratio minimal)). Un objectif absent (ramené à un obstacle) est remplacé par le plus lointain restant."""
-    risk = abs(sig["entry"] - sig["sl"])
-    if risk <= 0:
-        return False
-    tps = [t for t in (sig.get("tp1"), sig.get("tp2"), sig.get("tp3")) if t is not None]
-    for rank, mn in sig.get("rr_rule") or ():
-        t = sig.get(f"tp{rank}")
-        if t is None:
-            t = (max(tps) if sig["dir"] == "BUY" else min(tps)) if tps else None
-        if t is None or abs(t - sig["entry"]) / risk < mn:
-            return False
-    return True
-
-
-def obstacle_filter(sig, provide, now):
-    """Cadre intraday. (a) Les stratégies de OBST_ENTRY_STRATS n'entrent que sur réaction à un niveau ou une zone H4/H1 du bon côté
-    (confirmée par leur déclencheur M15). (b) TP1 ne dépasse jamais le prochain obstacle opposé : s'il est à moins de OBST_MIN_RR R,
-    le signal est écarté ; sinon TP1 est ramené juste avant lui. Retourne None si le signal passe (TP1 éventuellement modifié),
-    sinon la clé d'entonnoir du refus : 'obst_entree' ou 'obst_cible'. Sans données H1/H4 suffisantes, le signal passe."""
-    obs = htf_obstacles(provide, now)
-    if obs is None:
-        return None
-    d, e, sl, a = sig["dir"], sig["entry"], sig["sl"], obs["atr"]
-    risk, dec = abs(e - sl), sig.get("dec", 2)
-    s2_on_zone = sig["strat"] == "S2" and S2_HTF_ZONE      # S2 a déjà exigé une zone H4/H1 au sweep : pas de second contrôle
-    if sig["strat"] in OBST_ENTRY_STRATS and not s2_on_zone:
-        mine = obs["sup"] if d == "BUY" else obs["res"]
-        tol = OBST_TOL_ATR * a
-        hit = [nm for lo, hi, nm in mine if lo - tol <= e <= hi + tol]
-        if not hit:
-            return "obst_entree"
-        sig["details"] = list(sig["details"]) + [f"✅ Entrée sur {hit[0]}"]
-    eps = 0.05 * a                                   # un obstacle qui contient déjà l'entrée n'est pas devant
-    tps = [t for t in (sig.get("tp1"), sig.get("tp2"), sig.get("tp3")) if t is not None]
-    far = max(tps) if d == "BUY" else min(tps)       # objectif le plus lointain
-    if d == "BUY":
-        ahead = [(lo, nm) for lo, hi, nm in obs["res"] if e + eps < lo < far]
-        o = min(ahead) if ahead else None
-    else:
-        ahead = [(hi, nm) for lo, hi, nm in obs["sup"] if far < hi < e - eps]
-        o = max(ahead) if ahead else None
-    if o is not None:
-        px, nm = o
-        new = px - OBST_BUF_ATR * a if d == "BUY" else px + OBST_BUF_ATR * a
-        before = lambda t, lim: (t < lim) if d == "BUY" else (t > lim)
-        if not before(tps[0], px):                                  # l'obstacle est devant TP1 : règle des 1 R / 0,8 R
-            if abs(px - e) < OBST_MIN_RR * risk or abs(new - e) < 0.8 * risk:
-                return "obst_cible"
-        # Un obstacle qui arrête le prix à TP1 l'arrête aussi pour TP2 et TP3 : les objectifs situés au-delà sont ramenés à
-        # l'obstacle (le reste de la position sort à ce niveau) au lieu de traverser un niveau supposé infranchissable.
-        kept = [t for t in tps if before(t, new)]
-        seq = kept + [new]
-        sig["tp1"] = seq[0]
-        sig["tp2"] = seq[1] if len(seq) > 1 else seq[0]
-        sig["tp3"] = seq[2] if len(seq) > 2 else None
-        sig["details"] = list(sig["details"]) + [f"🧱 Obstacle {nm} à {px:.{dec}f} : objectifs ramenés avant ce niveau (TP final {new:.{dec}f})"]
-        if not rr_ok(sig):
-            return "obst_rr"                                        # l'obstacle a ramené les objectifs sous le ratio minimal de la stratégie
-    return None
-
-
 # ==========================================================================
 # S5  Impulsion + retracement Fibonacci (zone 50-79 %)
 # ==========================================================================
@@ -820,6 +774,62 @@ def s5_vol_ok(mtf):
         return True
     slow = atr(cs, S5_VOL_SLOW)
     return slow <= 0 or S5_VOL_MIN <= atr(cs, S5_VOL_FAST) / slow <= S5_VOL_MAX
+
+
+def s5_rr(sig):
+    """Ratio gain/risque d'un signal S1 sur TP2."""
+    risk = abs(sig["entry"] - sig["sl"])
+    return abs(sig["tp2"] - sig["entry"]) / risk if risk > 0 else 0
+
+
+def obstacle_filter(sig, provide, now, prefix, entry_check, min_rr):
+    """Cadre intraday (S1 et S2). (a) si entry_check, l'entrée doit être sur réaction à un niveau ou une zone H4/H1 du bon côté ; (b) TP1 ne dépasse jamais
+    le prochain obstacle opposé : à moins de OBST_MIN_RR R, le signal est écarté, sinon les objectifs sont ramenés avant lui et le ratio
+    minimal est recontrôlé. Retourne None si le signal passe (objectifs éventuellement modifiés), sinon la clé d'entonnoir du refus.
+    Les clés de refus sont préfixées (S1 : « S5 », S2 : « S2 »). Sans données H1/H4 suffisantes, le signal passe."""
+    obs = htf_obstacles(provide, now)
+    if obs is None:
+        return None
+    d, e, sl, a = sig["dir"], sig["entry"], sig["sl"], obs["atr"]
+    risk, dec = abs(e - sl), sig.get("dec", 2)
+    if entry_check:
+        mine = obs["sup"] if d == "BUY" else obs["res"]
+        tol = OBST_TOL_ATR * a
+        hit = [nm for lo, hi, nm in mine if lo - tol <= e <= hi + tol]
+        if not hit:
+            return f"{prefix}_obst_entree"
+        sig["details"] = list(sig["details"]) + [f"✅ Entrée sur {hit[0]}"]
+    eps = 0.05 * a                                   # un obstacle qui contient déjà l'entrée n'est pas devant
+    tps = [t for t in (sig.get("tp1"), sig.get("tp2"), sig.get("tp3")) if t is not None]
+    far = max(tps) if d == "BUY" else min(tps)       # objectif le plus lointain
+    if d == "BUY":
+        ahead = [(lo, nm) for lo, hi, nm in obs["res"] if e + eps < lo < far]
+        o = min(ahead) if ahead else None
+    else:
+        ahead = [(hi, nm) for lo, hi, nm in obs["sup"] if far < hi < e - eps]
+        o = max(ahead) if ahead else None
+    if o is not None:
+        px, nm = o
+        new = px - OBST_BUF_ATR * a if d == "BUY" else px + OBST_BUF_ATR * a
+        before = lambda t, lim: (t < lim) if d == "BUY" else (t > lim)
+        if not before(tps[0], px):                                  # l'obstacle est devant TP1 : règle des 1 R / 0,8 R
+            if abs(px - e) < OBST_MIN_RR * risk or abs(new - e) < 0.8 * risk:
+                return f"{prefix}_obst_cible"
+        # Un obstacle qui arrête le prix à TP1 l'arrête aussi pour TP2 et TP3 : les objectifs au-delà sont ramenés à l'obstacle.
+        kept = [t for t in tps if before(t, new)]
+        seq = kept + [new]
+        sig["tp1"] = seq[0]
+        sig["tp2"] = seq[1] if len(seq) > 1 else seq[0]
+        sig["tp3"] = seq[2] if len(seq) > 2 else None
+        sig["details"] = list(sig["details"]) + [f"🧱 Obstacle {nm} à {px:.{dec}f} : objectifs ramenés avant ce niveau (TP final {new:.{dec}f})"]
+        if min_rr and s5_rr(sig) < min_rr:
+            return f"{prefix}_obst_rr"                                     # l'obstacle a ramené les objectifs sous le ratio minimal
+    return None
+
+
+def s5_obstacle_filter(sig, provide, now):
+    """Cadre intraday de S1 : entrée sur un niveau H4/H1 (S1_OBST_ENTRY), objectifs ramenés avant le prochain obstacle, ratio recontrôlé."""
+    return obstacle_filter(sig, provide, now, "S5", S5_OBST_ENTRY, S5_MIN_RR)
 
 
 def s5_find_impulse(mtf):
@@ -922,9 +932,8 @@ def _s5_evaluate(found, m, ltf, zone, lo, hi, leg, a, mode="limit"):
         return None
     after = m[found["i"] + 1:] + [ltf[-1]]            # bougies depuis la fin du FVG, bougie en cours comprise
 
-    def rr_at(e):                                     # ratio gain/risque sur la cible choisie par S5_RR_ON
-        tp = tp2 if S5_RR_ON == "tp2" else tp1
-        return (tp - e) / (e - sl) if e > sl else 0
+    def rr_at(e):                                     # ratio gain/risque sur TP2
+        return (tp2 - e) / (e - sl) if e > sl else 0
 
     kind = entry = how = None
     # 1) ordre limite : milieu du FVG (prioritaire), sinon extrémité du bloc d'ordre, dans la zone et pas encore atteint
@@ -933,7 +942,7 @@ def _s5_evaluate(found, m, ltf, zone, lo, hi, leg, a, mode="limit"):
             if not (zone[0] <= e <= zone[1]) or any(c["low"] <= e for c in after):
                 continue
             if (price - e) > S5_MAX_PROGRESS * (tp1 - e) or rr_at(e) < S5_MIN_RR:
-                continue
+                continue                              # le prix a déjà fait plus de la moitié du chemin, ou ratio sous le minimum
             kind, entry, how = "LIMITE", e, name
             break
     # 2) ordre instantané : le prix est dans le bloc d'ordre
@@ -978,8 +987,11 @@ def s1_cascades():
 def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
     """Retourne la LISTE des signaux (une par cascade et par sens : D1>H4>H1, H4>H1>M15, H1>M15>M5), la cascade la plus
     haute en premier ; le garde-fou « un trade par actif, stratégie et sens » écarte les doublons d'un même mouvement.
-    Pas de filtre de killzone : l'impulsion se juge sur la structure, pas sur l'heure (kz est ignoré)."""
+    Garde-fous : volatilité, âge de tendance, ADX, alignement D1, session (kz), ratio minimal, plafond de risque, obstacles H4/H1."""
     out = []
+    a_h1 = None
+    d1_info = None
+    d1_read = False
     for htf_n, mtf_n, ltf_n in s1_cascades():
         htf, mtf = provide(htf_n), provide(mtf_n)
         if not htf or not mtf:
@@ -995,11 +1007,20 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
             if not trend or trend["age"] not in S5_TREND_AGES_OK:
                 continue
             funnel["S5_tendance"] += 1
-            if S5_ADX_MIN:                            # option : filtre de force de tendance (ADX H4)
+            if S5_ADX_MIN:                            # force de tendance (ADX du timeframe de tendance)
                 a_htf = adx(H[:-1])
-                if a_htf is None or a_htf < S5_ADX_MIN:
+                if a_htf is not None and a_htf < S5_ADX_MIN:
                     continue
                 funnel["S5_adx"] += 1
+            if S5_D1_ALIGN and htf_n != "D1":         # pas de trade contre une tendance D1 claire
+                if not d1_read:
+                    import trend as TR
+                    d1 = provide("D1")
+                    d1_info = TR.trend_info(d1, "D1") if d1 and len(d1) >= 10 else None
+                    d1_read = True
+                if d1_info is not None and d1_info["dir"] != d:
+                    funnel["S5_d1"] += 1
+                    continue
             imp = s5_find_impulse(M)
             if not imp:
                 continue
@@ -1013,9 +1034,15 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
                 continue
             if not buy:
                 r = _s5_unflip(r)
-            a_ltf, a_h1 = atr(ltf[:-1]), atr((provide("H1") or [])[:-1])
-            if S5_RISK_CAP_H1 and a_h1 > 0 and abs(r["entry"] - r["sl"]) > S5_RISK_CAP_H1 * a_h1:
-                continue                              # risque supérieur au plafond (désactivé par défaut)
+            if kz and S5_SESSIONS and session_name(r["trig"]) not in S5_SESSIONS:
+                funnel["S5_session"] += 1             # déclencheur hors des sessions de Londres / New York (marchés à séance seulement)
+                continue
+            if S5_RISK_CAP_H1:
+                if a_h1 is None:
+                    a_h1 = atr((provide("H1") or [])[:-1])
+                if a_h1 > 0 and abs(r["entry"] - r["sl"]) > S5_RISK_CAP_H1 * a_h1:
+                    funnel["S5_risque"] += 1          # stop trop large pour la volatilité H1
+                    continue
             funnel["S5_signal"] += 1
             limit = r["kind"] == "LIMITE"
             origin, extreme = (imp["lo"], imp["hi"]) if buy else (-imp["lo"], -imp["hi"])
@@ -1037,13 +1064,19 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
                 zones=[{"lo": r["zone"][0], "hi": r["zone"][1], "label": "Zone 50-79 %", "kind": "fib"},
                        {"lo": r["fvg"][0], "hi": r["fvg"][1], "label": "FVG", "kind": "fvg"},
                        {"lo": r["ob"][0], "hi": r["ob"][1], "label": "OB", "kind": "ob"}],
-                rr_rule=[(2 if S5_RR_ON == "tp2" else 1, S5_MIN_RR)],
                 inval=inval, extra={"cascade": f"{htf_n}>{mtf_n}>{ltf_n}", "tendance": trend["age"], "zone": r["label"],
                                     "poi": r["how"] if limit else "marché"},
                 short=f"{r['label']} · impulsion {mtf_n} · {htf_n}>{mtf_n}>{ltf_n}", trig=r["trig"],
                 otype=f"{d} LIMIT" if limit else d, price_now=r["price"],
                 ttl=LIMIT_TTL["S5"] if limit else None,
                 entry_note=f"Ordre limite {where} {ltf_n}" if limit else "")
+            if kz and S5_SESSIONS:
+                sig["details"] = list(sig["details"]) + [f"✅ Session {session_name(r['trig'])}"]
+            if INTRADAY:
+                why = s5_obstacle_filter(sig, provide, now)
+                if why:
+                    funnel[why] += 1                  # entrée hors niveau H4/H1, ou obstacle trop proche devant l'objectif
+                    continue
             out.append(sig)
     return out or None
 

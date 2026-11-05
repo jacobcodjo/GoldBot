@@ -64,24 +64,16 @@ def new_buy(entry=100.0, sl=99.0, tp=(101.0, 102.0, 103.0), now=1000):
 
 
 class Indicateurs(unittest.TestCase):
-    def test_ema_rsi_adx(self):
+    def test_ema_rsi(self):
         cs = [{"open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100.5 + i} for i in range(80)]
         closes = [c["close"] for c in cs]
         self.assertIsNone(S.ema(closes, 10)[8])
         self.assertAlmostEqual(S.ema(closes, 10)[9], sum(closes[:10]) / 10)
         self.assertEqual(S.rsi_series(closes)[-1], 100.0)
-        self.assertGreater(S.adx(cs), 90)
-        self.assertIsNone(S.adx(cs[:20]))
 
     def test_swings_strict(self):
         cs = [candle(i, 10, 10 + (3 if i == 5 else 1) + 0.01 * i, 9, 10) for i in range(11)]
         self.assertEqual(S.swings(cs, "high", 2), [5])
-
-    def test_volatilite(self):
-        calm = [candle(i, 100, 100.5 + 0.001 * (i % 5), 99.5, 100) for i in range(300)]
-        self.assertAlmostEqual(S.vol_ratio(calm), 1.0, delta=0.1)
-        dead = calm[:-20] + [candle(300 + i, 100, 100.05, 99.95, 100) for i in range(20)]
-        self.assertLess(S.vol_ratio(dead), S.VOL_MIN_RATIO)
 
 
 class Tendance(unittest.TestCase):
@@ -301,10 +293,11 @@ class Messages(unittest.TestCase):
 
 class Strategies(unittest.TestCase):
     def test_niveaux_et_plafond(self):
-        lv = S.build_levels("BUY", 100, 99.99, a_ltf=1.0, a_h1=5.0, cap_h1=1.5)
+        lv = S.build_levels("BUY", 100, 99.99, a_ltf=1.0)
         self.assertAlmostEqual(lv["risk"], S.MIN_RISK_ATR)                  # stop éloigné au risque minimal
         self.assertAlmostEqual(lv["tp"][2], 100 + 3 * S.MIN_RISK_ATR)
-        self.assertIsNone(S.build_levels("SELL", 100, 110, 1.0, 5.0, 1.5))   # risque > 1,5 x ATR H1
+        lv = S.build_levels("SELL", 100, 110, 1.0)                           # plus de plafond de risque
+        self.assertAlmostEqual(lv["risk"], 10.0)
 
     def test_sessions(self):
         self.assertEqual(S.session_name(ts(2026, 10, 21, 3)), "Londres")
@@ -356,13 +349,19 @@ def s2_scenario(stale, pad=10):
     return build(wp, int(datetime(2026, 10, 12, 0, 0, tzinfo=NY).timestamp()))
 
 
-def s2_first_signal(m5, **patches):
+# Garde-fous de S2 neutralisés par défaut dans les scénarios synthétiques ; chaque test les remet pour vérifier le sien.
+S2_NEUTRAL = dict(S2_FIB_FILTER=False, S2_RISK_CAP_H1=0, S2_MIN_RR=0, S2_MAX_AGE_MIN=0, S2_VOL_MIN_RATIO=0, S2_SWEEP_MIN_ATR=0,
+                  S2_LIMIT_MAX_ATR=1e9, S2_CHASE_ATR=1e9)
+
+
+def s2_first_signal(m5, kz=False, **patches):
     from unittest import mock
+    patches = {**S2_NEUTRAL, **patches}
     rp = B.Replay(m5)
     with mock.patch.multiple(S, **patches):
         for t in range(len(m5) - 40, len(m5)):
             provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
-            sig = S.scan_s2(provide, m5[t]["epoch"] + 300, Counter(), 2, kz=False, mode="limit")
+            sig = S.scan_s2(provide, m5[t]["epoch"] + 300, Counter(), 2, kz=kz, mode="limit")
             if sig:
                 return sig
     return None
@@ -638,7 +637,6 @@ class RecapIndices(unittest.TestCase):
             self.assertIn(name, sent[0])
             self.assertNotIn("(1s)", sent[0].split("\n\n", 1)[1])
             self.assertIn(f"{name} (1s)", sent[1])
-        self.assertIn("Biais S2", sent[0])
         self.assertIn("Bougie daily en cours", sent[0])
         self.assertNotIn("EURUSD", sent[0] + sent[1])
 
@@ -690,15 +688,6 @@ class SweepCHoCH(unittest.TestCase):
         self.assertEqual(S.s2_bias(flat, dn), ("SELL", "H1"))        # H4 sans tendance : on lit le H1
         self.assertEqual(S.s2_bias(flat, flat), (None, None))
 
-    def test_filtre_de_biais(self):
-        from unittest import mock
-        patches = dict(S2_HTF_ZONE=False, S2_LIQ_TARGETS=False, S2_BIAS_FILTER=True)
-        with mock.patch.object(S, "s2_bias", return_value=("SELL", "H4")):
-            self.assertIsNotNone(self.first_pad(False, **patches))
-        with mock.patch.object(S, "s2_bias", return_value=("BUY", "H4")):
-            self.assertIsNone(self.first_pad(False, **patches))      # SELL contre un biais haussier
-        with mock.patch.object(S, "s2_bias", return_value=(None, None)):
-            self.assertIsNone(self.first_pad(False, **patches))      # aucun biais clair
 
     def test_zones_h1_h4(self):
         t0 = 1_700_000_000
@@ -718,18 +707,6 @@ class SweepCHoCH(unittest.TestCase):
         self.assertEqual([z for z in S.htf_zones(cs2, "BUY", "H1", before) if z["kind"] == "OB"], [])   # retestée
         self.assertEqual(S.htf_zones(cs, "BUY", "H1", t0 + 3600 * 27), [])   # le déplacement n'est pas encore clôturé
 
-    def test_signal_exige_une_zone_htf(self):
-        from unittest import mock
-        patches = dict(S2_BIAS_FILTER=False, S2_LIQ_TARGETS=False, S2_HTF_ZONE=True)
-        with mock.patch.object(S, "htf_zone_hit", return_value=None):
-            self.assertIsNone(self.first_pad(False, **patches))
-        fake = {"kind": "OB", "tf": "H1", "lo": 2004.0, "hi": 2005.0, "epoch": 0}
-        with mock.patch.object(S, "htf_zone_hit", return_value=fake):
-            sig = self.first_pad(False, **patches)
-        self.assertIsNotNone(sig)
-        self.assertEqual(sig["extra"]["zone"], "H1 OB")
-        self.assertTrue(any("bloc d'ordre H1" in x for x in sig["details"]))
-        self.assertEqual(sig["zones"][0]["kind"], "ob")
 
     def test_objectifs_sur_la_liquidite(self):
         m15 = [candle(1000 + 900 * i, 100, 100.4, 99.6, 100) for i in range(20)]
@@ -755,6 +732,139 @@ class SweepCHoCH(unittest.TestCase):
         self.assertIsNotNone(sig)
         self.assertTrue(sig["tp3"] < sig["tp2"] < sig["tp1"] < sig["entry"] < sig["sl"])
         self.assertIn(sig["extra"]["tp"], ("fixe", "liquidité"))
+
+
+    def test_filtre_de_biais(self):
+        from unittest import mock
+        patches = dict(S2_HTF_ZONE=False, S2_LIQ_TARGETS=False, S2_BIAS_FILTER=True)
+        with mock.patch.object(S, "s2_bias", return_value=("SELL", "H4")):
+            self.assertIsNotNone(self.first_pad(False, **patches))
+        with mock.patch.object(S, "s2_bias", return_value=("BUY", "H4")):
+            self.assertIsNone(self.first_pad(False, **patches))      # SELL contre un biais haussier
+        with mock.patch.object(S, "s2_bias", return_value=(None, None)):
+            self.assertIsNone(self.first_pad(False, **patches))      # aucun biais clair
+        with mock.patch.object(S, "s2_bias", return_value=("BUY", "H4")):
+            self.assertIsNotNone(self.first_pad(False, **dict(patches, S2_BIAS_FILTER=False)))   # filtre désactivé
+
+    def test_signal_exige_une_zone_htf(self):
+        from unittest import mock
+        patches = dict(S2_BIAS_FILTER=False, S2_LIQ_TARGETS=False, S2_HTF_ZONE=True)
+        with mock.patch.object(S, "htf_zone_hit", return_value=None):
+            self.assertIsNone(self.first_pad(False, **patches))
+        fake = {"kind": "OB", "tf": "H1", "lo": 2004.0, "hi": 2005.0, "epoch": 0}
+        with mock.patch.object(S, "htf_zone_hit", return_value=fake):
+            sig = self.first_pad(False, **patches)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig["extra"]["zone"], "H1 OB")
+        self.assertTrue(any("bloc d'ordre H1" in x for x in sig["details"]))
+        self.assertEqual(sig["zones"][0]["kind"], "ob")
+        with mock.patch.object(S, "htf_zone_hit", return_value=None):
+            self.assertIsNotNone(self.first_pad(False, **dict(patches, S2_HTF_ZONE=False)))    # filtre désactivé
+
+    def test_killzone_sur_les_marches_a_seance(self):
+        from unittest import mock
+        sig = self.first_pad(False, **self.OFF)
+        self.assertIsNotNone(sig)
+        sess = S.session_name(sig["trig_close"] - S.GRAN["M5"])             # session de la bougie de cassure du scénario
+        with mock.patch.object(S, "S2_SESSIONS", ("Londres",) if sess != "Londres" else ("New York",)):
+            self.assertIsNone(self.first_pad(False, kz=True, **self.OFF))    # hors des sessions autorisées : pas de signal
+        with mock.patch.object(S, "S2_SESSIONS", (sess,)):
+            kz_sig = self.first_pad(False, kz=True, **self.OFF)
+        self.assertIsNotNone(kz_sig)
+        self.assertTrue(any(f"Killzone {sess}" in x for x in kz_sig["details"]))
+        with mock.patch.object(S, "S2_SESSIONS", ("Londres",) if sess != "Londres" else ("New York",)):
+            self.assertIsNotNone(self.first_pad(False, kz=False, **self.OFF))   # marchés 24h/24 : jamais de contrainte de session
+
+    def test_entonnoir_s2(self):
+        for k in ("S2_biais", "S2_zone"):
+            self.assertIn(k, G.FUNNEL_ORDER)
+            self.assertIn(k, G.FUNNEL_LABEL)
+
+
+    # --- garde-fous S2 : ratio, risque, fraîcheur, volatilité, force du sweep, Fibonacci, obstacles
+    def test_ratio_minimal_comme_s1(self):
+        self.assertEqual(S.S2_MIN_RR, S.S5_MIN_RR)                               # même ratio minimal que S1 par défaut (1:3 sur TP2)
+        self.assertIsNone(self.first_pad(False, S2_MIN_RR=50.0, **self.OFF))
+        self.assertIsNotNone(self.first_pad(False, S2_MIN_RR=0, **self.OFF))
+
+    def test_ratio_calcule_sur_tp2(self):
+        sig = self.first_pad(False, **self.OFF)
+        rr2 = abs(sig["tp2"] - sig["entry"]) / abs(sig["entry"] - sig["sl"])
+        self.assertIsNotNone(self.first_pad(False, S2_MIN_RR=rr2 - 0.01, **self.OFF))      # juste sous le ratio du signal : passe
+        self.assertIsNone(self.first_pad(False, S2_MIN_RR=rr2 + 0.01, **self.OFF))         # juste au-dessus : écarté
+
+    def test_plafond_de_risque_en_atr_h1(self):
+        self.assertIsNone(self.first_pad(False, S2_RISK_CAP_H1=0.0001, **self.OFF))
+        self.assertIsNotNone(self.first_pad(False, S2_RISK_CAP_H1=0, **self.OFF))
+
+    def test_volatilite_minimale(self):
+        self.assertIsNone(self.first_pad(False, S2_VOL_MIN_RATIO=100.0, **self.OFF))
+        self.assertIsNotNone(self.first_pad(False, S2_VOL_MIN_RATIO=0, **self.OFF))
+        flat = [candle(1000 + 3600 * i, 100, 100.5, 99.5, 100) for i in range(30)]
+        self.assertEqual(S.vol_ratio(flat), 1.0)                                  # historique court : volatilité considérée normale
+
+    def test_sweep_trop_faible_ecarte(self):
+        self.assertIsNone(self.first_pad(False, S2_SWEEP_MIN_ATR=100.0, **self.OFF))      # la mèche doit dépasser le niveau d'au moins 100 ATR
+        self.assertIsNotNone(self.first_pad(False, S2_SWEEP_MIN_ATR=0, **self.OFF))
+
+    def test_entree_trop_loin_ou_trop_tardive(self):
+        self.assertIsNone(self.first_pad(False, S2_LIMIT_MAX_ATR=0.0, S2_CHASE_ATR=-1.0, **self.OFF))
+        self.assertIsNotNone(self.first_pad(False, S2_LIMIT_MAX_ATR=1e9, S2_CHASE_ATR=1e9, **self.OFF))
+        self.assertTrue(S.s2_is_late("BUY", 101.0, 100.0, 1.0))                   # 1 ATR de fuite : trop tard
+        self.assertFalse(S.s2_is_late("BUY", 100.1, 100.0, 1.0))                  # 0,1 ATR de fuite : accepté
+        self.assertTrue(S.s2_is_late("SELL", 99.0, 100.0, 1.0))                   # 1 ATR de fuite : trop tard
+
+    def test_signal_trop_ancien(self):
+        self.assertIsNone(self.first_pad(False, S2_MAX_AGE_MIN=-1.0, **self.OFF))      # seuil négatif : tout déclencheur (âge >= 0) est trop ancien
+        self.assertIsNotNone(self.first_pad(False, S2_MAX_AGE_MIN=0, **self.OFF))
+
+    def test_fibonacci_premium_discount(self):
+        from unittest import mock
+        h4c = [candle(1000 + 14400 * i, 105, 106, 104, 105) for i in range(10)]
+        with mock.patch.object(S.FB, "dealing_range", lambda cs, n, lb: (100.0, 110.0)):
+            ok = lambda d, e: S.s2_fib_check(d, e, "H4", h4c, h4c, 10 ** 9, 1.0)
+            self.assertTrue(ok("BUY", 104.0)["ok"])                               # achat dans le discount (profondeur 60 %)
+            self.assertFalse(ok("BUY", 108.0)["ok"])                              # achat dans le premium
+            self.assertTrue(ok("SELL", 106.0)["ok"])                              # vente dans le premium
+            self.assertFalse(ok("SELL", 102.0)["ok"])                             # vente dans le discount
+            self.assertAlmostEqual(ok("BUY", 104.0)["eq"], 105.0)
+            self.assertIsNone(S.s2_fib_check("BUY", 104.0, "H4", h4c, h4c, 10 ** 9, 20.0))   # jambe trop petite : pas d'information
+            with mock.patch.object(S, "S2_FIB_FILTER", False):
+                self.assertIsNone(ok("BUY", 108.0))                               # filtre désactivé
+        with mock.patch.object(S, "s2_fib_check", lambda *a, **k: {"ok": False, "r": 0.2, "tf": "H4", "eq": 1.0, "lo": 0.0, "hi": 2.0}):
+            self.assertIsNone(self.first_pad(False, S2_FIB_FILTER=True, **{k: v for k, v in self.OFF.items()}))
+        good = {"ok": True, "r": 0.6, "tf": "H4", "eq": 1.0, "lo": 0.0, "hi": 2.0}
+        with mock.patch.object(S, "s2_fib_check", lambda *a, **k: good):
+            sig = self.first_pad(False, **self.OFF)
+        self.assertIsNotNone(sig)
+        self.assertTrue(any("Fibonacci 60 %" in x for x in sig["details"]))
+        self.assertEqual(sig["extra"]["fib"], "60%")
+
+    def test_obstacles_h4_h1_pour_s2(self):
+        from unittest import mock
+        sig = self.first_pad(False, **self.OFF)
+        d, e, sl = sig["dir"], sig["entry"], sig["sl"]
+        risk = abs(e - sl)
+        px = e - 0.5 * risk if d == "SELL" else e + 0.5 * risk                      # obstacle opposé à 0,5 R
+        obs = {"sup": [(px, px, "creux H1")] if d == "SELL" else [], "res": [] if d == "SELL" else [(px, px, "sommet H1")], "atr": 1.0}
+        sg = dict(sig, details=list(sig["details"]))
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: obs):
+            self.assertEqual(S.obstacle_filter(sg, None, 0, "S2", False, 0), "S2_obst_cible")     # obstacle à moins de 1 R : écarté
+            self.assertIsNone(self.first_pad(False, INTRADAY=True, **self.OFF))                    # intégré au scan (hors zone exigée : aussi l'entrée)
+        last = sig["tp3"] if sig.get("tp3") is not None else sig["tp2"]
+        far = e + 0.9 * (last - e)                                                  # obstacle entre TP1 et le dernier objectif
+        obs2 = {"sup": [(far, far, "creux H1")] if d == "SELL" else [], "res": [] if d == "SELL" else [(far, far, "sommet H1")], "atr": 1.0}
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: obs2):
+            sg2 = dict(sig, details=list(sig["details"]))
+            self.assertIsNone(S.obstacle_filter(sg2, None, 0, "S2", False, 0))                     # obstacle lointain : objectifs ramenés avant lui
+            self.assertTrue(abs(sg2["tp1"] - e) < abs(far - e) and abs(sg2["tp2"] - e) <= abs(far - e))
+            sg3 = dict(sig, details=list(sig["details"]))
+            self.assertEqual(S.obstacle_filter(sg3, None, 0, "S2", False, 50.0), "S2_obst_rr")     # ratio sous le minimum après ramenage
+
+    def test_entonnoir_garde_fous_s2(self):
+        for k in ("S2_vol", "S2_stale", "S2_risque", "S2_fib", "S2_rr", "S2_age", "S2_obst_entree", "S2_obst_cible", "S2_obst_rr"):
+            self.assertIn(k, G.FUNNEL_ORDER)
+            self.assertIn(k, G.FUNNEL_LABEL)
 
 
 class OrdresLimites(unittest.TestCase):
@@ -931,7 +1041,7 @@ def s5_provider(tfs, i):
 
 
 # Scénarios déterministes (graine, index M5) trouvés sur la série ci-dessus.
-S5_RELAX = dict(S5_FRESH=60, S5_MIN_RR=0.3, S5_FVG_MIN_ATR=0.0, S5_MAX_PROGRESS=0.9, S5_LATE_CANDLES=6)
+S5_RELAX = dict(S5_FRESH=60, S5_FVG_MIN_ATR=0.0, S5_LATE_CANDLES=6)
 
 
 class ImpulsionS5(unittest.TestCase):
@@ -942,7 +1052,7 @@ class ImpulsionS5(unittest.TestCase):
         self.assertIn("S5", S.LIMIT_TTL)                          # durée de l'ordre limite de la variante structure
         self.assertNotIn("S5", gold.ENTRY_MODES)
         self.assertEqual(S.LIMIT_TTL["S5"], 86400)
-        for k in ("S5_regime", "S5_tendance", "S5_impulsion", "S5_signal"):
+        for k in ("S5_tendance", "S5_impulsion", "S5_signal"):
             self.assertIn(k, G.FUNNEL_ORDER)
             self.assertIn(k, G.FUNNEL_LABEL)
         # l'ordre des cascades : la plus haute d'abord (le garde-fou garde la première en cas de doublon)
@@ -971,7 +1081,7 @@ class ImpulsionS5(unittest.TestCase):
     def test_vente_limite_reglages_par_defaut(self):
         tfs = s5_series(4)
         provide, t = s5_provider(tfs, 5998)
-        sigs = S.scan_s5(provide, t + 60, Counter(), 3, True, "limit")
+        sigs = S.scan_s5(provide, t + 60, Counter(), 3, False, "limit")     # kz=False : la session a son test dédié
         self.assertIsInstance(sigs, list)
         sig = next(x for x in sigs if x["extra"]["cascade"] == "H4>H1>M15")
         self.assertEqual((sig["strat"], sig["label"], sig["dir"], sig["otype"]), ("S5", "Impulsion", "SELL", "SELL LIMIT"))
@@ -979,11 +1089,10 @@ class ImpulsionS5(unittest.TestCase):
         self.assertGreater(sig["entry"], sig["tp1"])
         self.assertGreater(sig["tp1"], sig["tp2"])
         self.assertGreater(sig["tp2"], sig["tp3"])
-        self.assertGreaterEqual((sig["entry"] - sig["tp2"]) / (sig["sl"] - sig["entry"]), S.S5_MIN_RR - 1e-9)   # ratio 1:3 sur TP2
         self.assertTrue(sig["key"].startswith("S5|SELL|H4>H1>M15|"))
         self.assertEqual(sig["ttl"], 86400)
         self.assertEqual(sig["ltf"], "M15")
-        self.assertIn(sig["extra"]["tendance"], S.S5_TREND_AGES_OK)
+        self.assertIn(sig["extra"]["tendance"], ("naissante", "établie", "mûre"))
         self.assertIn(sig["extra"]["zone"], ("Golden Zone", "OTE"))
         self.assertIsNotNone(sig["trig_close"])
         self.assertTrue(sig["details"])
@@ -1051,7 +1160,7 @@ class ImpulsionS5(unittest.TestCase):
     def test_message_des_quatre_formats(self):
         tfs = s5_series(4)
         provide, t = s5_provider(tfs, 5998)
-        sig = next(x for x in S.scan_s5(provide, t + 60, Counter(), 3, True, "limit") if x["extra"]["cascade"] == "H4>H1>M15")
+        sig = next(x for x in S.scan_s5(provide, t + 60, Counter(), 3, False, "limit") if x["extra"]["cascade"] == "H4>H1>M15")
         sig.update(sym="frxEURUSD", name="EURUSD", dec=3, ts=t + 60, age_min=1.0, trend_lines=[], trend_short="")
         for fmt in ("complet", "compact", "minimal", "contexte"):
             os.environ["ALERT_FORMAT"] = fmt
@@ -1201,7 +1310,7 @@ class ConfluenceStrategies(unittest.TestCase):
     def test_messages_des_quatre_formats(self):
         tfs = s5_series(4)
         provide, t = s5_provider(tfs, 5998)
-        sig = next(x for x in S.scan_s5(provide, t + 60, Counter(), 3, True, "limit") if x["extra"]["cascade"] == "H4>H1>M15")
+        sig = next(x for x in S.scan_s5(provide, t + 60, Counter(), 3, False, "limit") if x["extra"]["cascade"] == "H4>H1>M15")
         sig.update(sym="frxEURUSD", name="EURUSD", dec=3, ts=t + 60, age_min=1.0, trend_lines=[], trend_short="")
         tr = {"active": {}, "closed": []}
         self.trade(tr, "S2", d="SELL", sym="frxEURUSD", age=300)
@@ -1473,7 +1582,7 @@ class TestBilanHebdomadaire(unittest.TestCase):
         self.assertNotIn("Par actif", txt)                                              # un seul actif : pas de ligne en plus
         self.assertNotIn("Entonnoir", txt)
         self.assertIn("alertes : 28", txt)
-        self.assertIn("tardifs 21 · news/horaire 2 · doublons 1 · risque 6", txt)
+        self.assertIn("objectif déjà atteint 21 · news/horaire 2 · doublons 1 · risque 6", txt)
         self.assertNotIn("données", txt)
         self.assertLess(len(lines), 12)
 
@@ -1624,108 +1733,6 @@ class TestCadreIntraday(unittest.TestCase):
         finally:
             gold.CRYPTO_INTRADAY = old
 
-    def _sig(self, strat="S1", d="BUY", entry=100.0, sl=98.0, tp1=106.0):
-        k = 1 if d == "BUY" else -1
-        return {"strat": strat, "dir": d, "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp1 + 4 * k, "tp3": tp1 + 8 * k, "dec": 2,
-                "details": []}
-
-    def _obs(self, sup=(), res=()):
-        S.htf_obstacles = lambda provide, now: {"sup": list(sup), "res": list(res), "atr": 2.0}
-
-    def test_entree_sur_un_niveau_h4_h1(self):
-        self._obs(sup=[(99.6, 99.6, "creux H1")])
-        sig = self._sig()
-        self.assertIsNone(S.obstacle_filter(sig, None, 0))
-        self.assertIn("✅ Entrée sur creux H1", sig["details"])
-        self._obs(sup=[(90.0, 90.0, "creux H4")])
-        self.assertEqual(S.obstacle_filter(self._sig(), None, 0), "obst_entree")      # niveau trop loin (tolérance 1,0)
-        self.assertIsNone(S.obstacle_filter(self._sig(strat="S3"), None, 0))
-
-    def test_zone_contenant_l_entree(self):
-        self._obs(sup=[(99.0, 100.5, "bloc d'ordre H1")])
-        self.assertIsNone(S.obstacle_filter(self._sig(), None, 0))
-
-    def test_objectif_ramene_avant_l_obstacle(self):
-        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(104.0, 104.0, "sommet H1")])
-        sig = self._sig()
-        self.assertIsNone(S.obstacle_filter(sig, None, 0))
-        self.assertAlmostEqual(sig["tp1"], 104.0 - 0.1 * 2.0)                         # 0,1 ATR avant l'obstacle
-        self.assertTrue(any(x.startswith("🧱 Obstacle sommet H1") for x in sig["details"]))
-        # l'obstacle qui arrête TP1 arrête aussi TP2 et TP3 : tout le reste sort à ce niveau
-        self.assertAlmostEqual(sig["tp2"], sig["tp1"])
-        self.assertIsNone(sig["tp3"])
-
-    def test_obstacle_entre_tp1_et_tp2_ne_touche_que_les_objectifs_suivants(self):
-        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(108.0, 108.0, "sommet H1")])   # TP1 106, TP2 110, TP3 114
-        sig = self._sig()
-        self.assertIsNone(S.obstacle_filter(sig, None, 0))
-        self.assertEqual(sig["tp1"], 106.0)                                             # TP1 inchangé
-        self.assertAlmostEqual(sig["tp2"], 108.0 - 0.1 * 2.0)                           # TP2 ramené avant l'obstacle
-        self.assertIsNone(sig["tp3"])
-
-    def test_obstacle_apres_tp2_ramene_seulement_tp3(self):
-        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(112.0, 112.0, "sommet H1")])
-        sig = self._sig()
-        self.assertIsNone(S.obstacle_filter(sig, None, 0))
-        self.assertEqual((sig["tp1"], sig["tp2"]), (106.0, 110.0))
-        self.assertAlmostEqual(sig["tp3"], 112.0 - 0.1 * 2.0)
-
-    def test_obstacle_ne_cree_pas_de_tp3_absent(self):
-        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(120.0, 120.0, "sommet H1")])    # au-delà de tous les objectifs
-        sig = self._sig(strat="S3")
-        sig["tp3"] = None                                                               # stratégie sans TP3
-        self.assertIsNone(S.obstacle_filter(sig, None, 0))
-        self.assertIsNone(sig["tp3"])
-        self.assertEqual((sig["tp1"], sig["tp2"]), (106.0, 110.0))
-
-    def test_s2_deja_sur_zone_h4_h1_pas_de_second_controle_d_entree(self):
-        self._obs(sup=[(90.0, 90.0, "creux H4")])                                        # entrée loin de tout niveau
-        self.assertEqual(S.obstacle_filter(self._sig(strat="S1"), None, 0), "obst_entree")
-        self.assertIsNone(S.obstacle_filter(self._sig(strat="S2"), None, 0))
-        old = S.S2_HTF_ZONE
-        S.S2_HTF_ZONE = False                                                           # sans zone exigée au sweep : contrôle conservé
-        try:
-            self.assertEqual(S.obstacle_filter(self._sig(strat="S2"), None, 0), "obst_entree")
-        finally:
-            S.S2_HTF_ZONE = old
-
-    def test_obstacle_trop_proche_ecarte_le_signal(self):
-        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(101.0, 101.0, "sommet H1")])   # 0,5 R seulement
-        self.assertEqual(S.obstacle_filter(self._sig(), None, 0), "obst_cible")
-
-    def test_ratio_minimum_recontrole_apres_obstacle(self):
-        # entrée 100, stop 98 (R = 2) ; obstacle à 103 (1,5 R) : toléré par la règle des 1 R, mais TP1, TP2 et TP3 sont ramenés à 102,8
-        self._obs(sup=[(100.0, 100.0, "creux H1")], res=[(103.0, 103.0, "sommet H1")])
-        sig = self._sig(strat="S1")
-        sig["rr_rule"] = [(2, 3.0)]                                                     # Pullback : 3 R minimum vers TP2
-        self.assertEqual(S.obstacle_filter(sig, None, 0), "obst_rr")
-        self.assertIsNone(S.obstacle_filter(self._sig(strat="S1"), None, 0))             # sans règle (S2, retournement) : le signal passe
-        ok = self._sig(strat="S1")
-        ok["rr_rule"] = [(3, 1.0)]                                                       # 1 R vers TP3 : l'objectif le plus lointain (102,8) suffit
-        self.assertIsNone(S.obstacle_filter(ok, None, 0))
-        s3 = self._sig(strat="S3")
-        s3["tp3"] = None
-        s3["rr_rule"] = [(1, 0.8), (2, 1.5)]
-        self.assertEqual(S.obstacle_filter(s3, None, 0), "obst_rr")                      # TP2 ramené à 1,4 R : sous 1,5 R
-
-    def test_rr_ok(self):
-        sig = {"dir": "BUY", "entry": 100.0, "sl": 98.0, "tp1": 103.0, "tp2": 106.0, "tp3": None, "rr_rule": [(2, 3.0)]}
-        self.assertTrue(S.rr_ok(sig))
-        sig["tp2"] = 105.9
-        self.assertFalse(S.rr_ok(sig))
-        sell = {"dir": "SELL", "entry": 100.0, "sl": 102.0, "tp1": 98.0, "tp2": 96.0, "tp3": None, "rr_rule": [(3, 2.0)]}
-        self.assertTrue(S.rr_ok(sell))                                                   # TP3 absent : l'objectif le plus lointain compte
-        self.assertTrue(S.rr_ok({"dir": "BUY", "entry": 1.0, "sl": 0.5, "tp1": 2.0, "tp2": 3.0, "tp3": 4.0}))   # sans règle
-
-    def test_vente_symetrique(self):
-        self._obs(res=[(100.2, 100.2, "sommet H1")], sup=[(96.0, 96.0, "creux H1")])
-        sig = self._sig(d="SELL", sl=102.0, tp1=94.0)
-        self.assertIsNone(S.obstacle_filter(sig, None, 0))
-        self.assertAlmostEqual(sig["tp1"], 96.0 + 0.2)
-
-    def test_sans_donnees_le_signal_passe(self):
-        S.htf_obstacles = lambda provide, now: None
-        self.assertIsNone(S.obstacle_filter(self._sig(), None, 0))
 
     def test_obstacles_reels_sur_des_bougies(self):
         random.seed(3)
@@ -1796,6 +1803,18 @@ class TestCoherenceEntreStrategies(unittest.TestCase):
         return [{"epoch": 1_790_000_000 + i * step, "open": base, "high": base + 0.5, "low": base - 0.5, "close": base}
                 for i in range(n)]
 
+
+    def test_obstacles_utilisent_la_veille_de_s2(self):
+        h1, h4 = self._candles(60, 3600), self._candles(30, 14400)
+        d1 = self._candles(5, 86400)
+        d1[-2] = dict(d1[-2], high=123.0, low=77.0)                                  # veille D1 de S2
+        obs = S.htf_obstacles(lambda tf: {"H1": h1, "H4": h4, "D1": d1}[tf], 1_790_000_000 + 60 * 3600)
+        self.assertIn((123.0, 123.0, "plus haut de la veille"), obs["res"])
+        self.assertIn((77.0, 77.0, "plus bas de la veille"), obs["sup"])
+        obs = S.htf_obstacles(lambda tf: {"H1": h1, "H4": h4, "D1": None}[tf], 1_790_000_000 + 60 * 3600)   # repli sans D1
+        self.assertIsNotNone(obs)
+
+
     def test_s2_un_sweep_recent_contre_le_biais_ne_masque_pas_un_sweep_valide(self):
         m15 = self._candles(60, 900)
         # sweep d'un PDL (achat) il y a 6 bougies, puis sweep d'un PDH (vente) plus récent : le biais est haussier
@@ -1815,16 +1834,6 @@ class TestCoherenceEntreStrategies(unittest.TestCase):
             S.liquidity_levels, S.s2_bias, S._s2_setup, S.S2_BIAS_FILTER = saved
         self.assertEqual(sig, {"sweep": "PDL"})
         self.assertEqual(seen, ["low"])                  # seul le sweep dans le sens du biais est tenté
-
-    def test_obstacles_utilisent_la_veille_de_s2(self):
-        h1, h4 = self._candles(60, 3600), self._candles(30, 14400)
-        d1 = self._candles(5, 86400)
-        d1[-2] = dict(d1[-2], high=123.0, low=77.0)                                  # veille D1 de S2
-        obs = S.htf_obstacles(lambda tf: {"H1": h1, "H4": h4, "D1": d1}[tf], 1_790_000_000 + 60 * 3600)
-        self.assertIn((123.0, 123.0, "plus haut de la veille"), obs["res"])
-        self.assertIn((77.0, 77.0, "plus bas de la veille"), obs["sup"])
-        obs = S.htf_obstacles(lambda tf: {"H1": h1, "H4": h4, "D1": None}[tf], 1_790_000_000 + 60 * 3600)   # repli sans D1
-        self.assertIsNotNone(obs)
 
 
 class TestSmcPrimitives(unittest.TestCase):
@@ -1968,8 +1977,8 @@ class TestCodesRenumerotes(unittest.TestCase):
     def test_noms_de_variables_d_environnement_inchanges(self):
         import patterns, reversal
         src = open(os.path.join(os.path.dirname(__file__), "patterns.py"), encoding="utf-8").read()
-        self.assertIn('_f("S6_MIN_RR"', src)                                             # les variables GitHub existantes gardent leur nom
-        self.assertTrue(hasattr(patterns, "S3_MIN_RR") and hasattr(reversal, "S7_RISK_CAP_ATR"))
+        self.assertIn('_f("S6_TOL_ATR"', src)                                            # les variables GitHub existantes gardent leur nom
+        self.assertTrue(hasattr(patterns, "S3_LIMIT_TTL") and hasattr(reversal, "S7_SL_BUF_ATR"))
 
     def test_confluence_lit_le_libelle_avant_l_ancien_code(self):
         tr = {"active": {}, "closed": []}
@@ -2000,28 +2009,14 @@ class TestPullbackFusionne(unittest.TestCase):
     def test_variante_structure_sur_des_donnees_reelles_de_test(self):
         tfs = s5_series(4)
         provide, t = s5_provider(tfs, 5998)
-        out = S.scan_pullback(provide, t + 60, Counter(), 3, True, "limit")
+        out = S.scan_pullback(provide, t + 60, Counter(), 3, False, "limit")
         self.assertTrue(out)
         sig = out[0]
         self.assertEqual((sig["strat"], sig["label"], sig["extra"]["variante"]), ("S1", "Pullback", "structure"))
-        self.assertIn(sig["strat"], S.OBST_ENTRY_STRATS)                        # soumise au cadre intraday comme avant
         trade = T.new_trade("OR", "k", "frxEURUSD", "EURUSD", sig["dir"], sig["otype"], sig["entry"], sig["sl"], sig["tp1"],
                             sig["tp2"], sig["tp3"], sig["ltf"], sig["gran"], 3, sig["label"], t, 3600, extra=sig["extra"])
         self.assertEqual(trade["variante"], "structure")                         # colonne « variante » du backtest
 
-    def test_option_adx_de_la_variante_structure(self):
-        tfs = s5_series(4)
-        provide, t = s5_provider(tfs, 5998)
-        old = S.S5_ADX_MIN
-        try:
-            S.S5_ADX_MIN = 0
-            self.assertTrue(S.scan_s5(provide, t + 60, Counter(), 3, True, "limit"))      # désactivée : comme avant
-            S.S5_ADX_MIN = 1000                                                          # ADX impossible : plus aucun signal
-            funnel = Counter()
-            self.assertFalse(S.scan_s5(provide, t + 60, funnel, 3, True, "limit"))
-            self.assertEqual(funnel["S5_adx"], 0)
-        finally:
-            S.S5_ADX_MIN = old
 
     def test_anciens_codes_et_libelles_reconnus(self):
         self.assertEqual(gold.canon_codes(["S1", "S5", "S2", "S5"]), ["S1", "S2"])
@@ -2086,7 +2081,6 @@ class RecapCompact(unittest.TestCase):
         self.assertIn("soir", short[0].split("\n")[0])
         for name in ("V10", "V25", "V50", "V75", "V100"):
             line = next(l for l in short[0].split("\n") if l.startswith(f"{name}  "))
-            self.assertIn("biais S2", line)
             self.assertIn("jour ", line)
 
     def test_format_par_defaut_compact(self):
@@ -2167,9 +2161,6 @@ class RetournementPossible(unittest.TestCase):
         veille = {"res": [(112.2, 112.2, "plus haut de la veille")], "sup": [], "atr": 1.0}
         self.assertEqual(self.run_detect(obs=veille)["level"][1], "plus haut de la veille")
 
-    def test_signes_d_essoufflement_minimaux(self):
-        self.assertIsNone(self.run_detect(MIN_SIGNS=4))                               # 3 signes seulement
-        self.assertIsNotNone(self.run_detect(MIN_SIGNS=3))
 
     def test_cassure_trop_ancienne_donnees_anciennes_ou_sommet_deja_pris(self):
         h1 = self.h1_sweep()
@@ -2254,8 +2245,7 @@ class RetournementPossible(unittest.TestCase):
         from unittest import mock
         now, provide = self.s7_provide(price)
         with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
-                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
-                mock.patch.object(gold.REV, "S7_RISK_CAP_ATR", patch.get("cap", 10.0)):
+                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP):
             funnel = Counter()
             sig = gold.REV.reversal_signal(provide, now, funnel, 2, mode)
             return ([sig] if sig else None), funnel
@@ -2288,14 +2278,11 @@ class RetournementPossible(unittest.TestCase):
         self.assertTrue(sig["entry"] > sig["tp1"] > sig["tp2"] > sig["tp3"])
         self.assertTrue(any("TP2 sur la liquidité EQL" in x for x in sig["details"]))
 
-    def test_s7_marche_et_ecartes(self):
+    def test_s7_marche_et_retest_lointain(self):
         sigs, _ = self.run_s7(mode="market")
         self.assertEqual(sigs[0]["otype"], "SELL")
-        far, funnel = self.run_s7(price=105.0)                            # retest du creux à plus de 1 ATR H1 du prix
-        self.assertIsNone(far)
-        self.assertEqual(funnel["stale"], 1)
-        capped, _ = self.run_s7(cap=0.5)                                  # risque au-delà du plafond
-        self.assertIsNone(capped)
+        far, _ = self.run_s7(price=105.0)                                 # retest du creux loin du prix : plus de limite de distance
+        self.assertTrue(far)
 
     def test_s7_fusionnee_dans_s3_et_sur_tous_les_actifs(self):
         self.assertNotIn("S7", dict(S.STRATEGIES))
@@ -2310,7 +2297,6 @@ class RetournementPossible(unittest.TestCase):
         for sym, attendu in (("frxXAUUSD", True), ("R_100", True)):
             with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
                     mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
-                    mock.patch.object(gold.REV, "S7_RISK_CAP_ATR", 10.0), \
                     mock.patch.object(gold, "ENABLED", ["S3"]):
                 out = gold.scan(sym, provide, now, {}, Counter(), ())
             self.assertEqual(any(sig["strat"] == "S3" and sig["extra"].get("origine") == "retournement" for sig, _ in out), attendu, sym)
@@ -2319,14 +2305,6 @@ class RetournementPossible(unittest.TestCase):
 class ChartPatterns(unittest.TestCase):
     """S3 Chart Patterns : figure H1 détectée, cassure confirmée en M15 (données synthétiques, sans réseau)."""
     T0 = 1_800_000_000 - (1_800_000_000 % 14400)
-
-    def setUp(self):                                    # les séries synthétiques sont plus volatiles (en ATR) que les marchés réels
-        import patterns
-        from unittest import mock
-        for name, val in (("S3_RISK_CAP_ATR", 12.0), ("S3_NOCONF_MIN_RR", 1.0)):
-            p = mock.patch.object(patterns, name, val)
-            p.start()
-            self.addCleanup(p.stop)
 
     @staticmethod
     def m15_series(way, seed=1, noise=0.04, flip=False):
@@ -2392,15 +2370,6 @@ class ChartPatterns(unittest.TestCase):
             sigs, _ = self.replay(self.DOUBLE_TOP)
         self.assertIs(sigs[0]["extra"]["confluence_retournement"], False)
 
-    def test_sans_confluence_ratio_plus_exigeant(self):
-        from unittest import mock
-        import patterns
-        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "S3_NOCONF_MIN_RR", 5.0):
-            sigs, _ = self.replay(self.DOUBLE_TOP)
-            self.assertIsNone(sigs)                                                        # ratio TP3 insuffisant sans confluence
-        with mock.patch("reversal.detect", return_value=dict(self.REV_SELL)), mock.patch.object(patterns, "S3_NOCONF_MIN_RR", 5.0):
-            sigs, _ = self.replay(self.DOUBLE_TOP)
-            self.assertIsNotNone(sigs)                                                     # avec confluence, le ratio normal suffit
 
     def test_continuation_sans_effet_de_la_confluence(self):
         from unittest import mock
@@ -2476,188 +2445,6 @@ def range_candles(n, hi, lo, hi_i, lo_i, step=3600, t0=1_800_000_000, mid=None):
     return cs
 
 
-class FibonacciModule(unittest.TestCase):
-    def test_jambe_de_reference(self):
-        import fib as FB
-        cs = range_candles(60, 110.0, 100.0, 20, 40)
-        self.assertEqual(FB.dealing_range(cs, 3, 120), (100.0, 110.0))
-        self.assertIsNone(FB.dealing_range(cs[:30], 3, 120))                       # pas de creux confirmé : pas de jambe
-        self.assertIsNone(FB.dealing_range([candle(i, 1, 1.5, 0.5, 1) for i in range(40)], 3, 120))   # série plate
-
-    def test_profondeur_vue_du_sens_du_trade(self):
-        import fib as FB
-        self.assertAlmostEqual(FB.retrace("BUY", 102.0, 100.0, 110.0), 0.8)        # un achat bas dans la jambe : profond
-        self.assertAlmostEqual(FB.retrace("BUY", 110.0, 100.0, 110.0), 0.0)
-        self.assertAlmostEqual(FB.retrace("SELL", 108.0, 100.0, 110.0), 0.8)       # une vente haute dans la jambe : profond
-        self.assertAlmostEqual(FB.retrace("SELL", 105.0, 100.0, 110.0), 0.5)
-        self.assertGreater(FB.retrace("BUY", 98.0, 100.0, 110.0), 1.0)             # sous la jambe : au-delà de 100 %
-        self.assertIsNone(FB.retrace("BUY", 100.0, 100.0, 100.0))
-
-    def test_noms_de_zones(self):
-        import fib as FB
-        self.assertEqual([FB.zone_name(r) for r in (0.2, 0.499, 0.5, 0.6, 0.618, 0.75, 0.79, 0.85, 1.2)],
-                         ["mauvais côté", "mauvais côté", "Golden Zone", "Golden Zone", "OTE", "OTE", "OTE", "extrême", "extrême"])
-        self.assertEqual((FB.side_word("BUY"), FB.side_word("SELL")), ("discount", "premium"))
-
-    def test_profondeur_d_un_repli(self):
-        import fib as FB
-        self.assertAlmostEqual(FB.pullback_depth(100.0, 90.0, 96.18), 0.618)
-        self.assertAlmostEqual(FB.pullback_depth(100.0, 90.0, 90.0), 0.0)
-        self.assertIsNone(FB.pullback_depth(90.0, 90.0, 95.0))                     # jambe nulle
-
-    def test_cles_d_entonnoir_declarees(self):
-        for k in ("S2_fib", "S3_fib"):
-            self.assertIn(k, G.FUNNEL_ORDER)
-            self.assertIn(k, G.FUNNEL_LABEL)
-
-
-class FibonacciS2(unittest.TestCase):
-    """S2 : un achat se prend dans le discount (sous 50 %) de la jambe H4/H1, une vente dans le premium."""
-    T0 = 1_800_000_000
-    OFF = dict(S2_BIAS_FILTER=False, S2_HTF_ZONE=False, S2_LIQ_TARGETS=False)
-
-    def check(self, d, entry, tf="H1", a_h1=1.0, **kw):
-        step = 3600 if tf == "H1" else 14400
-        cs = range_candles(60, 110.0, 100.0, 20, 40, step=step, t0=self.T0)
-        h1c, h4c = (cs, []) if tf == "H1" else ([], cs)
-        return S.s2_fib_check(d, entry, tf, h4c, h1c, kw.get("before", self.T0 + step * 61), a_h1)
-
-    def test_achat_discount_accepte_premium_refuse(self):
-        r = self.check("BUY", 102.0)
-        self.assertTrue(r["ok"])
-        self.assertAlmostEqual(r["r"], 0.8)
-        self.assertEqual((r["lo"], r["hi"], r["eq"], r["tf"]), (100.0, 110.0, 105.0, "H1"))
-        self.assertFalse(self.check("BUY", 108.0)["ok"])                         # acheter en premium
-        self.assertTrue(self.check("BUY", 104.9)["ok"])                          # juste sous l'équilibre : encore dans le discount
-        self.assertFalse(self.check("BUY", 105.1)["ok"])                         # juste au-dessus de l'équilibre : déjà dans le premium
-
-    def test_vente_premium_accepte_discount_refuse(self):
-        self.assertTrue(self.check("SELL", 108.0)["ok"])
-        self.assertFalse(self.check("SELL", 102.0)["ok"])                        # vendre en discount
-
-    def test_jambe_h4_quand_le_biais_vient_du_h4(self):
-        r = self.check("BUY", 102.0, tf="H4")
-        self.assertEqual(r["tf"], "H4")
-        self.assertTrue(r["ok"])
-
-    def test_sans_information_le_filtre_laisse_passer(self):
-        self.assertIsNone(self.check("BUY", 108.0, a_h1=10.0))                   # jambe de 10 < 1,5 x ATR 10 : pas d'avis
-        self.assertIsNone(self.check("BUY", 108.0, before=self.T0 + 3600 * 35))   # le sommet de la jambe naît après le sweep : calcul sur le passé seulement
-        from unittest import mock
-        with mock.patch.object(S, "S2_FIB_FILTER", False):
-            self.assertIsNone(self.check("BUY", 108.0))                          # désactivé
-
-    def scan(self, **patches):
-        from unittest import mock
-        for pad in range(0, 60, 5):
-            m5 = s2_scenario(False, pad)
-            rp = B.Replay(m5)
-            with mock.patch.multiple(S, **patches):
-                for t in range(len(m5) - 40, len(m5)):
-                    funnel = Counter()
-                    provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
-                    sig = S.scan_s2(provide, m5[t]["epoch"] + 300, funnel, 2, kz=False, mode="limit")
-                    if sig or funnel["S2_fib"]:
-                        return sig, funnel
-        return None, Counter()
-
-    def test_signal_accepte_avec_ligne_et_detail(self):
-        ok = {"ok": True, "r": 0.7, "tf": "H1", "eq": 2000.0, "lo": 1990.0, "hi": 2010.0}
-        sig, funnel = self.scan(s2_fib_check=lambda *a, **k: ok, **self.OFF)
-        self.assertIsNotNone(sig)
-        self.assertTrue(any("Fibonacci 70 %" in x and "OTE" in x for x in sig["details"]))
-        self.assertEqual(sig["extra"]["fib"], "70%")
-        self.assertTrue(any(l["y"] == 2000.0 for l in sig["lines"]))
-        self.assertEqual(funnel["S2_fib"], 0)
-
-    def test_signal_ecarte_du_mauvais_cote(self):
-        bad = {"ok": False, "r": 0.2, "tf": "H1", "eq": 2000.0, "lo": 1990.0, "hi": 2010.0}
-        sig, funnel = self.scan(s2_fib_check=lambda *a, **k: bad, **self.OFF)
-        self.assertIsNone(sig)
-        self.assertGreaterEqual(funnel["S2_fib"], 1)
-
-    def test_filtre_desactive_ne_change_rien(self):
-        sig, funnel = self.scan(S2_FIB_FILTER=False, **self.OFF)
-        self.assertIsNotNone(sig)
-        self.assertEqual(sig["extra"]["fib"], "aucune")
-        self.assertFalse(any("Fibonacci" in x for x in sig["details"]))
-
-
-class FibonacciS3(unittest.TestCase):
-    """S3 : figures de continuation filtrées par la profondeur du repli ; TP3 des retournements plafonné à l'origine de la jambe précédente."""
-    FLAG = [(0, 100), (50, 100), (60, 90), (66, 92.5), (70, 90.8), (76, 92.9), (82, 91.4), (88, 93.1), (94, 91.4), (108, 85)]
-
-    def setUp(self):
-        self.cp = ChartPatterns("test_double_sommet_vente")                      # on réutilise ses séries synthétiques et son setUp
-        self.cp.setUp()
-        self.addCleanup(self.cp.doCleanups)
-
-    def test_jambe_precedente_continuation_et_retournement(self):
-        import patterns
-        cs = [candle(i, 95, 96, 94, 95) for i in range(30)]
-        cs[3] = candle(3, 99, 100, 98, 99)                                       # origine : plus haut avant la figure
-        cs[12] = candle(12, 91, 92, 90, 91)                                      # fin de jambe : plus bas jusqu'à la fin de la figure
-        d = {"s": 1, "start": 10, "end": 20, "kind": "continuation"}
-        self.assertEqual(patterns.prior_leg(S, d, cs), (100, 90))
-        cs2 = [candle(i, 95, 96, 94, 95) for i in range(30)]
-        cs2[4] = candle(4, 85, 86, 84, 85)                                       # origine d'une jambe haussière
-        self.assertEqual(patterns.prior_leg(S, dict(d, kind="retournement"), cs2), (84, None))
-        # espace miroir (figure haussière, s = -1) : les prix sont retournés
-        d2 = {"s": -1, "start": 10, "end": 20, "kind": "retournement"}
-        cs3 = [candle(i, 95, 96, 94, 95) for i in range(30)]
-        cs3[5] = candle(5, 99, 100, 98, 99)                                      # plus haut avant la figure = origine miroir (-100)
-        self.assertEqual(patterns.prior_leg(S, d2, cs3), (-100, None))
-
-    def test_plafond_tp3_du_retournement(self):
-        from unittest import mock
-        res = {}
-        for cap in (False, True):
-            with mock.patch.object(S, "S3_FIB_CAP_TP3", cap), mock.patch("reversal.detect", return_value=None):
-                sigs, _ = self.cp.replay(self.cp.DOUBLE_TOP)
-            self.assertIsNotNone(sigs)
-            res[cap] = sigs[0]
-        off, on = res[False], res[True]
-        self.assertGreater(on["tp3"], off["tp3"])                                # vente : l'objectif est plus proche (plafonné)
-        self.assertTrue(on["tp1"] > on["tp2"] > on["tp3"])                       # l'ordre des objectifs reste valide
-        self.assertEqual((on["tp1"], on["tp2"]), (off["tp1"], off["tp2"]))       # TP1 et TP2 ne bougent pas
-        self.assertTrue(any("TP3 plafonné" in x for x in on["details"]))
-        self.assertFalse(any("TP3 plafonné" in x for x in off["details"]))
-
-    def test_continuation_repli_leger_accepte(self):
-        from unittest import mock
-        with mock.patch("reversal.detect", return_value=None):
-            sigs, funnel = self.cp.replay(self.FLAG, start=330)
-        self.assertIsNotNone(sigs)
-        self.assertEqual(sigs[0]["extra"]["famille"], "continuation")
-        self.assertTrue(any("Repli de" in x and "Fibonacci" in x for x in sigs[0]["details"]))
-        self.assertEqual(funnel["S3_fib"], 0)
-
-    def test_continuation_repli_trop_profond_ecarte(self):
-        from unittest import mock
-        import patterns
-        # jambe précédente à peine plus haute que la figure : le repli reprend ~89 % de la jambe
-        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(93.5, 90.0)):
-            sigs, _ = self.cp.replay(self.FLAG, start=330)
-            self.assertIsNone(sigs)
-            m15 = self.cp.m15_series(self.FLAG)
-            seen = Counter()
-            for e in range(330, len(m15) - 1):
-                provide = lambda tf, force=False, _e=e: {"M15": m15[:_e + 1], "H1": self.cp.agg(m15, 4, _e), "H4": self.cp.agg(m15, 16, _e), "D1": None}[tf]
-                S.scan_s3(provide, m15[e]["epoch"] + 900, seen, 2, True, "market")
-            self.assertGreaterEqual(seen["S3_fib"], 1)
-            self.assertEqual(seen["S3_signal"], 0)
-        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(93.5, 90.0)), \
-                mock.patch.object(S, "S3_FIB_FILTER", False):
-            sigs, _ = self.cp.replay(self.FLAG, start=330)
-            self.assertIsNotNone(sigs)                                           # filtre désactivé : la figure repasse
-
-    def test_les_retournements_ne_sont_pas_filtres_par_la_profondeur(self):
-        from unittest import mock
-        import patterns
-        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(80.0, None)):
-            sigs, _ = self.cp.replay(self.cp.DOUBLE_TOP)
-        self.assertIsNotNone(sigs)
-
 
 # ==========================================================================
 # S4 CRT (Candle Range Theory) pur : C1 = bougie de référence, C2 balaye un côté et clôture dans le range, cassure M15 pendant C3
@@ -2690,7 +2477,7 @@ def crt_scenario(buy=False, c2_close=2007.0, c2_low=2005.2, c3_high=2007.5, t0=1
 
 
 class CrtS4(unittest.TestCase):
-    LOW_RR = dict(CRT_MIN_RR=0.5)       # le scénario donne ~0,9 R sur TP2 : on abaisse le ratio sauf dans le test dédié
+    LOW_RR = dict(CRT_PIVOT_BARS=16)     # réglage neutre : mock.patch.multiple exige au moins un argument
 
     def scan(self, kz=False, mode="market", funnel=None, **kw):
         from unittest import mock
@@ -2724,11 +2511,6 @@ class CrtS4(unittest.TestCase):
         self.assertLess(sig["sl"], 1987.0)
         self.assertLess(sig["sl"], sig["entry"])
 
-    def test_ratio_minimal_1_pour_3_sur_tp2(self):
-        sigs, f = self.scan(CRT_MIN_RR=3.0)
-        self.assertEqual(sigs, [])
-        self.assertEqual(f["CRT_rr"], 1)
-        self.assertEqual(f["CRT_signal"], 0)
 
     def test_c2_doit_cloturer_dans_le_range_de_c1(self):
         sigs, f = self.scan(c2_close=2011.0)                                 # clôture au-dessus du haut de C1 : cassure, pas un CRT
@@ -2740,9 +2522,6 @@ class CrtS4(unittest.TestCase):
         self.assertEqual(sigs, [])
         self.assertEqual(f["CRT_c2"], 0)
 
-    def test_range_de_c1_trop_petit_ou_trop_grand(self):
-        self.assertEqual(self.scan(CRT_MIN_RANGE_ATR=3.0)[0], [])            # C1 = ~2,2 ATR : sous le minimum de 3 ATR
-        self.assertEqual(self.scan(CRT_MAX_RANGE_ATR=1.5)[0], [])            # au-dessus du maximum de 1,5 ATR
 
     def test_extreme_de_c2_repris_annule_le_sweep(self):
         sigs, f = self.scan(c3_high=2014.0)                                  # le prix repasse au-dessus de l'extrême de C2 pendant C3
@@ -2759,13 +2538,9 @@ class CrtS4(unittest.TestCase):
             self.assertEqual(S.scan_crt(lambda tf, force=False: data.get(tf), now, funnel, 2, False, "market"), [])
         self.assertEqual(funnel["CRT_signal"], 0)
 
-    def test_sessions(self):
-        self.assertEqual(self.scan(kz=True, CRT_SESSIONS=("Inexistante",))[0], [])        # cassure hors des sessions autorisées
-        sigs, _ = self.scan(kz=False, CRT_SESSIONS=("Inexistante",))                      # actif 24/7 : pas de filtre de session
-        self.assertEqual(len(sigs), 1)
 
     def test_ordre_limite_sur_fvg_m15(self):
-        sigs, _ = self.scan(mode="limit", LIMIT_MAX_ATR=10.0)
+        sigs, _ = self.scan(mode="limit")
         self.assertEqual(len(sigs), 1)
         sig = sigs[0]
         self.assertEqual(sig["otype"], "SELL LIMIT")
@@ -2875,7 +2650,7 @@ class ConfirmationM5(unittest.TestCase):
         from unittest import mock
         p15, now = crt_scenario()
         data = {"M5": p15("M15"), "H1": p15("H1"), "H4": p15("H4"), "D1": None}          # pas de clé « M15 » : toute lecture de M15 plante
-        with mock.patch.multiple(S, S4_CONFIRM_TF="M5", CRT_MIN_RR=0.5):
+        with mock.patch.multiple(S, S4_CONFIRM_TF="M5"):
             sigs = S.scan_crt(lambda tf, force=False: data[tf], now, Counter(), 2, False, "market")
         self.assertEqual(len(sigs), 1)
         self.assertEqual(sigs[0]["ltf"], "M5")
@@ -2888,7 +2663,7 @@ class ConfirmationM5(unittest.TestCase):
         cp = ChartPatterns("test_double_sommet_vente")
         cp.setUp()
         self.addCleanup(cp.doCleanups)
-        m = cp.m15_series(FibonacciS3.FLAG)
+        m = cp.m15_series([(0, 100), (50, 100), (60, 90), (66, 92.5), (70, 90.8), (76, 92.9), (82, 91.4), (88, 93.1), (94, 91.4), (108, 85)])
         sig = None
         with mock.patch("reversal.detect", return_value=None), mock.patch.object(S, "S3_CONFIRM_TF", "M5"):
             for e in range(330, len(m) - 1):
@@ -2950,6 +2725,135 @@ class MeanReversionSupprimee(unittest.TestCase):
         for k in ("MR_regime", "MR_fib", "MR_signal"):
             self.assertNotIn(k, G.FUNNEL_ORDER)
             self.assertNotIn(k, G.FUNNEL_LABEL)
+
+
+class GardeFousS1(unittest.TestCase):
+    """Garde-fous propres à S1 Pullback : session, ratio, risque, volatilité, âge de tendance, ADX, tendance D1, obstacles H4/H1, progression."""
+
+    def scan(self, kz=False, mode="limit", funnel=None, prov=None, **patch):
+        from unittest import mock
+        provide, t = s5_provider(s5_series(4), 5998)
+        funnel = Counter() if funnel is None else funnel
+        with mock.patch.multiple(S, **patch) if patch else mock.patch.multiple(S, S5_FRESH=S.S5_FRESH):
+            out = S.scan_s5(prov(provide) if prov else provide, t + 60, funnel, 3, kz, mode)
+        return [x for x in (out or []) if x["extra"]["cascade"] == "H4>H1>M15"], funnel
+
+    def test_reference_passe(self):
+        out, f = self.scan()
+        self.assertEqual(len(out), 1)
+        self.assertEqual(f["S5_signal"], 1)
+        self.assertGreaterEqual(S.s5_rr(out[0]), S.S5_MIN_RR - 1e-9)             # ratio >= 1:3 sur TP2
+
+    def test_session_exigee_sur_les_marches_a_seance(self):
+        out, f = self.scan(kz=True)
+        self.assertEqual((out, f["S5_session"]), ([], 1))                          # le déclencheur du scénario est hors session
+        self.assertTrue(self.scan(kz=True, S5_SESSIONS=())[0])                    # liste vide : pas de contrainte
+        self.assertTrue(self.scan(kz=False)[0])                                   # marchés 24h/24 : jamais de contrainte de session
+
+    def test_ratio_minimal(self):
+        self.assertEqual(self.scan(S5_MIN_RR=50.0)[0], [])
+        self.assertTrue(self.scan(S5_MIN_RR=0.0)[0])
+
+    def test_plafond_de_risque_en_atr_h1(self):
+        out, f = self.scan(S5_RISK_CAP_H1=0.0001)
+        self.assertEqual((out, f["S5_risque"]), ([], 1))
+        self.assertTrue(self.scan(S5_RISK_CAP_H1=0)[0])
+
+    def test_regime_de_volatilite(self):
+        out, f = self.scan(S5_VOL_MIN=100.0)
+        self.assertEqual((out, f["S5_regime"]), ([], 0))
+        self.assertTrue(self.scan(S5_VOL_MIN=0, S5_VOL_MAX=0)[0])
+
+    def test_age_de_tendance(self):
+        self.assertEqual(self.scan(S5_TREND_AGES_OK=())[0], [])
+        self.assertTrue(self.scan(S5_TREND_AGES_OK=("naissante", "établie", "mûre"))[0])
+
+    def test_adx(self):
+        out, f = self.scan(S5_ADX_MIN=100.0)
+        self.assertEqual((out, f["S5_adx"]), ([], 0))
+        self.assertTrue(self.scan(S5_ADX_MIN=0)[0])
+        cs = [{"open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100.5 + i} for i in range(80)]
+        self.assertGreater(S.adx(cs), 90)
+        self.assertIsNone(S.adx(cs[:20]))
+
+    def test_tendance_d1_opposee(self):
+        from unittest import mock
+        import trend as TR
+        d1 = [{"epoch": 1_700_000_000 + i * 86400, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5} for i in range(12)]
+        prov = lambda p: (lambda tf, force=False: d1 if tf == "D1" else p(tf, force))
+        first, _ = self.scan()
+        d = first[0]["dir"]
+        other = "BUY" if d == "SELL" else "SELL"
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: {"dir": other}):
+            out, f = self.scan(prov=prov)
+        self.assertEqual((out, f["S5_d1"]), ([], 1))                               # D1 contre le trade : écarté
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: {"dir": d}):
+            self.assertTrue(self.scan(prov=prov)[0])                               # D1 dans le sens du trade
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: None):
+            self.assertTrue(self.scan(prov=prov)[0])                               # pas de tendance D1 claire : pas de blocage
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: {"dir": other}):
+            self.assertTrue(self.scan(prov=prov, S5_D1_ALIGN=False)[0])            # option désactivée
+
+    def test_progression_de_l_ordre_limite(self):
+        out, _ = self.scan(S5_MAX_PROGRESS=-1.0)
+        self.assertFalse(any(x["otype"].endswith("LIMIT") for x in out))           # le prix a déjà fait de la distance : plus d'ordre limite
+
+    # --- obstacles H4 / H1
+    @staticmethod
+    def sig(d="BUY", entry=100.0, sl=99.0, tps=(101.0, 102.0, 104.0)):
+        return {"dir": d, "entry": entry, "sl": sl, "tp1": tps[0], "tp2": tps[1], "tp3": tps[2], "details": [], "dec": 2}
+
+    def test_obstacles_entree_sur_un_niveau(self):
+        from unittest import mock
+        obs = {"sup": [(99.8, 99.8, "creux H1")], "res": [], "atr": 1.0}
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: obs):
+            self.assertIsNone(S.s5_obstacle_filter(self.sig(), None, 0))             # à 0,2 ATR d'un support
+            self.assertEqual(S.s5_obstacle_filter(self.sig(entry=103.0, sl=102.0, tps=(104, 105, 107)), None, 0), "S5_obst_entree")
+            self.assertIsNone(S.s5_obstacle_filter(self.sig(entry=103.0, sl=102.0, tps=(104, 105, 107)), None, 0) if not S.S5_OBST_ENTRY else None)
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: obs), mock.patch.object(S, "S5_OBST_ENTRY", False):
+            self.assertIsNone(S.s5_obstacle_filter(self.sig(entry=103.0, sl=102.0, tps=(104, 105, 107)), None, 0))
+
+    def test_obstacle_devant_l_objectif(self):
+        from unittest import mock
+        base = {"sup": [(100.0, 100.0, "creux H1")], "atr": 1.0}
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: dict(base, res=[(100.5, 100.5, "sommet H1")])), mock.patch.object(S, "S5_MIN_RR", 0):
+            self.assertEqual(S.s5_obstacle_filter(self.sig(), None, 0), "S5_obst_cible")   # obstacle à 0,5 R : écarté
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: dict(base, res=[(102.5, 102.5, "sommet H1")])), mock.patch.object(S, "S5_MIN_RR", 0):
+            sg = self.sig()
+            self.assertIsNone(S.s5_obstacle_filter(sg, None, 0))
+            self.assertAlmostEqual(sg["tp3"] if sg["tp3"] else sg["tp2"], 102.4)         # objectifs ramenés 0,1 ATR avant l'obstacle
+            self.assertLessEqual(max(t for t in (sg["tp1"], sg["tp2"], sg["tp3"]) if t), 102.4 + 1e-9)
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: dict(base, res=[(102.5, 102.5, "sommet H1")])):
+            self.assertEqual(S.s5_obstacle_filter(self.sig(), None, 0), "S5_obst_rr")    # ratio sous 1:3 après ramenage
+
+    def test_obstacles_vente_symetrique(self):
+        from unittest import mock
+        obs = {"res": [(100.2, 100.2, "sommet H1")], "sup": [(97.5, 97.5, "creux H1")], "atr": 1.0}
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: obs), mock.patch.object(S, "S5_MIN_RR", 0):
+            sg = self.sig("SELL", 100.0, 101.0, (99.0, 98.0, 96.0))
+            self.assertIsNone(S.s5_obstacle_filter(sg, None, 0))
+            self.assertGreaterEqual(min(t for t in (sg["tp1"], sg["tp2"], sg["tp3"]) if t), 97.6 - 1e-9)
+
+    def test_sans_donnees_h1_h4_le_signal_passe(self):
+        from unittest import mock
+        with mock.patch.object(S, "htf_obstacles", lambda pr, n: None):
+            self.assertIsNone(S.s5_obstacle_filter(self.sig(), None, 0))
+
+    def test_obstacle_applique_dans_le_scan(self):
+        from unittest import mock
+        none = {"sup": [], "res": [], "atr": 1.0}
+        with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n: none):
+            out, f = self.scan()
+        self.assertEqual((out, f["S5_obst_entree"]), ([], 1))
+        with mock.patch.object(S, "INTRADAY", False), mock.patch.object(S, "htf_obstacles", lambda pr, n: none):
+            self.assertTrue(self.scan()[0])                                         # hors intraday : pas de cadre H4/H1
+
+    def test_entonnoir_et_ttl(self):
+        for k in ("S5_regime", "S5_adx", "S5_d1", "S5_session", "S5_risque", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr"):
+            self.assertIn(k, G.FUNNEL_ORDER)
+            self.assertIn(k, G.FUNNEL_LABEL)
+        import tracker as T2
+        self.assertLessEqual(T2.intraday_ttl(S.LIMIT_TTL["S5"], 1_760_000_000), S.LIMIT_TTL["S5"])   # l'ordre limite n'excède jamais la fin de séance
 
 
 if __name__ == "__main__":

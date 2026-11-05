@@ -17,13 +17,12 @@ from smc import is_displacement, close_beyond
 
 def crt_pair(S, rc):
     """(sens, C1, C2, ATR) si les deux dernières bougies clôturées `rc` forment un CRT : C2 balaie UN côté de C1 et clôture dans
-    son range, et le range de C1 est raisonnable (entre CRT_MIN_RANGE_ATR et CRT_MAX_RANGE_ATR x ATR). Sinon None."""
+    son range. Sinon None."""
     if len(rc) < S.ATR_N + 3:
         return None
     c1, c2 = rc[-2], rc[-1]
     a = S.atr(rc)
-    rng = c1["high"] - c1["low"]
-    if a <= 0 or not (S.CRT_MIN_RANGE_ATR * a <= rng <= S.CRT_MAX_RANGE_ATR * a):
+    if a <= 0:
         return None
     up, dn = c2["high"] > c1["high"], c2["low"] < c1["low"]
     if up == dn:                                         # aucun sweep, ou bougie englobante (les deux côtés)
@@ -76,8 +75,6 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
     if not is_displacement(tc, S.body_avg(m15c[-21:-1]), S.DISP_MULT):
         return None
     sess = S.session_name(tc["epoch"])
-    if kz and sess not in S.CRT_SESSIONS:
-        return None
     lo1, hi1 = c1["low"], c1["high"]
     rng = hi1 - lo1
     mid = (hi1 + lo1) / 2
@@ -86,24 +83,14 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
     sl = ext_px + S.CRT_SL_BUF_ATR * a_m15 if d == "SELL" else ext_px - S.CRT_SL_BUF_ATR * a_m15
     poi = S.entry_zone(m15c, ext_i, trig - 1, d)
     otype, entry = S.pick_entry(d, price, poi[0] if poi else None, sl, mode)
-    if otype != d:
-        if abs(price - entry) > S.LIMIT_MAX_ATR * a_m15:
-            funnel["stale"] += 1
-            return None
-    elif S.is_late(d, price, tc["close"], a_m15):
-        funnel["stale"] += 1
-        return None
     tp1 = mid
     tp2 = hi1 if d == "BUY" else lo1
     tp3 = tp2 + sgn * S.CRT_TP3_EXT * rng
     if sgn * (tp1 - entry) <= 0:                         # le milieu de C1 est déjà atteint : la livraison a eu lieu
         funnel["stale"] += 1
         return None
-    lv = S.build_levels(d, entry, sl, a_m15, a_h1, S.CRT_RISK_CAP_H1, tps=[tp1, tp2, tp3])
+    lv = S.build_levels(d, entry, sl, a_m15, tps=[tp1, tp2, tp3])
     if lv is None:
-        return None
-    if abs(tp2 - entry) / lv["risk"] < S.CRT_MIN_RR:
-        funnel["CRT_rr"] += 1
         return None
     funnel["CRT_signal"] += 1
     side_hi = d == "SELL"
@@ -111,8 +98,6 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
                f"mèche {ext_px:.{dec}f}) et clôturé dans son range",
                f"✅ Range C1 {lo1:.{dec}f} - {hi1:.{dec}f} ({rng / a_ref:.1f} ATR {tf})",
                f"✅ CHoCH {cf_n} {'sous' if side_hi else 'au-dessus de'} {pivot:.{dec}f} après la clôture de C2"]
-    if kz:
-        details.append(f"✅ Killzone {sess}")
     details.append(f"🎯 Objectifs sur C1 : milieu {tp1:.{dec}f}, bord opposé {tp2:.{dec}f}, bord opposé + {S.CRT_TP3_EXT * 100:.0f} % du range {tp3:.{dec}f}")
     return S._signal(
         "S4", "CRT", d, entry, lv, m15, cf_n, f"{tf}|{c2['epoch']}", details,
@@ -124,8 +109,7 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
         extra={"ref": tf, "c1": f"{lo1:.{dec}f}-{hi1:.{dec}f}", "poi": poi[1] if otype != d else "marché", "tp": "range C1"},
         short=f"CRT {tf} · C2 clôturée dans C1 · CHoCH {cf_n}", trig=tc["epoch"], otype=otype, price_now=price,
         ttl=S.LIMIT_TTL["S4"] if otype != d else None,
-        entry_note=S.poi_note(poi, cf_n, dec) if otype != d else "",
-        rr_rule=[(2, S.CRT_MIN_RR)])
+        entry_note=S.poi_note(poi, cf_n, dec) if otype != d else "")
 
 
 def scan_crt(provide, now, funnel, dec=2, kz=True, mode="market"):

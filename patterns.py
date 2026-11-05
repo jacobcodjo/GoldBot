@@ -9,8 +9,6 @@ Toutes les figures sont écrites pour une cassure BAISSIÈRE ; les figures hauss
 """
 import os
 
-import fib as FB
-
 
 def _f(name, default):
     try:
@@ -32,10 +30,6 @@ POLE_ATR = _f("S6_POLE_ATR", 3.5)
 SL_BUF_ATR = 0.2                                 # marge du stop au-delà de la figure (en ATR du timeframe de la figure)
 TP_FRACTIONS = (0.5, 1.0, 1.5)                   # TP1/TP2/TP3 = ligne - fraction x hauteur de la figure (mât pour drapeau/fanion)
 S3_TFS = ("H1", "H4")                            # timeframes de détection des figures
-S3_RISK_CAP_ATR = _f("S6_RISK_CAP_ATR", 5.0)       # risque maximal : 5 x ATR du timeframe de la figure (H1 ou H4)
-S3_MIN_RR = _f("S6_MIN_RR", 1.0)                 # ratio minimal vers TP3
-S3_NOCONF_MIN_RR = _f("S6_NOCONF_MIN_RR", 1.5)   # figure de retournement SANS confluence avec l'alerte de retournement : ratio minimal vers TP3
-S3_CONF_RISK_FACTOR = _f("S6_CONF_RISK_FACTOR", 1.4)   # figure de retournement AVEC confluence : risque maximal multiplié par ce facteur
 S3_LIMIT_TTL = 10800                              # validité de l'ordre limite (retest de la ligne cassée), en secondes
 FLAT = 0.025                                      # pente "plate" (ATR par bougie)
 PAR = 0.02                                        # écart de pente max pour un canal
@@ -278,23 +272,6 @@ def candidates(h, l, c, flip):
     return out
 
 
-def prior_leg(S, d, csc):
-    """Jambe qui précède la figure d, en espace miroir « baissier » (la figure casse vers le bas ; s = -1 retourne les prix).
-    Continuation : le prix baissait avant la figure ; retourne (origine = plus haut avant la figure, fin = plus bas jusqu'à la fin de la figure).
-    Retournement : le prix montait ; retourne (origine = plus bas avant la figure, None). None si la fenêtre est vide.
-    Fenêtre de recherche : S.S3_FIB_LB bougies avant le début de la figure."""
-    s, a, b = d["s"], max(0, d["start"] - S.S3_FIB_LB), d["start"]
-    if b >= len(csc) or a > b:
-        return None
-    hm = [x["high"] if s == 1 else -x["low"] for x in csc]
-    lm = [x["low"] if s == 1 else -x["high"] for x in csc]
-    if d["kind"] == "continuation":
-        io = max(range(a, b + 1), key=lambda i: hm[i])
-        return hm[io], min(lm[io:d["end"] + 1])
-    io = min(range(a, b + 1), key=lambda i: lm[i])
-    return lm[io], None
-
-
 def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: None, cf_n="M15"):
     """Confirmation (M15 ou M5, `cf_n` ; m15c / m15 / a_m15 sont les bougies et l'ATR de ce timeframe) de la cassure de la figure d (détectée sur csc, bougies clôturées de `tf`) : une des 2 dernières bougies
     clôturées finit au-delà de la ligne, la précédente non. Retourne le signal ou None."""
@@ -316,54 +293,24 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
     if cur is None:
         return None
     funnel["S3_cassure"] += 1
-    # Fibonacci, figure de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe qui la précède.
-    # Plus profond, ce n'est plus une pause dans la tendance mais un début de retournement : la figure est écartée.
-    fib_note, leg = None, prior_leg(S, d, csc) if (S.S3_FIB_FILTER or S.S3_FIB_CAP_TP3) else None
-    if S.S3_FIB_FILTER and d["kind"] == "continuation" and leg and leg[0] - leg[1] >= 2 * d["atr"]:
-        depth = FB.pullback_depth(leg[0], leg[1], d["slref"])
-        if depth is not None and depth > S.S3_FIB_CONT_MAX:
-            funnel["S3_fib"] += 1
-            return None
-        if depth is not None:
-            fib_note = f"✅ Repli de {max(depth, 0) * 100:.0f} % de la jambe précédente (Fibonacci, maximum {S.S3_FIB_CONT_MAX * 100:.1f} %)"
     t_now = m15[-1]["epoch"] + S.GRAN[cf_n]
     price = m15[-1]["close"]
     sl = s * (d["slref"] + SL_BUF_ATR * d["atr"])
     ref = lvl(cur["epoch"] + S.GRAN[cf_n])
     tps = [s * (ref - m * d["height"]) for m in TP_FRACTIONS]
-    # Fibonacci, figure de retournement : la mesure de la figure ne doit pas dépasser l'origine de la jambe précédente (100 %) ; un
-    # retournement reprend rarement plus que la jambe entière lors du premier mouvement. TP3 est plafonné à cette origine tant qu'elle reste
-    # au-delà de TP2 ; sinon on n'y touche (le ratio minimal écarte alors les cas où l'objectif est trop proche).
-    if S.S3_FIB_CAP_TP3 and d["kind"] == "retournement" and leg and leg[0] is not None:
-        tp2_m, tp3_m = ref - TP_FRACTIONS[1] * d["height"], ref - TP_FRACTIONS[2] * d["height"]
-        if tp3_m < leg[0] < tp2_m:
-            tps[2] = s * leg[0]
-            fib_note = "ℹ️ TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)"
     zone = s * lvl(t_now)                          # retest de la ligne cassée
     otype, entry = S.pick_entry(dr, price, zone, sl, mode)
-    if otype != dr:
-        if abs(price - entry) > S.LIMIT_MAX_ATR * a_m15:
-            funnel["stale"] += 1
-            return None
-    elif S.is_late(dr, price, cur["close"], a_m15):
-        funnel["stale"] += 1
-        return None
-    # Confluence avec l'alerte de retournement (sweep sur niveau majeur + cassure de structure H1 contre une tendance H4 mûre) :
-    # une figure de retournement qui la rejoint a un risque admis plus large ; sans elle, un ratio plus exigeant.
-    conf, min_rr, cap = None, S3_MIN_RR, S3_RISK_CAP_ATR
+    # Confluence avec l'alerte de retournement (information seulement : elle ne change plus ni le risque admis ni le ratio minimal).
+    conf = None
     if d["kind"] == "retournement":
         rev = rev_fn()
         conf = bool(rev and rev["dir"] == dr)
-        if conf:
-            cap = S3_RISK_CAP_ATR * S3_CONF_RISK_FACTOR
-        else:
-            min_rr = S3_NOCONF_MIN_RR
-    lv = S.build_levels(dr, entry, sl, a_m15, d["atr"], cap, tps=tps)
+    lv = S.build_levels(dr, entry, sl, a_m15, tps=tps)
     if lv is None:
         return None
     gain = lambda t: ((t - entry) if dr == "BUY" else (entry - t)) / lv["risk"]
-    if gain(tps[0]) <= 0 or gain(tps[2]) < min_rr:
-        return None
+    if gain(tps[0]) <= 0:
+        return None                                # TP1 déjà dépassé : le mouvement a eu lieu
     funnel["S3_signal"] += 1
     fam = d["kind"]
     return S._signal(
@@ -371,10 +318,7 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
         [f"✅ Figure {tf} : {d['name']} ({fam})",
          f"✅ Cassure confirmée en {cf_n} ({'sous' if dr == 'SELL' else 'au-dessus de'} la ligne)",
          f"✅ Objectif = hauteur de la figure ({d['height']:.{dec}f})"]
-        + (["✅ Confluence : retournement possible (sweep sur niveau majeur + cassure de structure H1)"] if conf else [])
-        + ([f"ℹ️ Pas de confluence de retournement : ratio minimal {S3_NOCONF_MIN_RR:g} exigé"] if conf is False else [])
-        + ([fib_note] if fib_note else []),
-        rr_rule=[(3, min_rr)],
+        + (["✅ Confluence : retournement possible (sweep sur niveau majeur + cassure de structure H1)"] if conf else []),
         lines=[{"y": s * ref, "label": f"{d['name']} · cassure", "kind": "info"}],
         inval=sl, short=f"{d['name']} {tf} · {fam}", trig=cur["epoch"], otype=otype, price_now=price,
         ttl=S3_LIMIT_TTL if otype != dr else None,

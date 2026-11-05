@@ -38,7 +38,6 @@ Les actifs sont regroupés en classes (Or, Forex de session, Forex JPY, Forex ca
 | `gold.py` | Scan, client Deriv, alertes et commandes Telegram, suivi |
 | `strategies.py` | Stratégies S1 et S2 (S3 et S4 y sont enregistrées), indicateurs, sessions |
 | `crt.py` | Stratégie S4 CRT (Candle Range Theory) : C1/C2 en H4 ou H1, cassure M15 |
-| `fib.py` | Fibonacci : jambe de référence, profondeur, zones (filtres de S2 et S3) |
 | `patterns.py` | S3 : figures sur H1/H4, cassure confirmée en M15, confluence avec le retournement |
 | `reversal.py` | Retournement possible (message d'information) et ordre de retournement de S3 |
 | `trend.py` | Tendance et âge (D1, H4, H1) pour les récapitulatifs |
@@ -66,17 +65,18 @@ Les actifs sont regroupés en classes (Or, Forex de session, Forex JPY, Forex ca
 | `SYMBOLS` | Actifs suivis (défaut : les 28 ci-dessus) |
 | `SYMBOL_STRATEGIES` | Stratégies par actif, ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S3` |
 | `SYMBOL_STRATEGIES` | Stratégies imposées actif par actif (voir « Classes d'actifs »). Les anciennes variables `CLASS_FILTER`, `CLASS_STRATEGIES` et `TIER_MAX` sont ignorées |
-| `PULLBACK_ADX_MIN` | ADX H4 minimal de Pullback (0 = désactivé, défaut). L'ancienne variable `PULLBACK_VARIANT` est ignorée : la variante « classique » est supprimée |
 | `ENTRY_MODE` / `ENTRY_MODES` | `auto` (défaut : ordres limites), `market` ou `limit` ; par stratégie, ex. `S2:market,S3:market` |
 | `INTRADAY` | `0` désactive le cadre intraday ; `INTRADAY_RUNNERS=1` laisse courir le reste après TP1 en fin de séance ; `CRYPTO_INTRADAY=1` y soumet les cryptos |
-| `REVERSAL_ALERTS`, `REVERSAL_MIN_SIGNS` | Message d'information de retournement (défaut actif ; 2 signes sur 3) |
-| `S6_RISK_CAP_ATR`, `S6_MIN_RR`, `S6_NOCONF_MIN_RR`, `S6_TOL_ATR`, `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR` | Réglages de S3 : figures et retournement (les noms `S6_*` et `S7_*` sont conservés tels quels, même après la renumérotation des stratégies ; voir STRATEGIES.md) |
-| `S2_FIB_FILTER`, `S3_FIB_FILTER`, `S3_FIB_CAP_TP3` | Fibonacci des stratégies S2 et S3 (défaut actif ; `0` pour désactiver ; voir STRATEGIES.md, « Fibonacci par stratégie ») |
+| `REVERSAL_ALERTS` | Message d'information de retournement (défaut actif) |
+| `S6_TOL_ATR` | Réglage de S3 : figures et retournement (les noms `S6_*` et `S7_*` sont conservés tels quels, même après la renumérotation des stratégies ; voir STRATEGIES.md) |
+| `S1_MIN_RR`, `S1_RISK_CAP_H1`, `S1_ADX_MIN`, `S1_D1_ALIGN`, `S1_OBST_ENTRY` | Garde-fous de S1 Pullback : ratio minimal sur TP2 (défaut 3 ; 0 = désactivé), risque maximal en ATR H1 (défaut 2 ; 0 = aucun), ADX minimal du timeframe de tendance (défaut 20 ; 0 = désactivé), pas de trade contre le D1 (défaut actif), entrée sur un niveau H4/H1 en intraday (défaut actif) ; voir STRATEGIES.md |
+| `S2_BIAS_FILTER`, `S2_HTF_ZONE`, `S2_FIB_FILTER` | Garde-fous de S2 Sweep + CHoCH : sens du biais de structure H4/H1, sweep sur une zone H4/H1, entrée du bon côté de l'équilibre Fibonacci (défaut actifs ; `0` désactive) |
+| `S2_MIN_RR`, `S2_RISK_CAP_H1`, `S2_MAX_AGE_MIN`, `S2_VOL_MIN_RATIO`, `S2_SWEEP_MIN_ATR` | Garde-fous de S2 : ratio minimal sur TP2 (défaut : celui de S1, 3), risque maximal en ATR H1 (1,5), âge maximal du signal en minutes (20), ATR H1 minimal par rapport à sa médiane (0,5), dépassement minimal de la mèche du sweep en ATR M15 (0,1) ; `0` désactive |
 | `S1_CONFIRM_TF`, `S2_CONFIRM_TF`, `S3_CONFIRM_TF`, `S4_CONFIRM_TF` | Timeframe de confirmation / d'entrée de chaque stratégie : `M15` ou `M5` (vide = historique : M15, sauf S2 qui suit `INTRADAY`). Voir STRATEGIES.md, « Confirmation en M15 ou en M5 » |
 | `ONE_TRADE_PER_SIDE` | `1` (défaut) : un seul trade par actif et par sens, toutes stratégies confondues ; `0` : un par stratégie |
 | `CONFLUENCE_MIN` | Fenêtre de confluence entre stratégies, en minutes (défaut 60, `0` désactive) |
 | `SPREAD_PCT`, `SPREAD_TABLE` | Spread supposé en % du prix : global, ou par actif ex. `frxXAUUSD=0.02,cryBTCUSD=0.04` (prioritaire) |
-| `MAX_AGE_MIN` | Âge maximal d'un signal (défaut 20) ; `WEEKEND_EXIT=0` désactive la clôture du vendredi |
+| `WEEKEND_EXIT` | `0` désactive la clôture du vendredi |
 | `ALERT_FORMAT`, `CHARTS` | Format du texte (voir plus bas) ; `CHARTS=0` retire le graphique |
 | `ALERT_FUSEAU`, `ALERT_FUSEAU_NOM` | Fuseau affiché (défaut `Africa/Porto-Novo`, heure du Bénin ; `none` pour ne plus afficher d'heure) |
 | `RECAP_FORMAT`, `RECAP_HEURE`, `RECAP_FUSEAU`, `SYNTH_RECAP_HEURES` | Récapitulatifs de tendance (voir plus bas) |
@@ -132,7 +132,7 @@ Contexte et obstacles majeurs en H4/H1, confirmation en M15, trade de la journé
 - **Spread** retiré de chaque trade en direct comme au backtest (« spread inclus »). Remplace les estimations par ceux de ton courtier ; compare quelques alertes à ta plateforme (l'écart de prix avec ton courtier n'est pas mesurable ici).
 - **Gaps** : si une bougie ouvre au-delà du stop, clôture à l'ouverture (perte possible supérieure à 1 R).
 - **Week-end** : trades or et forex ouverts le vendredi à 16h30 New York clôturés, ordres en attente annulés, aucune alerte le week-end. Cryptos et indices non concernés.
-- **Retard** : chaque alerte indique son âge ; au-delà de `MAX_AGE_MIN` ou si le prix a trop fui, elle est écartée. **Volatilité** : signaux écartés si l'ATR H1 tombe sous la moitié de sa médiane récente (`VOL_MIN_RATIO`).
+- **Retard** : chaque alerte indique son âge (plus de limite d'âge ni de filtre de volatilité : le filtrage est à reconstruire, voir STRATEGIES.md).
 - **Calendrier économique** indisponible plus de 6 h : message d'alerte, puis message de retour ; les annonces ne bloquent plus les alertes entre-temps.
 - **Hypothèses prudentes du suivi et du backtest** : un ordre limite n'est rempli que si le prix traverse le niveau d'au moins un demi-spread ; dans la bougie du fill, aucun objectif n'est compté (le stop, si) ; TP1 puis retour à l'entrée = break-even.
 - **Bilan** : `/bilan` (30 jours, par stratégie et par actif, réel vs simulé avec `/r`, RR visé contre R obtenu). Le bilan hebdomadaire est envoyé automatiquement (total 7 jours, une ligne par stratégie, signaux écartés, « Validation : N trades sur ~100 pour juger »).

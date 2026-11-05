@@ -45,12 +45,12 @@ GAP_ALERT_MIN = 30         # alerte si le bot reprend après plus de 30 min sans
 FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée Deriv
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
-FUNNEL_ORDER = ["data", "S2_niveau", "S2_sweep",
-                "S2_biais", "S2_zone", "S2_fib", "S2_signal", "S3_figure", "S3_cassure", "S3_fib", "S3_signal", "S3_retournement", "CRT_c2", "CRT_choch", "CRT_rr", "CRT_signal", "S5_regime", "S5_tendance", "S5_adx", "S5_impulsion", "S5_signal", "signal", "vol", "stale", "obst_entree", "obst_cible", "obst_rr", "blackout", "dedupe", "risk", "alert"]
+FUNNEL_ORDER = ["data", "S2_niveau", "S2_vol", "S2_sweep", "S2_biais", "S2_zone", "S2_stale", "S2_risque", "S2_fib", "S2_rr", "S2_age", "S2_obst_entree", "S2_obst_cible", "S2_obst_rr",
+                "S2_signal", "S3_figure", "S3_cassure", "S3_signal", "S3_retournement", "CRT_c2", "CRT_choch", "CRT_signal", "S5_regime", "S5_tendance", "S5_adx", "S5_d1", "S5_impulsion", "S5_session", "S5_risque", "S5_signal", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr", "signal", "stale", "blackout", "dedupe", "risk", "alert"]
 FUNNEL_LABEL = {"data": "données", "S2_niveau": "Sweep + CHoCH : niveaux",
-                "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4/H1", "S2_zone": "sur zone H1/H4", "S2_fib": "écartés S2 (mauvais côté Fibonacci)", "S2_signal": "signal Sweep + CHoCH", "S3_figure": "Figures & Retournement : figures H1/H4", "S3_cassure": "cassure confirmée M15", "S3_fib": "écartés S3 (repli trop profond)", "CRT_c2": "CRT : C2 balaye C1 et clôture dedans", "CRT_choch": "CRT : cassure M15 après C2", "CRT_rr": "écartés CRT (ratio sous 1 pour 3)", "CRT_signal": "signal CRT", "S3_signal": "signal Figures & Retournement", "S3_retournement": "retournements détectés (ex-S7)",
-                "S5_regime": "Pullback structure : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_adx": "ADX H4 suffisant", "S5_impulsion": "impulsion + Fibonacci", "S5_signal": "signal Pullback structure",
-                "signal": "signaux valides", "vol": "écartés (volatilité faible)", "stale": "écartés (entrée tardive)", "obst_entree": "écartés (hors niveau H4/H1)", "obst_cible": "écartés (obstacle avant l'objectif)", "obst_rr": "écartés (ratio sous le minimum après obstacle)", "blackout": "bloqués (news/horaire)",
+                "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4/H1", "S2_zone": "sur zone H1/H4", "S2_vol": "écartés S2 (marché trop calme)", "S2_stale": "écartés S2 (entrée trop loin ou trop tardive)", "S2_risque": "écartés S2 (stop trop large)", "S2_fib": "écartés S2 (mauvais côté Fibonacci)", "S2_rr": "écartés S2 (ratio sous le minimum)", "S2_age": "écartés S2 (déclencheur trop ancien)", "S2_obst_entree": "écartés S2 (hors niveau H4/H1)", "S2_obst_cible": "écartés S2 (obstacle devant l'objectif)", "S2_obst_rr": "écartés S2 (ratio sous le minimum après obstacle)", "S2_signal": "signal Sweep + CHoCH", "S3_figure": "Figures & Retournement : figures H1/H4", "S3_cassure": "cassure confirmée M15", "CRT_c2": "CRT : C2 balaye C1 et clôture dedans", "CRT_choch": "CRT : cassure M15 après C2", "CRT_signal": "signal CRT", "S3_signal": "signal Figures & Retournement", "S3_retournement": "retournements détectés (ex-S7)",
+                "S5_regime": "Pullback : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_adx": "ADX suffisant", "S5_d1": "écartés (contre la tendance D1)", "S5_impulsion": "impulsion + Fibonacci", "S5_session": "écartés (hors session)", "S5_risque": "écartés (stop trop large)", "S5_signal": "signal Pullback", "S5_obst_entree": "écartés (hors niveau H4/H1)", "S5_obst_cible": "écartés (obstacle devant l'objectif)", "S5_obst_rr": "écartés (ratio sous le minimum après obstacle)",
+                "signal": "signaux valides", "stale": "écartés (objectif déjà atteint)", "blackout": "bloqués (news/horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 
 
@@ -318,7 +318,7 @@ def _short(label, s):
 
 
 REPORT_VALID_TRADES = 100
-REPORT_FILTERS = (("stale", "tardifs"), ("obst_entree", "hors niveau H4/H1"), ("obst_cible", "obstacle devant l'objectif"), ("obst_rr", "ratio sous le minimum après obstacle"), ("vol", "volatilité faible"), ("blackout", "news/horaire"),
+REPORT_FILTERS = (("stale", "objectif déjà atteint"), ("blackout", "news/horaire"),
                   ("dedupe", "doublons"), ("risk", "risque"))
 
 

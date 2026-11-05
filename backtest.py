@@ -9,7 +9,7 @@ Outils de validation (pour ne pas se fier à un seul chiffre) :
   - rapport par stratégie, par sens, par session, par alignement H4 ;
   - séparation en deux périodes (--split 0.6) : les mêmes règles doivent tenir sur la seconde ;
   - intervalle de confiance à 95 % de l'espérance par trade (bootstrap) et verdict prudent ;
-  - grille de réglages (--set strategies.S5_ADX_MIN=15,18,22) avec le résultat de chaque période
+  - grille de réglages (--set strategies.S5_IMPULSE_ATR=1.5,2,2.5) avec le résultat de chaque période
     pour repérer un réglage qui ne marche que sur une seule période (sur-ajustement).
 
 Exemples :
@@ -18,14 +18,14 @@ Exemples :
   python backtest.py --sym all --days 120 --split 0.6                (tous les actifs suivis)
   python backtest.py --sym synth --days 120 --split 0.6              (10 indices Volatility ; classes : or, forex, forex_jpy, crypto…)
   python backtest.py --days 180 --only S2,S3
-  python backtest.py --days 120 --set strategies.S5_ADX_MIN=15,18,22 --set tracker.STRUCT_EXIT=true,false
+  python backtest.py --days 120 --set strategies.S5_IMPULSE_ATR=1.5,2,2.5 --set tracker.STRUCT_EXIT=true,false
   python backtest.py --source csv --file xauusd_m5.csv
   python backtest.py --source sim --days 60          (marche aléatoire : contrôle de bon sens)
 Un CSV contient les colonnes epoch,open,high,low,close (bougies M5, epoch en secondes, ordre croissant).
 Entrées : ordres limites au retest d'une zone (ENTRY_MODE=auto) ou au marché (market). Pour comparer :
   python backtest.py --sym all --split 0.6 --set gold.ENTRY_MODE=market,limit
 Réalisme : spread retiré de chaque trade, stop exécuté à l'ouverture en cas de gap, trades forex/or clôturés le
-vendredi à 16h30 New York, signaux trop vieux (MAX_AGE_MIN) et marchés trop calmes (VOL_MIN_RATIO) écartés.
+vendredi à 16h30 New York.
 Limites : spread constant (défaut par actif : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 %), pas de glissement, calendrier
 économique non appliqué (rollover, vendredi soir et NFP le sont), un fichier CSV = un actif.
 """

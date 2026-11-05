@@ -52,7 +52,6 @@ SPREAD_DEFAULT = {"frxXAUUSD": 0.015, "cryBTCUSD": 0.05, "cryETHUSD": 0.05,   # 
                   "frxEURCAD": 0.010, "frxEURAUD": 0.010, "frxGBPJPY": 0.012, "frxGBPAUD": 0.014,
                   **{sym: 0.02 for sym in SYNTHETICS}}   # indices Volatility : estimation, à ajuster (SPREAD_PCT) selon ton compte
 SPREAD_OTHER = 0.006                      # majeures contre USD
-MAX_AGE_MIN = float(os.getenv("MAX_AGE_MIN") or 20)   # signal plus vieux (clôture du déclencheur) : écarté
 
 
 def spread_table():
@@ -1023,13 +1022,13 @@ def synth_recap_slot(g, now):
 
 
 def synth_block(api, cache, sym, now):
-    """Bloc d'un indice : tendance D1/H4/H1, biais utilisé par S2, extrêmes de la bougie daily en cours. None si pas de données."""
+    """Bloc d'un indice : tendance D1/H4/H1, extrêmes de la bougie daily en cours. None si pas de données."""
     cs = {tf: tf_candles(api, cache, sym, tf) or [] for tf in TR.TIMEFRAMES}
     if not cs["H1"] or now - cs["H1"][-1]["epoch"] > RECAP_STALE:
         return None
     dec = dec_of(sym)
     infos = {tf: TR.trend_info(cs[tf], tf) for tf in TR.TIMEFRAMES}
-    if RECAP_FORMAT == "compact":                       # une ligne : tendances, biais S2, extrêmes de la bougie daily
+    if RECAP_FORMAT == "compact":                       # une ligne : tendances, extrêmes de la bougie daily
         line = TR.symbol_line(name_of(sym), infos, now, dec)
         if S.S2_BIAS_FILTER:
             bias, tf = S.s2_bias(cs["H4"], cs["H1"])
@@ -1119,7 +1118,6 @@ def scan(sym, provide, now, sent, funnel, news=()):
     only = [x for x in ENABLED if x in strategies_for(sym)]
     if not only:
         return []                      # aucune stratégie active pour cet actif (SYMBOL_STRATEGIES)
-    vol = None
     for sig in S.scan_all(provide, now, funnel, only=only, dec=dec, kz=not is_247(sym), modes=entry_modes()):
         sig.update(sym=sym, name=name_of(sym), dec=dec, key=f"{sym}|{sig['key']}")
         if sig["key"] in sent:
@@ -1127,29 +1125,13 @@ def scan(sym, provide, now, sent, funnel, news=()):
         sig["ts"] = now
         add_class(sig, sym)
         sig["age_min"] = max(0.0, (now - sig["trig_close"]) / 60) if sig.get("trig_close") else None
-        if sig["age_min"] is not None and sig["age_min"] > MAX_AGE_MIN:
-            funnel["stale"] += 1       # alerte trop tardive (retard du cron ou du workflow)
-            sent[sig["key"]] = int(now)
-            continue
-        if S.VOL_MIN_RATIO:
-            if vol is None:
-                vol = S.vol_ratio((provide("H1") or [])[:-1])
-            if vol < S.VOL_MIN_RATIO:
-                funnel["vol"] += 1      # refus transitoire : le setup est réexaminé au scan suivant (jusqu'à MAX_AGE_MIN)
-                continue
-        if S.INTRADAY:
-            why = S.obstacle_filter(sig, provide, now)
-            if why:
-                funnel[why] += 1       # entrée hors niveau H4/H1, ou obstacle trop proche devant l'objectif (transitoire)
-                continue
-        sig.pop("rr_rule", None)       # règle de ratio minimal : utilisée par le filtre d'obstacles seulement
         infos = {tf: TR.trend_info(provide(tf) or [], tf) for tf in TR.ALERT_TFS}
         tl, te = TR.alert_lines(sig["dir"], infos, now)
         sig.update(trend_lines=tl, trend_short=TR.alert_short(sig["dir"], infos, now))
         sig["extra"] = dict(sig["extra"], **te)
         why = G.blackout(sym, now, news)
         if why:
-            funnel["blackout"] += 1      # transitoire : si la fenêtre se termine avant MAX_AGE_MIN, le setup est encore valable
+            funnel["blackout"] += 1
             if sig["key"] not in _LOGGED_BLOCKS:         # un seul message de journal par setup bloqué
                 _LOGGED_BLOCKS.add(sig["key"])
                 print(f"Alerte bloquée {sig['name']} {sig['label']} {sig['dir']} : {why}")

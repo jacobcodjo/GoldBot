@@ -6,7 +6,7 @@ Une tendance H4 mûre peut se retourner. On n'alerte que lorsque plusieurs élé
   2. sweep : une bougie H1 prend un sommet (creux) récent puis referme de l'autre côté ;
   3. ce sommet (creux) se trouve sur un niveau majeur : sommet / creux H4, zone H4, plus haut / bas de la veille ;
   4. cassure de structure H1 contre la tendance : clôture sous le dernier creux (au-dessus du dernier sommet) formé avant le sweep ;
-  5. signes d'essoufflement (au moins REVERSAL_MIN_SIGNS sur 3) : divergence RSI H1, bougies qui rétrécissent, mèche de rejet.
+  5. signes d'essoufflement (affichés s'il y en a ; plus exigés) : divergence RSI H1, bougies qui rétrécissent, mèche de rejet.
 
 Le raisonnement est écrit pour une tendance haussière ; une tendance baissière est traitée en miroir (prix inversés).
 """
@@ -16,10 +16,6 @@ import strategies as S
 import trend as TR
 
 ENABLED = (os.getenv("REVERSAL_ALERTS") or "1").strip() != "0"      # REVERSAL_ALERTS=0 : désactive l'alerte
-try:
-    MIN_SIGNS = int(os.getenv("REVERSAL_MIN_SIGNS") or 2)             # signes d'essoufflement exigés (sur 3)
-except ValueError:
-    MIN_SIGNS = 2
 AGES = ("mûre",)                  # âges de tendance H4 qui peuvent s'essouffler
 REQUIRE_LEVEL = True              # le sommet (creux) pris doit être sur un niveau majeur H4 / veille
 SWEEP_BARS = 6                    # le sweep date de moins de 6 bougies H1
@@ -129,8 +125,6 @@ def detect(provide, now):
         signs.append("bougies qui rétrécissent")
     if rejection_wick(h[found["ext_i"]]) or rejection_wick(h[found["sweep_i"]]):
         signs.append("mèche de rejet")
-    if len(signs) < MIN_SIGNS:
-        return None
     ext_epoch = h[found["ext_i"]]["epoch"]
     d = "SELL" if up else "BUY"
     return {"dir": d, "trend_dir": t4["dir"], "age": t4["age"], "legs": t4["legs"], "level": (lv_px, level_name or "niveau"),
@@ -147,7 +141,7 @@ def message(rev, name, dec, clock=""):
              f"Contre une tendance H4 {word[rev['trend_dir']]} mûre ({rev['legs']} jambes), encore intacte",
              f"✅ Sweep : {taken} H1 {rev['level'][0]:.{dec}f} ({rev['level'][1]}) pris puis rejeté (extrême {rev['ext']:.{dec}f})",
              f"✅ Cassure de structure H1 : clôture {broke} ({rev['pivot']:.{dec}f})",
-             "✅ Essoufflement : " + " · ".join(rev["signs"]),
+             *(["✅ Essoufflement : " + " · ".join(rev["signs"])] if rev["signs"] else []),
              f"Invalidation : retour {side} de {rev['ext']:.{dec}f}",
              "ℹ️ Information : aucun ordre, aucun suivi. Attendre la cassure du H4 pour confirmer." + (f" {clock}" if clock else "")]
     return "\n".join(lines)
@@ -161,9 +155,7 @@ def _f(name, default):
         return float(default)
 
 
-S7_RISK_CAP_ATR = _f("S7_RISK_CAP_ATR", 3.0)       # risque maximal : 3 x ATR H1 (stop au-delà de l'extrême du sweep) ; nom hérité de l'ancienne S7
 S7_SL_BUF_ATR = 0.2                                 # marge du stop au-delà de l'extrême du sweep (en ATR H1)
-S7_ENTRY_MAX_ATR = _f("S7_ENTRY_MAX_ATR", 1.0)      # retest du creux (sommet) cassé à plus de 1 ATR H1 du prix : signal écarté
 S7_LIMIT_TTL = 7200                                 # validité de l'ordre limite, en secondes
 STRAT, LABEL = "S3", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S3 (STRAT_ALIAS : S7 -> S3)
 
@@ -187,14 +179,7 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     d, price = rev["dir"], m15[-1]["close"]
     sl = rev["ext"] + (S7_SL_BUF_ATR * a_h1 if d == "SELL" else -S7_SL_BUF_ATR * a_h1)
     otype, entry = S.pick_entry(d, price, rev["pivot"], sl, mode)
-    if otype != d:
-        if abs(price - entry) > S7_ENTRY_MAX_ATR * a_h1:
-            funnel["stale"] += 1
-            return None
-    elif S.is_late(d, price, rev["pivot"], a_m15):
-        funnel["stale"] += 1
-        return None
-    lv = S.build_levels(d, entry, sl, a_m15, a_h1, S7_RISK_CAP_ATR)
+    lv = S.build_levels(d, entry, sl, a_m15)
     if lv is None:
         return None
     # Objectifs sur la liquidité opposée intacte (comme S2) : TP1 = 1 R, TP2 = première liquidité entre 2 R et 6 R (sinon 2 R),
@@ -215,7 +200,7 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
         [f"✅ Tendance H4 {word} mûre ({rev['legs']} jambes), encore intacte",
          f"✅ Sweep : {taken} H1 {rev['level'][0]:.{dec}f} ({rev['level'][1]}) pris puis rejeté",
          f"✅ Cassure de structure H1 : clôture {broke} ({rev['pivot']:.{dec}f})",
-         "✅ Essoufflement : " + " · ".join(rev["signs"]),
+         *(["✅ Essoufflement : " + " · ".join(rev["signs"])] if rev["signs"] else []),
          "⚠️ Contre la tendance H4 : taille réduite conseillée"] + tp_lines,
         lines=[{"y": rev["level"][0], "label": f"Sweep · {rev['level'][1]}", "kind": "sweep"},
                {"y": rev["pivot"], "label": "Cassure de structure H1", "kind": "info"}],
