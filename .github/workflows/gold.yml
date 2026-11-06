@@ -65,6 +65,19 @@ jobs:
           S2_MAX_AGE_MIN: ${{ vars.S2_MAX_AGE_MIN }}
           S2_VOL_MIN_RATIO: ${{ vars.S2_VOL_MIN_RATIO }}
           S2_SWEEP_MIN_ATR: ${{ vars.S2_SWEEP_MIN_ATR }}
+          S3_FIB_FILTER: ${{ vars.S3_FIB_FILTER }}
+          S3_FIB_CAP_TP3: ${{ vars.S3_FIB_CAP_TP3 }}
+          S3_CONTEXT_ALIGN: ${{ vars.S3_CONTEXT_ALIGN }}
+          S3_VOL_MIN_RATIO: ${{ vars.S3_VOL_MIN_RATIO }}
+          S3_MAX_AGE_MIN: ${{ vars.S3_MAX_AGE_MIN }}
+          S3_REV_MIN_RR: ${{ vars.S3_REV_MIN_RR }}
+          S6_RISK_CAP_ATR: ${{ vars.S6_RISK_CAP_ATR }}
+          S6_MIN_RR: ${{ vars.S6_MIN_RR }}
+          S6_NOCONF_MIN_RR: ${{ vars.S6_NOCONF_MIN_RR }}
+          S6_CONF_RISK_FACTOR: ${{ vars.S6_CONF_RISK_FACTOR }}
+          S7_RISK_CAP_ATR: ${{ vars.S7_RISK_CAP_ATR }}
+          S7_ENTRY_MAX_ATR: ${{ vars.S7_ENTRY_MAX_ATR }}
+          REVERSAL_MIN_SIGNS: ${{ vars.REVERSAL_MIN_SIGNS }}
           S2_CONFIRM_TF: ${{ vars.S2_CONFIRM_TF }}
           S3_CONFIRM_TF: ${{ vars.S3_CONFIRM_TF }}
           S4_CONFIRM_TF: ${{ vars.S4_CONFIRM_TF }}
