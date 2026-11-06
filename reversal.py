@@ -6,7 +6,7 @@ Une tendance H4 mûre peut se retourner. On n'alerte que lorsque plusieurs élé
   2. sweep : une bougie H1 prend un sommet (creux) récent puis referme de l'autre côté ;
   3. ce sommet (creux) se trouve sur un niveau majeur : sommet / creux H4, zone H4, plus haut / bas de la veille ;
   4. cassure de structure H1 contre la tendance : clôture sous le dernier creux (au-dessus du dernier sommet) formé avant le sweep ;
-  5. signes d'essoufflement (affichés s'il y en a ; plus exigés) : divergence RSI H1, bougies qui rétrécissent, mèche de rejet.
+  5. signes d'essoufflement (au moins REVERSAL_MIN_SIGNS sur 3) : divergence RSI H1, bougies qui rétrécissent, mèche de rejet.
 
 Le raisonnement est écrit pour une tendance haussière ; une tendance baissière est traitée en miroir (prix inversés).
 """
@@ -125,6 +125,8 @@ def detect(provide, now):
         signs.append("bougies qui rétrécissent")
     if rejection_wick(h[found["ext_i"]]) or rejection_wick(h[found["sweep_i"]]):
         signs.append("mèche de rejet")
+    if len(signs) < MIN_SIGNS:
+        return None                                   # pas assez de signes d'essoufflement
     ext_epoch = h[found["ext_i"]]["epoch"]
     d = "SELL" if up else "BUY"
     return {"dir": d, "trend_dir": t4["dir"], "age": t4["age"], "legs": t4["legs"], "level": (lv_px, level_name or "niveau"),
@@ -155,6 +157,22 @@ def _f(name, default):
         return float(default)
 
 
+try:
+    MIN_SIGNS = int(os.getenv("REVERSAL_MIN_SIGNS") or 2)             # signes d'essoufflement exigés (sur 3)
+except ValueError:
+    MIN_SIGNS = 2
+
+
+def _num(name, default):
+    try:
+        return float(os.getenv(name) or default)
+    except ValueError:
+        return float(default)
+
+
+S7_RISK_CAP_ATR = _num("S7_RISK_CAP_ATR", 3.0)       # risque maximal : 3 x ATR H1
+S7_ENTRY_MAX_ATR = _num("S7_ENTRY_MAX_ATR", 1.0)     # retest du niveau cassé à plus de 1 ATR H1 du prix : signal écarté
+S3_REV_MIN_RR = _num("S3_REV_MIN_RR", S.S5_MIN_RR)   # ratio minimal sur TP1 : le même que S1 et S2 par défaut (0 = désactivé)
 S7_SL_BUF_ATR = 0.2                                 # marge du stop au-delà de l'extrême du sweep (en ATR H1)
 S7_LIMIT_TTL = 7200                                 # validité de l'ordre limite, en secondes
 STRAT, LABEL = "S3", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S3 (STRAT_ALIAS : S7 -> S3)
@@ -179,18 +197,31 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     d, price = rev["dir"], m15[-1]["close"]
     sl = rev["ext"] + (S7_SL_BUF_ATR * a_h1 if d == "SELL" else -S7_SL_BUF_ATR * a_h1)
     otype, entry = S.pick_entry(d, price, rev["pivot"], sl, mode)
+    if otype != d:
+        if abs(price - entry) > S7_ENTRY_MAX_ATR * a_h1:
+            funnel["S3_stale"] += 1
+            return None                               # retest trop loin du prix
+    elif S.is_late(d, price, rev["pivot"], a_m15, S.S3_CHASE_ATR):
+        funnel["S3_stale"] += 1
+        return None                                   # le prix a déjà fui après la cassure
     lv = S.build_levels(d, entry, sl, a_m15)
     if lv is None:
         return None
-    # Objectifs sur la liquidité opposée intacte (comme S2) : TP1 = 1 R, TP2 = première liquidité entre 2 R et 6 R (sinon 2 R),
-    # TP3 = liquidité suivante à 3 R ou plus (sinon 3 R). Un retournement vise la structure, pas des multiples génériques.
+    if S7_RISK_CAP_ATR and lv["risk"] > S7_RISK_CAP_ATR * a_h1:
+        funnel["S3_risque"] += 1
+        return None                                   # stop trop large pour la volatilité H1
+    # Objectifs sur la liquidité opposée intacte (comme S2) : TP1 = première liquidité entre 1 R et 6 R, TP2 / TP3 = les suivantes
+    # (sinon +1 R) ; sans liquidité, TP1 au ratio minimal (3 R) puis +1 R / +2 R. Un retournement vise la structure, pas des multiples génériques.
     levels = S.liquidity_levels(h1[:-1], provide("D1"), m15c, now, a_h1) or []
     targets = S.liquidity_targets(levels, m15c, d, entry, lv["risk"], a_m15)
-    lv["tp"], t2, t3 = S.s2_tps(d, entry, lv["risk"], targets)
+    lv["tp"], srcs = S.s2_tps(d, entry, lv["risk"], targets, S3_REV_MIN_RR)
     tp_lines = [f"🎯 {lab} sur la liquidité {t[0]} ({px_tp:.{dec}f}, {abs(px_tp - entry) / lv['risk']:.1f} R)"
-                for lab, t, px_tp in (("TP2", t2, lv["tp"][1]), ("TP3", t3, lv["tp"][2])) if t]
+                for lab, t, px_tp in zip(("TP1", "TP2", "TP3"), srcs, lv["tp"]) if t]
     if not tp_lines:
-        tp_lines = ["🎯 Pas de liquidité opposée intacte à 2-6 R : TP2 / TP3 à 2 R / 3 R"]
+        tp_lines = [f"🎯 Pas de liquidité opposée intacte à 1-6 R : TP1 au ratio minimal ({S3_REV_MIN_RR or S.S2_FALLBACK_R:g} R), TP2 / TP3 à +1 R / +2 R"]
+    if S3_REV_MIN_RR and abs(lv["tp"][0] - entry) / lv["risk"] < S3_REV_MIN_RR:
+        funnel["S3_rr"] += 1
+        return None                                   # ratio gain/risque sur TP1 (première liquidité) sous le minimum
     funnel["S3_signal"] += 1
     word = {"BUY": "haussière", "SELL": "baissière"}[rev["trend_dir"]]
     taken = "sommet" if d == "SELL" else "creux"
@@ -208,4 +239,4 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
         ttl=S7_LIMIT_TTL if otype != d else None,
         entry_note=f"Ordre limite au retest du niveau cassé ({entry:.{dec}f})" if otype != d else "",
         extra={"origine": "retournement", "contre_tendance": True, "niveau": rev["level"][1], "signes": len(rev["signs"]),
-               "tp": "liquidité" if (t2 or t3) else "fixe"})
+               "tp": "liquidité" if any(srcs) else "fixe"})

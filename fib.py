@@ -1,4 +1,4 @@
-"""Fibonacci de position : jambe de référence et profondeur d'un prix dans la jambe (utilisé par le filtre premium / discount de S2).
+"""Fibonacci de position : jambe de référence et profondeur d'un prix dans la jambe (utilisé par S2 (premium / discount) et S3 (profondeur du repli, plafond du TP3)).
 
 Module autonome : aucune entrée/sortie réseau, aucune dépendance aux stratégies.
 """
@@ -54,3 +54,11 @@ def zone_name(r):
 def side_word(d):
     """« discount » pour un achat, « premium » pour une vente."""
     return "discount" if d == "BUY" else "premium"
+
+
+def pullback_depth(origin, end, extreme):
+    """Profondeur d'un repli, en espace miroir « baissier » : jambe qui descend de `origin` (haut) à `end` (bas), repli qui remonte
+    jusqu'à `extreme`. 0 = pas de repli, 0,5 = la moitié de la jambe, 1 = jambe entièrement reprise. None si la jambe est nulle."""
+    if origin <= end:
+        return None
+    return (extreme - end) / (origin - end)

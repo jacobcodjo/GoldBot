@@ -5,7 +5,9 @@ Ces tests vérifient la mécanique du bot (indicateurs, tendance, suivi des trad
 backtest), pas la rentabilité des stratégies.
 """
 import glob, os, re
-os.environ.setdefault("INTRADAY", "0")      # les tests historiques décrivent l'ancien comportement ; le cadre intraday a ses propres tests
+os.environ.setdefault("INTRADAY", "0")
+for _k, _v in (("S3_VOL_MIN_RATIO", "0"), ("S3_MAX_AGE_MIN", "0"), ("S3_CONTEXT_ALIGN", "0"), ("S7_RISK_CAP_ATR", "10"), ("S3_REV_MIN_RR", "0")):
+    os.environ.setdefault(_k, _v)             # garde-fous de S3 neutralisés dans les scénarios historiques ; leurs tests les remettent      # les tests historiques décrivent l'ancien comportement ; le cadre intraday a ses propres tests
 import random
 import unittest
 from collections import Counter
@@ -16,6 +18,7 @@ import backtest as B
 import gold
 import guard as G
 import strategies as S
+S.S3_SESSIONS, S.S3_CHASE_ATR, S.S3_LIMIT_MAX_ATR = (), 1e9, 1e9      # garde-fous de S3 neutralisés dans les scénarios historiques
 import tracker as T
 import trend as TR
 
@@ -713,17 +716,27 @@ class SweepCHoCH(unittest.TestCase):
         levels = [("PDL", 96.0, "low", 1000), ("Asie B", 94.0, "low", 1000), ("EQL", 99.0, "low", 1000),
                   ("PDH", 104.0, "high", 1000), ("EQL", 90.0, "low", 1000 + 900 * 30)]
         tg = S.liquidity_targets(levels, m15, "SELL", 100.0, 1.0, a_m15=1.0)
-        self.assertEqual([t[0] for t in tg], ["PDL", "Asie B"])      # 99 trop proche (1 R), 104 du mauvais côté, 90 pas encore né
-        tps, t2, t3 = S.s2_tps("SELL", 100.0, 1.0, tg)
-        self.assertAlmostEqual(tps[0], 99.0)
-        self.assertAlmostEqual(tps[1], 96.1)                          # 0,1 ATR avant PDL
-        self.assertAlmostEqual(tps[2], 94.1)
+        self.assertEqual([t[0] for t in tg], ["EQL", "PDL", "Asie B"])      # 104 du mauvais côté, 90 pas encore né
+        tps, srcs = S.s2_tps("SELL", 100.0, 1.0, tg)
+        self.assertAlmostEqual(tps[0], 99.1)                          # TP1 = première liquidité (EQL), 0,1 ATR avant le niveau
+        self.assertAlmostEqual(tps[1], 96.1)                          # TP2 = liquidité suivante, au-delà de 0,5 R de TP1 (PDL)
+        self.assertAlmostEqual(tps[2], 94.1)                          # TP3 = la suivante (Asie B)
+        self.assertEqual([t[0] if t else None for t in srcs], ["EQL", "PDL", "Asie B"])
         self.assertTrue(tps[0] > tps[1] > tps[2])
+        # une seule liquidité : TP2 = TP1 + 1 R, TP3 = TP2 + 1 R
+        tps1, srcs1 = S.s2_tps("SELL", 100.0, 1.0, [("PDL", 96.1, 4.0)])
+        self.assertEqual([round(x, 2) for x in tps1], [96.1, 95.1, 94.1])
+        self.assertEqual([bool(t) for t in srcs1], [True, False, False])
+        # liquidité proche de TP1 (moins de 0,5 R au-delà) : ignorée comme TP2
+        tps2, _ = S.s2_tps("SELL", 100.0, 1.0, [("A", 96.1, 4.0), ("B", 95.8, 4.3)])
+        self.assertAlmostEqual(tps2[1], 95.1)
         # niveau déjà pris : plus un objectif
         m15[5] = candle(1000 + 900 * 5, 100, 100.2, 95.5, 99.9)
         self.assertEqual([t[0] for t in S.liquidity_targets(levels, m15, "SELL", 100.0, 1.0, 1.0)], ["Asie B"])
-        # sans liquidité : 2 R / 3 R, TP3 toujours au-delà de TP2
-        self.assertEqual([round(x, 2) for x in S.s2_tps("BUY", 100.0, 1.0, [])[0]], [101.0, 102.0, 103.0])
+        # sans liquidité : TP1 au ratio minimal exigé (3 R par défaut), TP2 / TP3 = +1 R / +2 R
+        self.assertEqual([round(x, 2) for x in S.s2_tps("BUY", 100.0, 1.0, [])[0]], [103.0, 104.0, 105.0])
+        self.assertEqual([round(x, 2) for x in S.s2_tps("BUY", 100.0, 1.0, [], 2.5)[0]], [102.5, 103.5, 104.5])   # suit le ratio minimal
+        self.assertEqual([round(x, 2) for x in S.s2_tps("SELL", 100.0, 1.0, [], 4.0)[0]], [96.0, 95.0, 94.0])
         tps = S.s2_tps("BUY", 100.0, 1.0, [("PDH", 104.9, 4.9)])[0]
         self.assertTrue(tps[0] < tps[1] < tps[2])
 
@@ -787,11 +800,11 @@ class SweepCHoCH(unittest.TestCase):
         self.assertIsNone(self.first_pad(False, S2_MIN_RR=50.0, **self.OFF))
         self.assertIsNotNone(self.first_pad(False, S2_MIN_RR=0, **self.OFF))
 
-    def test_ratio_calcule_sur_tp2(self):
+    def test_ratio_calcule_sur_tp1(self):
         sig = self.first_pad(False, **self.OFF)
-        rr2 = abs(sig["tp2"] - sig["entry"]) / abs(sig["entry"] - sig["sl"])
-        self.assertIsNotNone(self.first_pad(False, S2_MIN_RR=rr2 - 0.01, **self.OFF))      # juste sous le ratio du signal : passe
-        self.assertIsNone(self.first_pad(False, S2_MIN_RR=rr2 + 0.01, **self.OFF))         # juste au-dessus : écarté
+        rr1 = abs(sig["tp1"] - sig["entry"]) / abs(sig["entry"] - sig["sl"])
+        self.assertIsNotNone(self.first_pad(False, S2_MIN_RR=rr1 - 0.01, **self.OFF))      # juste sous le ratio de TP1 : passe
+        self.assertIsNone(self.first_pad(False, S2_MIN_RR=rr1 + 0.01, **self.OFF))         # juste au-dessus : écarté
 
     def test_plafond_de_risque_en_atr_h1(self):
         self.assertIsNone(self.first_pad(False, S2_RISK_CAP_H1=0.0001, **self.OFF))
@@ -2245,7 +2258,9 @@ class RetournementPossible(unittest.TestCase):
         from unittest import mock
         now, provide = self.s7_provide(price)
         with mock.patch.object(gold.REV.TR, "trend_info", lambda c, tf=None: self.TREND_UP), \
-                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP):
+                mock.patch.object(gold.REV.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
+                mock.patch.object(gold.REV, "S7_RISK_CAP_ATR", patch.get("cap", 10.0)), \
+                mock.patch.object(gold.REV, "S3_REV_MIN_RR", patch.get("rr", 0)):
             funnel = Counter()
             sig = gold.REV.reversal_signal(provide, now, funnel, 2, mode)
             return ([sig] if sig else None), funnel
@@ -2273,16 +2288,27 @@ class RetournementPossible(unittest.TestCase):
         with mock.patch.object(gold.REV.S, "liquidity_targets", lambda *a, **k: cibles):
             sigs, _ = self.run_s7()
         sig = sigs[0]
-        self.assertEqual((sig["tp2"], sig["tp3"]), (105.0, 99.0))                          # TP2 = 1re liquidité, TP3 = la suivante (3 R et plus)
+        self.assertEqual((sig["tp1"], sig["tp2"]), (105.0, 99.0))                          # TP1 = 1re liquidité, TP2 = la suivante (plus de 0,5 R au-delà)
         self.assertEqual(sig["extra"]["tp"], "liquidité")
-        self.assertTrue(sig["entry"] > sig["tp1"] > sig["tp2"] > sig["tp3"])
-        self.assertTrue(any("TP2 sur la liquidité EQL" in x for x in sig["details"]))
+        self.assertTrue(sig["entry"] > sig["tp1"] > sig["tp2"] > sig["tp3"])               # TP3 = TP2 + 1 R : aucune autre liquidité
+        self.assertTrue(any("TP1 sur la liquidité EQL" in x for x in sig["details"]))
 
-    def test_s7_marche_et_retest_lointain(self):
+    def test_s7_marche_et_ecartes(self):
         sigs, _ = self.run_s7(mode="market")
         self.assertEqual(sigs[0]["otype"], "SELL")
-        far, _ = self.run_s7(price=105.0)                                 # retest du creux loin du prix : plus de limite de distance
-        self.assertTrue(far)
+        far, funnel = self.run_s7(price=105.0)                            # retest du creux à plus de 1 ATR H1 du prix
+        self.assertIsNone(far)
+        self.assertEqual(funnel["S3_stale"], 1)
+        capped, f2 = self.run_s7(cap=0.5)                                 # risque au-delà du plafond
+        self.assertIsNone(capped)
+        self.assertEqual(f2["S3_risque"], 1)
+        from unittest import mock
+        with mock.patch.object(gold.REV.S, "liquidity_targets", lambda *a, **k: [("EQL", 105.0, 4.5)]):
+            lowrr, f3 = self.run_s7(rr=50.0)                              # première liquidité (TP1) sous le ratio minimum
+        self.assertIsNone(lowrr)
+        self.assertEqual(f3["S3_rr"], 1)
+        nolq, _ = self.run_s7(rr=50.0)                                    # sans liquidité : TP1 placé au ratio minimal, donc accepté
+        self.assertEqual(round(abs(nolq[0]["tp1"] - nolq[0]["entry"]) / abs(nolq[0]["entry"] - nolq[0]["sl"]), 2), 50.0)
 
     def test_s7_fusionnee_dans_s3_et_sur_tous_les_actifs(self):
         self.assertNotIn("S7", dict(S.STRATEGIES))
@@ -2302,9 +2328,22 @@ class RetournementPossible(unittest.TestCase):
             self.assertEqual(any(sig["strat"] == "S3" and sig["extra"].get("origine") == "retournement" for sig, _ in out), attendu, sym)
 
 
+    def test_signes_d_essoufflement_minimaux(self):
+        self.assertIsNone(self.run_detect(MIN_SIGNS=4))                               # 3 signes seulement
+        self.assertIsNotNone(self.run_detect(MIN_SIGNS=3))
+
+
 class ChartPatterns(unittest.TestCase):
     """S3 Chart Patterns : figure H1 détectée, cassure confirmée en M15 (données synthétiques, sans réseau)."""
     T0 = 1_800_000_000 - (1_800_000_000 % 14400)
+
+    def setUp(self):                                    # les séries synthétiques sont plus volatiles (en ATR) que les marchés réels
+        import patterns
+        from unittest import mock
+        for name, val in (("S3_RISK_CAP_ATR", 12.0), ("S3_NOCONF_MIN_RR", 1.0)):
+            p = mock.patch.object(patterns, name, val)
+            p.start()
+            self.addCleanup(p.stop)
 
     @staticmethod
     def m15_series(way, seed=1, noise=0.04, flip=False):
@@ -2431,6 +2470,113 @@ class ChartPatterns(unittest.TestCase):
         self.assertEqual(gold.LABEL_CODE["Chart Patterns"], "S3")
         self.assertEqual(gold.ENTRY_MODES["S3"], "limit")
         self.assertIn("S3_signal", G.FUNNEL_ORDER)
+
+    def test_sans_confluence_ratio_plus_exigeant(self):
+        from unittest import mock
+        import patterns
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "S3_NOCONF_MIN_RR", 5.0):
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+            self.assertIsNone(sigs)                                                        # ratio TP3 insuffisant sans confluence
+        with mock.patch("reversal.detect", return_value=dict(self.REV_SELL)), mock.patch.object(patterns, "S3_NOCONF_MIN_RR", 5.0):
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+            self.assertIsNotNone(sigs)                                                     # avec confluence, le ratio normal suffit
+
+
+    # --- garde-fous S3 (figures) : volatilité, session, âge, contexte, risque, ratio, fraîcheur, obstacles
+    def ref_signal(self, **kw):
+        from unittest import mock
+        with mock.patch("reversal.detect", return_value=None):
+            sigs, funnel = self.replay(self.DOUBLE_TOP)
+        return (sigs[0] if sigs else None), funnel
+
+    def blocked(self, way=None, start=420, **patch):
+        """Rejoue le scénario avec `patch` appliqué sur strategies : retourne (signaux, entonnoir)."""
+        from unittest import mock
+        with mock.patch("reversal.detect", return_value=None), mock.patch.multiple(S, **{"S3_FIB_LB": S.S3_FIB_LB, **patch}):
+            return self.replay(way or self.DOUBLE_TOP, start=start)
+
+    def test_volatilite_s3(self):
+        sigs, f = self.blocked(S3_VOL_MIN_RATIO=100.0)
+        self.assertIsNone(sigs)
+
+    def test_session_s3(self):
+        sig, _ = self.ref_signal()
+        sess = S.session_name(sig["trig_close"] - 1)
+        other = "Londres" if sess != "Londres" else "New York"
+        self.assertIsNone(self.blocked(S3_SESSIONS=(other,))[0])                  # hors des sessions autorisées
+        self.assertIsNotNone(self.blocked(S3_SESSIONS=(sess,))[0])
+        self.assertIsNotNone(self.blocked(S3_SESSIONS=())[0])                     # aucune contrainte
+
+    def test_age_s3(self):
+        self.assertIsNone(self.blocked(S3_MAX_AGE_MIN=-1.0)[0])                   # seuil négatif : tout déclencheur est trop ancien
+        self.assertIsNotNone(self.blocked(S3_MAX_AGE_MIN=0)[0])
+
+    def test_risque_et_ratio_s3(self):
+        import patterns
+        from unittest import mock
+        with mock.patch.object(patterns, "S3_RISK_CAP_ATR", 0.0001), mock.patch("reversal.detect", return_value=None):
+            self.assertIsNone(self.replay(self.DOUBLE_TOP)[0])
+        with mock.patch.object(patterns, "S3_NOCONF_MIN_RR", 50.0), mock.patch.object(patterns, "S3_MIN_RR", 50.0), \
+                mock.patch("reversal.detect", return_value=None):
+            sigs, f = self.replay(self.DOUBLE_TOP)
+            self.assertIsNone(sigs)
+        sig, _ = self.ref_signal()
+        rr3 = abs(sig["tp3"] - sig["entry"]) / abs(sig["sl"] - sig["entry"])
+        self.assertGreaterEqual(rr3, sig["extra"]["min_rr"])                      # ratio vers TP3 respecté
+
+    def test_fraicheur_s3(self):
+        sigs, f = self.blocked(S3_LIMIT_MAX_ATR=0.0, S3_CHASE_ATR=-1.0)
+        self.assertIsNone(sigs)
+
+    def test_contexte_h4_d1_continuation(self):
+        from unittest import mock
+        import trend as TR
+        FLAG = FibonacciS3.FLAG
+        sigs, _ = self.blocked(FLAG, start=330)
+        self.assertIsNotNone(sigs)
+        d = sigs[0]["dir"]
+        other = "BUY" if d == "SELL" else "SELL"
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: {"dir": other}):
+            self.assertIsNone(self.blocked(FLAG, start=330, S3_CONTEXT_ALIGN=True)[0])    # contre la tendance H4/D1 : écarté
+            self.assertIsNotNone(self.blocked(FLAG, start=330, S3_CONTEXT_ALIGN=False)[0])
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: {"dir": d}):
+            self.assertIsNotNone(self.blocked(FLAG, start=330, S3_CONTEXT_ALIGN=True)[0])
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: None):
+            self.assertIsNotNone(self.blocked(FLAG, start=330, S3_CONTEXT_ALIGN=True)[0])  # pas de tendance claire : pas de blocage
+
+    def test_le_contexte_ne_bloque_pas_les_figures_de_retournement(self):
+        from unittest import mock
+        import trend as TR
+        sig, _ = self.ref_signal()
+        other = "BUY" if sig["dir"] == "SELL" else "SELL"
+        with mock.patch.object(TR, "trend_info", lambda c, tf=None: {"dir": other}):
+            self.assertIsNotNone(self.blocked(S3_CONTEXT_ALIGN=True)[0])           # un retournement va, par définition, contre la tendance précédente
+
+    def test_obstacles_s3(self):
+        from unittest import mock
+        import patterns
+        sig, _ = self.ref_signal()
+        risk = abs(sig["entry"] - sig["sl"])
+        d, e = sig["dir"], sig["entry"]
+        near = e + 0.5 * (sig["tp1"] - e)                                         # obstacle entre l'entrée et TP1 (moins de 1 R)
+        mk = lambda px: {"sup": [(px, px, "creux H1")] if d == "SELL" else [], "res": [] if d == "SELL" else [(px, px, "sommet H1")], "atr": 1.0}
+        funnel = Counter()
+        with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n: mk(near)):
+            self.assertFalse(patterns._gate(S, dict(sig, details=list(sig["details"])), None, 0, funnel, False))
+        self.assertEqual(funnel["S3_obst_cible"], 1)                              # obstacle à moins de 1 R, avant TP1 : écarté
+        far = e + 0.9 * (sig["tp3"] - e)
+        funnel = Counter()
+        with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n: mk(far)):
+            ok = patterns._gate(S, dict(sig, details=list(sig["details"]), extra=dict(sig["extra"], min_rr=50.0)), None, 0, funnel, False)
+        self.assertFalse(ok)
+        self.assertEqual(funnel["S3_obst_rr"], 1)                                 # objectifs ramenés, ratio vers TP3 sous le minimum
+        with mock.patch.object(S, "INTRADAY", False), mock.patch.object(S, "htf_obstacles", lambda pr, n: mk(near)):
+            self.assertTrue(patterns._gate(S, dict(sig, details=list(sig["details"])), None, 0, Counter(), False))   # hors intraday : pas de cadre
+
+    def test_entonnoir_garde_fous_s3(self):
+        for k in ("S3_vol", "S3_fib", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr"):
+            self.assertIn(k, G.FUNNEL_ORDER)
+            self.assertIn(k, G.FUNNEL_LABEL)
 
 
 # ==========================================================================
@@ -2742,7 +2888,7 @@ class GardeFousS1(unittest.TestCase):
         out, f = self.scan()
         self.assertEqual(len(out), 1)
         self.assertEqual(f["S5_signal"], 1)
-        self.assertGreaterEqual(S.s5_rr(out[0]), S.S5_MIN_RR - 1e-9)             # ratio >= 1:3 sur TP2
+        self.assertGreaterEqual(S.s5_rr(out[0], "tp1"), S.S5_MIN_RR - 1e-9)   # ratio >= 1:3 sur TP1
 
     def test_session_exigee_sur_les_marches_a_seance(self):
         out, f = self.scan(kz=True)
@@ -2753,6 +2899,12 @@ class GardeFousS1(unittest.TestCase):
     def test_ratio_minimal(self):
         self.assertEqual(self.scan(S5_MIN_RR=50.0)[0], [])
         self.assertTrue(self.scan(S5_MIN_RR=0.0)[0])
+
+    def test_ratio_calcule_sur_tp1(self):
+        first, _ = self.scan(S5_MIN_RR=0.0)
+        rr1 = S.s5_rr(first[0], "tp1")
+        self.assertTrue(self.scan(S5_MIN_RR=rr1 - 0.01)[0])                       # juste sous le ratio de TP1 : passe
+        self.assertEqual(self.scan(S5_MIN_RR=rr1 + 0.01)[0], [])                  # juste au-dessus : écarté
 
     def test_plafond_de_risque_en_atr_h1(self):
         out, f = self.scan(S5_RISK_CAP_H1=0.0001)
@@ -2854,6 +3006,84 @@ class GardeFousS1(unittest.TestCase):
             self.assertIn(k, G.FUNNEL_LABEL)
         import tracker as T2
         self.assertLessEqual(T2.intraday_ttl(S.LIMIT_TTL["S5"], 1_760_000_000), S.LIMIT_TTL["S5"])   # l'ordre limite n'excède jamais la fin de séance
+
+
+
+
+class FibonacciS3(unittest.TestCase):
+    """S3 : figures de continuation filtrées par la profondeur du repli ; TP3 des retournements plafonné à l'origine de la jambe précédente."""
+    FLAG = [(0, 100), (50, 100), (60, 90), (66, 92.5), (70, 90.8), (76, 92.9), (82, 91.4), (88, 93.1), (94, 91.4), (108, 85)]
+
+    def setUp(self):
+        self.cp = ChartPatterns("test_double_sommet_vente")                      # on réutilise ses séries synthétiques et son setUp
+        self.cp.setUp()
+        self.addCleanup(self.cp.doCleanups)
+
+    def test_jambe_precedente_continuation_et_retournement(self):
+        import patterns
+        cs = [candle(i, 95, 96, 94, 95) for i in range(30)]
+        cs[3] = candle(3, 99, 100, 98, 99)                                       # origine : plus haut avant la figure
+        cs[12] = candle(12, 91, 92, 90, 91)                                      # fin de jambe : plus bas jusqu'à la fin de la figure
+        d = {"s": 1, "start": 10, "end": 20, "kind": "continuation"}
+        self.assertEqual(patterns.prior_leg(S, d, cs), (100, 90))
+        cs2 = [candle(i, 95, 96, 94, 95) for i in range(30)]
+        cs2[4] = candle(4, 85, 86, 84, 85)                                       # origine d'une jambe haussière
+        self.assertEqual(patterns.prior_leg(S, dict(d, kind="retournement"), cs2), (84, None))
+        # espace miroir (figure haussière, s = -1) : les prix sont retournés
+        d2 = {"s": -1, "start": 10, "end": 20, "kind": "retournement"}
+        cs3 = [candle(i, 95, 96, 94, 95) for i in range(30)]
+        cs3[5] = candle(5, 99, 100, 98, 99)                                      # plus haut avant la figure = origine miroir (-100)
+        self.assertEqual(patterns.prior_leg(S, d2, cs3), (-100, None))
+
+    def test_plafond_tp3_du_retournement(self):
+        from unittest import mock
+        res = {}
+        for cap in (False, True):
+            with mock.patch.object(S, "S3_FIB_CAP_TP3", cap), mock.patch("reversal.detect", return_value=None):
+                sigs, _ = self.cp.replay(self.cp.DOUBLE_TOP)
+            self.assertIsNotNone(sigs)
+            res[cap] = sigs[0]
+        off, on = res[False], res[True]
+        self.assertGreater(on["tp3"], off["tp3"])                                # vente : l'objectif est plus proche (plafonné)
+        self.assertTrue(on["tp1"] > on["tp2"] > on["tp3"])                       # l'ordre des objectifs reste valide
+        self.assertEqual((on["tp1"], on["tp2"]), (off["tp1"], off["tp2"]))       # TP1 et TP2 ne bougent pas
+        self.assertTrue(any("TP3 plafonné" in x for x in on["details"]))
+        self.assertFalse(any("TP3 plafonné" in x for x in off["details"]))
+
+    def test_continuation_repli_leger_accepte(self):
+        from unittest import mock
+        with mock.patch("reversal.detect", return_value=None):
+            sigs, funnel = self.cp.replay(self.FLAG, start=330)
+        self.assertIsNotNone(sigs)
+        self.assertEqual(sigs[0]["extra"]["famille"], "continuation")
+        self.assertTrue(any("Repli de" in x and "Fibonacci" in x for x in sigs[0]["details"]))
+        self.assertEqual(funnel["S3_fib"], 0)
+
+    def test_continuation_repli_trop_profond_ecarte(self):
+        from unittest import mock
+        import patterns
+        # jambe précédente à peine plus haute que la figure : le repli reprend ~89 % de la jambe
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(93.5, 90.0)):
+            sigs, _ = self.cp.replay(self.FLAG, start=330)
+            self.assertIsNone(sigs)
+            m15 = self.cp.m15_series(self.FLAG)
+            seen = Counter()
+            for e in range(330, len(m15) - 1):
+                provide = lambda tf, force=False, _e=e: {"M15": m15[:_e + 1], "H1": self.cp.agg(m15, 4, _e), "H4": self.cp.agg(m15, 16, _e), "D1": None}[tf]
+                S.scan_s3(provide, m15[e]["epoch"] + 900, seen, 2, True, "market")
+            self.assertGreaterEqual(seen["S3_fib"], 1)
+            self.assertEqual(seen["S3_signal"], 0)
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(93.5, 90.0)), \
+                mock.patch.object(S, "S3_FIB_FILTER", False):
+            sigs, _ = self.cp.replay(self.FLAG, start=330)
+            self.assertIsNotNone(sigs)                                           # filtre désactivé : la figure repasse
+
+    def test_les_retournements_ne_sont_pas_filtres_par_la_profondeur(self):
+        from unittest import mock
+        import patterns
+        with mock.patch("reversal.detect", return_value=None), mock.patch.object(patterns, "prior_leg", return_value=(80.0, None)):
+            sigs, _ = self.cp.replay(self.cp.DOUBLE_TOP)
+        self.assertIsNotNone(sigs)
 
 
 if __name__ == "__main__":

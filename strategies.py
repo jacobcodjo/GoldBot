@@ -76,7 +76,7 @@ def _num(name, default):
 
 
 # --- Garde-fous de S1 (tous propres à S1 ; points de départ, non validés par un backtest)
-S5_MIN_RR = _num("S1_MIN_RR", 3.0)       # ratio gain/risque minimal sur TP2 (0 = désactivé)
+S5_MIN_RR = _num("S1_MIN_RR", 3.0)       # ratio gain/risque minimal sur TP1 (0 = désactivé)
 S5_RISK_CAP_H1 = _num("S1_RISK_CAP_H1", 2.0)   # risque maximal en ATR H1 (0 = aucun)
 S5_MAX_PROGRESS = 0.5                    # ordre limite écarté si le prix a déjà fait plus de 50 % du chemin entrée -> TP1
 S5_SESSIONS = ("Londres", "New York", "London Close")   # session de la bougie de déclenchement (marchés à séance seulement)
@@ -363,17 +363,29 @@ S2_FIB_MIN_DEPTH = 0.5                             # profondeur minimale de l'en
 S2_FIB_MIN_ATR = 1.5                               # jambe d'au moins 1,5 x ATR H1 ; plus petite, le filtre n'a pas d'information et laisse passer
 S2_FIB_BARS = {"H4": 60, "H1": 120}                # profondeur de recherche de la jambe (bougies clôturées avant le sweep)
 S2_FIB_SWING_N = {"H4": 2, "H1": 3}                # fractale des swings de la jambe
-S2_MIN_RR = _num("S2_MIN_RR", S5_MIN_RR)           # ratio gain/risque minimal sur TP2 : le même que S1 par défaut (0 = désactivé)
+S2_MIN_RR = _num("S2_MIN_RR", S5_MIN_RR)           # ratio gain/risque minimal sur TP1 : le même que S1 par défaut (0 = désactivé)
 S2_RISK_CAP_H1 = _num("S2_RISK_CAP_H1", 1.5)       # risque maximal en ATR H1 (0 = aucun)
 S2_LIMIT_MAX_ATR = 1.5                             # ordre limite à plus de 1,5 ATR de confirmation du prix actuel : signal écarté
 S2_CHASE_ATR = 0.75                                # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR de la clôture de déclenchement
 S2_MAX_AGE_MIN = _num("S2_MAX_AGE_MIN", 20.0)      # signal plus vieux (clôture du déclencheur) que 20 minutes : écarté (0 = désactivé)
 S2_VOL_MIN_RATIO = _num("S2_VOL_MIN_RATIO", 0.5)   # écarté si l'ATR H1 actuel < 0,5 x sa médiane récente (marché mort : le spread domine) ; 0 = off
-S2_VOL_LOOKBACK = 240                              # fenêtre (en bougies H1) de la médiane de l'ATR
+VOL_LOOKBACK = 240                                 # fenêtre (en bougies H1) de la médiane de l'ATR (S2 et S3)
 S2_SWEEP_MIN_ATR = _num("S2_SWEEP_MIN_ATR", 0.1)   # la mèche doit dépasser le niveau d'au moins 0,1 ATR M15 (0 = n'importe quelle mèche)
+# --- Garde-fous de S3 (figures et retournement)
+S3_VOL_MIN_RATIO = _num("S3_VOL_MIN_RATIO", 0.5)   # ATR H1 actuel >= 0,5 x sa médiane récente (0 = off)
+S3_MAX_AGE_MIN = _num("S3_MAX_AGE_MIN", 20.0)      # déclencheur de plus de 20 minutes : signal écarté (0 = désactivé)
+S3_SESSIONS = ("Londres", "New York", "London Close")   # session du déclencheur (marchés à séance seulement)
+S3_CHASE_ATR = 0.75                                # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR de la clôture de déclenchement
+S3_LIMIT_MAX_ATR = 1.5                             # figures : zone de l'ordre limite à plus de 1,5 ATR M15 du prix : signal écarté
+S3_CONTEXT_ALIGN = _flag("S3_CONTEXT_ALIGN", True)  # figure de continuation : pas contre une tendance H4 ou D1 claire
+S3_FIB_FILTER = _flag("S3_FIB_FILTER", True)       # figures de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe précédente
+S3_FIB_CONT_MAX = 0.618                            # profondeur maximale du repli
+S3_FIB_CAP_TP3 = _flag("S3_FIB_CAP_TP3", True)     # figures de retournement : TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)
+S3_FIB_LB = 60                                     # recherche de l'origine de la jambe précédente : 60 bougies avant la figure
 S2_HTF_UNTOUCHED = True     # zone non retestée : aucune mèche n'est revenue dedans ; False = seulement non invalidée par une clôture
-S2_LIQ_TARGETS = True       # TP2 / TP3 sur la liquidité opposée intacte (sinon 2 R / 3 R fixes)
-S2_TP_MIN_R, S2_TP_MAX_R = 2.0, 6.0  # une liquidité opposée n'est retenue comme objectif qu'entre 2 R et 6 R
+S2_LIQ_TARGETS = True       # TP1 / TP2 / TP3 sur la liquidité opposée intacte (sinon objectifs fixes 1 R / 2 R / 3 R)
+S2_TP_MIN_R, S2_TP_MAX_R = 1.0, 6.0  # une liquidité opposée n'est retenue comme objectif qu'entre 1 R et 6 R
+S2_FALLBACK_R = 3.0                   # sans aucune liquidité opposée intacte dans cette fenêtre : TP1 au ratio minimal exigé (ou à 3 R si le ratio est désactivé), TP2 / TP3 = +1 R / +2 R
 S2_TP_BUF_ATR = 0.1         # l'objectif est placé 0,1 ATR M15 avant le niveau (pour ne pas le rater d'un spread)
 
 
@@ -487,10 +499,14 @@ def s2_fib_check(d, entry, bias_tf, h4c, h1c, before, a_h1):
     return {"ok": r >= S2_FIB_MIN_DEPTH, "r": r, "tf": tf, "eq": (lo + hi) / 2, "lo": lo, "hi": hi}
 
 
-def s2_is_late(d, price, trig_close, a_ltf):
-    """Vrai si le prix a déjà trop fui dans le sens du trade depuis la clôture de déclenchement."""
+def is_late(d, price, trig_close, a_ltf, chase):
+    """Vrai si le prix a déjà trop fui (de plus de `chase` x ATR) dans le sens du trade depuis la clôture de déclenchement."""
     move = (price - trig_close) if d == "BUY" else (trig_close - price)
-    return a_ltf > 0 and move > S2_CHASE_ATR * a_ltf
+    return a_ltf > 0 and move > chase * a_ltf
+
+
+def s2_is_late(d, price, trig_close, a_ltf):
+    return is_late(d, price, trig_close, a_ltf, S2_CHASE_ATR)
 
 
 def vol_ratio(h1c):
@@ -498,7 +514,7 @@ def vol_ratio(h1c):
     n = len(h1c)
     if n < 60:
         return 1.0
-    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - S2_VOL_LOOKBACK), n + 1, 6)]
+    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - VOL_LOOKBACK), n + 1, 6)]
     med = statistics.median(pts) if pts else 0.0
     return atr(h1c) / med if med > 0 else 1.0
 
@@ -515,16 +531,23 @@ def liquidity_targets(levels, m15c, d, entry, risk, a_m15):
     return sorted(out, key=lambda x: x[2])
 
 
-def s2_tps(d, entry, risk, targets):
-    """([TP1, TP2, TP3], cible TP2 ou None, cible TP3 ou None). TP1 = 1 R. TP2 = première liquidité opposée, sinon 2 R.
-    TP3 = liquidité suivante (au moins 3 R et au-delà de TP2), sinon 3 R (ou TP2 + 1 R si TP2 est plus loin)."""
+def s2_tps(d, entry, risk, targets, min_rr=0):
+    """([TP1, TP2, TP3], [cible TP1, cible TP2, cible TP3]) ; une cible vaut None si l'objectif n'est pas une liquidité.
+    TP1 = première liquidité opposée intacte (entre S2_TP_MIN_R et S2_TP_MAX_R). TP2 = liquidité suivante, située à plus de 0,5 R au-delà
+    de TP1, sinon TP1 + 1 R. TP3 = liquidité suivante au-delà de TP2 (plus de 0,5 R), sinon TP2 + 1 R.
+    Sans aucune liquidité dans la fenêtre : TP1 au ratio minimal exigé `min_rr` (S2_FALLBACK_R si 0), TP2 = TP1 + 1 R, TP3 = TP1 + 2 R."""
     sgn = 1 if d == "BUY" else -1
-    t2 = targets[0] if targets else None
-    tp2 = t2[1] if t2 else entry + sgn * 2 * risk
-    d2 = abs(tp2 - entry) / risk
-    t3 = next((t for t in targets[1:] if t[2] >= 3.0 and t[2] > d2 + 0.5), None)
-    tp3 = t3[1] if t3 else entry + sgn * max(3.0, d2 + 1.0) * risk
-    return [entry + sgn * risk, tp2, tp3], t2, t3
+    if not targets:
+        base = min_rr or S2_FALLBACK_R
+        return [entry + sgn * (base + k) * risk for k in (0, 1, 2)], [None, None, None]
+    t1 = targets[0]
+    r1 = abs(t1[1] - entry) / risk
+    t2 = next((t for t in targets[1:] if t[2] > t1[2] + 0.5), None)
+    tp2 = t2[1] if t2 else entry + sgn * (r1 + 1.0) * risk
+    r2 = abs(tp2 - entry) / risk
+    t3 = next((t for t in targets[1:] if t[2] > (t2[2] if t2 else r2) + 0.5), None)
+    tp3 = t3[1] if t3 else entry + sgn * (r2 + 1.0) * risk
+    return [t1[1], tp2, tp3], [t1, t2, t3]
 
 
 def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
@@ -584,7 +607,7 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
             funnel["S2_age"] += 1                     # déclencheur trop ancien (retard du cron ou du workflow)
             continue
         if INTRADAY:
-            why = obstacle_filter(sig, provide, now, "S2", not S2_HTF_ZONE, S2_MIN_RR)
+            why = obstacle_filter(sig, provide, now, "S2", not S2_HTF_ZONE, S2_MIN_RR, "tp1")
             if why:
                 funnel[why] += 1                      # obstacle H4/H1 trop proche devant l'objectif (ou entrée hors niveau sans zone exigée)
                 continue
@@ -645,23 +668,22 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
         return None                                   # entrée du mauvais côté de l'équilibre de la jambe (un achat en premium, une vente en discount)
     tp_lines, tp_src = [], "fixe"
     if S2_LIQ_TARGETS:
-        t2, t3 = None, None
-        lv["tp"], t2, t3 = s2_tps(d, entry, lv["risk"], liquidity_targets(levels, m15c, d, entry, lv["risk"], a_m15))
-        for label, t, px_tp in (("TP2", t2, lv["tp"][1]), ("TP3", t3, lv["tp"][2])):
+        lv["tp"], srcs = s2_tps(d, entry, lv["risk"], liquidity_targets(levels, m15c, d, entry, lv["risk"], a_m15), S2_MIN_RR)
+        for label, t, px_tp in zip(("TP1", "TP2", "TP3"), srcs, lv["tp"]):
             if t:
                 tp_lines.append(f"🎯 {label} sur la liquidité {t[0]} ({px_tp:.{dec}f}, {abs(px_tp - entry) / lv['risk']:.1f} R)")
         tp_src = "liquidité" if tp_lines else "fixe"
         if not tp_lines:
-            tp_lines.append("🎯 Pas de liquidité opposée intacte à 2-6 R : TP2 / TP3 à 2 R / 3 R")
+            tp_lines.append(f"🎯 Pas de liquidité opposée intacte à 1-6 R : TP1 au ratio minimal ({S2_MIN_RR or S2_FALLBACK_R:g} R), TP2 / TP3 à +1 R / +2 R")
     else:
         opp = [(n, p) for n, p, k, _ in levels if (k == "low" if d == "SELL" else k == "high")
                and abs(p - entry) >= lv["risk"] and ((p < entry) if d == "SELL" else (p > entry))]
         opp.sort(key=lambda x: abs(x[1] - entry))
         if opp:
             tp_lines.append(f"Liquidité opposée  {opp[0][0]} {opp[0][1]:.{dec}f}")
-    if S2_MIN_RR and abs(lv["tp"][1] - entry) / lv["risk"] < S2_MIN_RR:
+    if S2_MIN_RR and abs(lv["tp"][0] - entry) / lv["risk"] < S2_MIN_RR:
         funnel["S2_rr"] += 1
-        return None                                   # ratio gain/risque sur TP2 sous le minimum
+        return None                                   # ratio gain/risque sur TP1 (première liquidité) sous le minimum
     funnel["S2_signal"] += 1
     emab = h4_ema_bias(h4)
     aligned = emab == (-1 if d == "SELL" else 1)
@@ -776,13 +798,14 @@ def s5_vol_ok(mtf):
     return slow <= 0 or S5_VOL_MIN <= atr(cs, S5_VOL_FAST) / slow <= S5_VOL_MAX
 
 
-def s5_rr(sig):
-    """Ratio gain/risque d'un signal S1 sur TP2."""
+def s5_rr(sig, on="tp2"):
+    """Ratio gain/risque d'un signal sur TP2 (défaut) ou TP3 ; si TP3 est absent, sur le dernier objectif."""
     risk = abs(sig["entry"] - sig["sl"])
-    return abs(sig["tp2"] - sig["entry"]) / risk if risk > 0 else 0
+    tp = sig.get(on) if sig.get(on) is not None else (sig.get("tp2") if sig.get("tp2") is not None else sig["tp1"])
+    return abs(tp - sig["entry"]) / risk if risk > 0 else 0
 
 
-def obstacle_filter(sig, provide, now, prefix, entry_check, min_rr):
+def obstacle_filter(sig, provide, now, prefix, entry_check, min_rr, rr_on="tp2"):
     """Cadre intraday (S1 et S2). (a) si entry_check, l'entrée doit être sur réaction à un niveau ou une zone H4/H1 du bon côté ; (b) TP1 ne dépasse jamais
     le prochain obstacle opposé : à moins de OBST_MIN_RR R, le signal est écarté, sinon les objectifs sont ramenés avant lui et le ratio
     minimal est recontrôlé. Retourne None si le signal passe (objectifs éventuellement modifiés), sinon la clé d'entonnoir du refus.
@@ -822,14 +845,14 @@ def obstacle_filter(sig, provide, now, prefix, entry_check, min_rr):
         sig["tp2"] = seq[1] if len(seq) > 1 else seq[0]
         sig["tp3"] = seq[2] if len(seq) > 2 else None
         sig["details"] = list(sig["details"]) + [f"🧱 Obstacle {nm} à {px:.{dec}f} : objectifs ramenés avant ce niveau (TP final {new:.{dec}f})"]
-        if min_rr and s5_rr(sig) < min_rr:
+        if min_rr and s5_rr(sig, rr_on) < min_rr:
             return f"{prefix}_obst_rr"                                     # l'obstacle a ramené les objectifs sous le ratio minimal
     return None
 
 
 def s5_obstacle_filter(sig, provide, now):
     """Cadre intraday de S1 : entrée sur un niveau H4/H1 (S1_OBST_ENTRY), objectifs ramenés avant le prochain obstacle, ratio recontrôlé."""
-    return obstacle_filter(sig, provide, now, "S5", S5_OBST_ENTRY, S5_MIN_RR)
+    return obstacle_filter(sig, provide, now, "S5", S5_OBST_ENTRY, S5_MIN_RR, "tp1")
 
 
 def s5_find_impulse(mtf):
@@ -932,8 +955,8 @@ def _s5_evaluate(found, m, ltf, zone, lo, hi, leg, a, mode="limit"):
         return None
     after = m[found["i"] + 1:] + [ltf[-1]]            # bougies depuis la fin du FVG, bougie en cours comprise
 
-    def rr_at(e):                                     # ratio gain/risque sur TP2
-        return (tp2 - e) / (e - sl) if e > sl else 0
+    def rr_at(e):                                     # ratio gain/risque sur TP1 (extrême de l'impulsion)
+        return (tp1 - e) / (e - sl) if e > sl else 0
 
     kind = entry = how = None
     # 1) ordre limite : milieu du FVG (prioritaire), sinon extrémité du bloc d'ordre, dans la zone et pas encore atteint
