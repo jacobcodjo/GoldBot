@@ -1,0 +1,130 @@
+name: Gold Bot
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Envoyer un message de contrôle Telegram"
+        type: boolean
+        default: false
+concurrency:
+  group: gold-bot
+  cancel-in-progress: false
+permissions:
+  contents: write        # nécessaire pour sauvegarder l'état sur la branche « data »
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # État critique (trades suivis, garde-fous, alertes déjà envoyées) : branche « data » du dépôt.
+      # Contrairement au cache GitHub, elle n'est jamais supprimée automatiquement.
+      - name: Restaurer l'état
+        run: |
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch --depth=1 origin data
+            for f in trades.json guard.json state.json; do
+              git show "FETCH_HEAD:$f" > "$f" 2>/dev/null || rm -f "$f"
+            done
+            echo "État restauré depuis la branche data"
+          else
+            echo "Branche data absente : premier lancement"
+          fi
+
+      # Bougies téléchargées : simple accélérateur, sans importance si le cache est supprimé.
+      - uses: actions/cache@v4
+        with:
+          path: cache.json
+          key: gold-candles-${{ github.run_id }}
+          restore-keys: gold-candles-
+
+      - run: python gold.py
+        env:
+          NOTIFY_OK: ${{ github.event.inputs.test == 'true' && '1' || '0' }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STRATEGIES: ${{ vars.STRATEGIES }}
+          S6_TOL_ATR: ${{ vars.S6_TOL_ATR }}
+          S1_CONFIRM_TF: ${{ vars.S1_CONFIRM_TF }}
+          S1_MIN_RR: ${{ vars.S1_MIN_RR }}
+          S1_RISK_CAP_H1: ${{ vars.S1_RISK_CAP_H1 }}
+          S1_ADX_MIN: ${{ vars.S1_ADX_MIN }}
+          S1_D1_ALIGN: ${{ vars.S1_D1_ALIGN }}
+          S1_OBST_ENTRY: ${{ vars.S1_OBST_ENTRY }}
+          S2_BIAS_FILTER: ${{ vars.S2_BIAS_FILTER }}
+          S2_HTF_ZONE: ${{ vars.S2_HTF_ZONE }}
+          S2_FIB_FILTER: ${{ vars.S2_FIB_FILTER }}
+          S2_MIN_RR: ${{ vars.S2_MIN_RR }}
+          S2_RISK_CAP_H1: ${{ vars.S2_RISK_CAP_H1 }}
+          S2_MAX_AGE_MIN: ${{ vars.S2_MAX_AGE_MIN }}
+          S2_VOL_MIN_RATIO: ${{ vars.S2_VOL_MIN_RATIO }}
+          S2_SWEEP_MIN_ATR: ${{ vars.S2_SWEEP_MIN_ATR }}
+          S3_FIB_FILTER: ${{ vars.S3_FIB_FILTER }}
+          S3_FIB_CAP_TP3: ${{ vars.S3_FIB_CAP_TP3 }}
+          S3_CONTEXT_ALIGN: ${{ vars.S3_CONTEXT_ALIGN }}
+          S3_VOL_MIN_RATIO: ${{ vars.S3_VOL_MIN_RATIO }}
+          S3_MAX_AGE_MIN: ${{ vars.S3_MAX_AGE_MIN }}
+          S3_REV_MIN_RR: ${{ vars.S3_REV_MIN_RR }}
+          S6_RISK_CAP_ATR: ${{ vars.S6_RISK_CAP_ATR }}
+          S6_MIN_RR: ${{ vars.S6_MIN_RR }}
+          S6_NOCONF_MIN_RR: ${{ vars.S6_NOCONF_MIN_RR }}
+          S6_CONF_RISK_FACTOR: ${{ vars.S6_CONF_RISK_FACTOR }}
+          S7_RISK_CAP_ATR: ${{ vars.S7_RISK_CAP_ATR }}
+          S7_ENTRY_MAX_ATR: ${{ vars.S7_ENTRY_MAX_ATR }}
+          REVERSAL_MIN_SIGNS: ${{ vars.REVERSAL_MIN_SIGNS }}
+          S2_CONFIRM_TF: ${{ vars.S2_CONFIRM_TF }}
+          S3_CONFIRM_TF: ${{ vars.S3_CONFIRM_TF }}
+          S4_CONFIRM_TF: ${{ vars.S4_CONFIRM_TF }}
+          S4_MIN_RR: ${{ vars.S4_MIN_RR }}
+          S4_MAX_AGE_MIN: ${{ vars.S4_MAX_AGE_MIN }}
+          S4_VOL_MIN_RATIO: ${{ vars.S4_VOL_MIN_RATIO }}
+          S4_CONTEXT_ALIGN: ${{ vars.S4_CONTEXT_ALIGN }}
+          S4_SWEEP_MIN_ATR: ${{ vars.S4_SWEEP_MIN_ATR }}
+          SYMBOLS: ${{ vars.SYMBOLS }}
+          SYMBOL_STRATEGIES: ${{ vars.SYMBOL_STRATEGIES }}
+          ONE_TRADE_PER_SIDE: ${{ vars.ONE_TRADE_PER_SIDE }}
+          ALERT_FORMAT: ${{ vars.ALERT_FORMAT }}
+          CHARTS: ${{ vars.CHARTS }}
+          ALERT_FUSEAU: ${{ vars.ALERT_FUSEAU }}
+          RECAP_HEURE: ${{ vars.RECAP_HEURE }}
+          RECAP_FUSEAU: ${{ vars.RECAP_FUSEAU }}
+          ENTRY_MODE: ${{ vars.ENTRY_MODE }}
+          ENTRY_MODES: ${{ vars.ENTRY_MODES }}
+          CONFLUENCE_MIN: ${{ vars.CONFLUENCE_MIN }}
+          INTRADAY: ${{ vars.INTRADAY }}
+          INTRADAY_RUNNERS: ${{ vars.INTRADAY_RUNNERS }}
+          CRYPTO_INTRADAY: ${{ vars.CRYPTO_INTRADAY }}
+          PULLBACK_VARIANT: ${{ vars.PULLBACK_VARIANT }}
+          RECAP_FORMAT: ${{ vars.RECAP_FORMAT }}
+          REVERSAL_ALERTS: ${{ vars.REVERSAL_ALERTS }}
+          SPREAD_PCT: ${{ vars.SPREAD_PCT }}
+          SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
+          HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
+          DERIV_APP_ID: ${{ vars.DERIV_APP_ID }}
+          DERIV_WS_URL: ${{ vars.DERIV_WS_URL }}
+          CALENDAR_URL: ${{ vars.CALENDAR_URL }}
+          SYNTH_RECAP_HEURES: ${{ vars.SYNTH_RECAP_HEURES }}
+          ALERT_FUSEAU_NOM: ${{ vars.ALERT_FUSEAU_NOM }}
+          WEEKEND_EXIT: ${{ vars.WEEKEND_EXIT }}
+
+      # Une seule révision (orpheline, écrasée à chaque fois) : le dépôt ne grossit pas.
+      - name: Sauvegarder l'état
+        if: always()
+        run: |
+          mkdir -p /tmp/state
+          for f in trades.json guard.json state.json; do [ -f "$f" ] && cp "$f" /tmp/state/ || true; done
+          [ -n "$(ls -A /tmp/state)" ] || exit 0
+          git config user.name "gold-bot"
+          git config user.email "gold-bot@users.noreply.github.com"
+          git checkout --orphan data-state
+          git rm -rf --quiet . || true
+          cp /tmp/state/* .
+          git add trades.json guard.json state.json
+          git commit --quiet -m "état du bot"
+          git push --quiet --force origin HEAD:data
