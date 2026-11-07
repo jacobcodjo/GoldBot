@@ -1,6 +1,6 @@
 """Bot or (XAUUSD) + paires forex majeures (7 contre USD + 8 croisements majeurs Deriv) + BTC et ETH + indices Volatility de Deriv : 5 stratégies, données Deriv, alertes Telegram, suivi des trades.
 
-Stratégies (détail dans STRATEGIES.md) :
+Stratégies (détail dans le README, section Stratégies) :
   S1 Pullback (structure + Fibonacci) · S2 Sweep + CHoCH · S3 Figures & Retournement · S4 CRT
 Un passage = un scan (à déclencher toutes les 5 minutes par un cron externe, voir README.md).
 """
@@ -15,8 +15,7 @@ import charts
 import guard as G
 import strategies as S
 import tracker as T
-import trend as TR
-import reversal as REV
+import setups as SU
 
 APP_ID = os.getenv("DERIV_APP_ID") or "1089"
 # 1) endpoint public Deriv (sans authentification), 2) ancien endpoint en secours.
@@ -726,18 +725,18 @@ def add_confluence(sig, tr, batch, now):
 
 
 def reversal_alert(sym, provide, now, state):
-    """Texte d'une alerte d'information « retournement possible » (voir reversal.py), ou None. Un message par sweep ; ni ordre,
+    """Texte d'une alerte d'information « retournement possible » (voir setups.py), ou None. Un message par sweep ; ni ordre,
     ni suivi, ni contrôle de risque. Tous les actifs, indices synthétiques compris."""
-    if not REV.ENABLED or "S3" in ENABLED:   # S3 envoie le même retournement en ordre
+    if not SU.ENABLED or "S3" in ENABLED:   # S3 envoie le même retournement en ordre
         return None
-    rev = REV.detect(provide, now)
+    rev = SU.detect(provide, now)
     if not rev:
         return None
     key = f"REV|{sym}|{rev['dir']}|{rev['epoch']}"
     if key in state:
         return None
     state[key] = int(now)
-    return REV.message(rev, name_of(sym), dec_of(sym), alert_clock(now))
+    return SU.message(rev, name_of(sym), dec_of(sym), alert_clock(now))
 
 
 def emit_alert(sig, ltf_candles, tr, g, sent, funnel, now):
@@ -952,8 +951,8 @@ def build_recap(api, cache, now, syms=None):
             if not h1 or now - h1[-1]["epoch"] > RECAP_STALE:
                 closed.append(name_of(sym))
                 continue
-            infos = {tf: TR.trend_info(tf_candles(api, cache, sym, tf) or [], tf) for tf in TR.TIMEFRAMES}
-            blocks.append((TR.symbol_line if RECAP_FORMAT == "compact" else TR.symbol_block)(name_of(sym), infos, now, dec_of(sym)))
+            infos = {tf: SU.trend_info(tf_candles(api, cache, sym, tf) or [], tf) for tf in SU.TIMEFRAMES}
+            blocks.append((SU.symbol_line if RECAP_FORMAT == "compact" else SU.symbol_block)(name_of(sym), infos, now, dec_of(sym)))
         except Exception as ex:
             print(f"Récap {name_of(sym)} ignoré : {str(ex)[:80]}")
     return blocks, closed
@@ -1023,13 +1022,13 @@ def synth_recap_slot(g, now):
 
 def synth_block(api, cache, sym, now):
     """Bloc d'un indice : tendance D1/H4/H1, extrêmes de la bougie daily en cours. None si pas de données."""
-    cs = {tf: tf_candles(api, cache, sym, tf) or [] for tf in TR.TIMEFRAMES}
+    cs = {tf: tf_candles(api, cache, sym, tf) or [] for tf in SU.TIMEFRAMES}
     if not cs["H1"] or now - cs["H1"][-1]["epoch"] > RECAP_STALE:
         return None
     dec = dec_of(sym)
-    infos = {tf: TR.trend_info(cs[tf], tf) for tf in TR.TIMEFRAMES}
+    infos = {tf: SU.trend_info(cs[tf], tf) for tf in SU.TIMEFRAMES}
     if RECAP_FORMAT == "compact":                       # une ligne : tendances, extrêmes de la bougie daily
-        line = TR.symbol_line(name_of(sym), infos, now, dec)
+        line = SU.symbol_line(name_of(sym), infos, now, dec)
         if S.S2_BIAS_FILTER:
             bias, tf = S.s2_bias(cs["H4"], cs["H1"])
             line += f" · biais S2 {('🟢' if bias == 'BUY' else '🔴') + ' ' + tf if bias else '⚪ aucun'}"
@@ -1037,7 +1036,7 @@ def synth_block(api, cache, sym, now):
             day = cs["D1"][-1]
             line += f" · jour {day['low']:.{dec}f}–{day['high']:.{dec}f}"
         return line
-    lines = [TR.symbol_block(name_of(sym), infos, now, dec)]
+    lines = [SU.symbol_block(name_of(sym), infos, now, dec)]
     if S.S2_BIAS_FILTER:
         bias, tf = S.s2_bias(cs["H4"], cs["H1"])
         lines.append("  Biais S2 : " + (f"{'🟢 haussier' if bias == 'BUY' else '🔴 baissier'} ({tf}) → S2 n'émet que des {'achats' if bias == 'BUY' else 'ventes'}"
@@ -1125,9 +1124,9 @@ def scan(sym, provide, now, sent, funnel, news=()):
         sig["ts"] = now
         add_class(sig, sym)
         sig["age_min"] = max(0.0, (now - sig["trig_close"]) / 60) if sig.get("trig_close") else None
-        infos = {tf: TR.trend_info(provide(tf) or [], tf) for tf in TR.ALERT_TFS}
-        tl, te = TR.alert_lines(sig["dir"], infos, now)
-        sig.update(trend_lines=tl, trend_short=TR.alert_short(sig["dir"], infos, now))
+        infos = {tf: SU.trend_info(provide(tf) or [], tf) for tf in SU.ALERT_TFS}
+        tl, te = SU.alert_lines(sig["dir"], infos, now)
+        sig.update(trend_lines=tl, trend_short=SU.alert_short(sig["dir"], infos, now))
         sig["extra"] = dict(sig["extra"], **te)
         why = G.blackout(sym, now, news)
         if why:

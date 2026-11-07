@@ -1,12 +1,12 @@
-"""Stratégies S1, S2, S3 et S4 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans STRATEGIES.md.
+"""Stratégies S1, S2, S3 et S4 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans le README (section Stratégies).
 
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
 
   S1  Pullback                    structure HTF > impulsion + repli Fibonacci 50-79 % > entrée LTF (sweep, FVG/bloc d'ordre ; objectifs sur extensions)
   S2  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
-
-  S4  CRT (Candle Range Theory)       H4/H1 (C1, C2) > M15 (cassure de structure après la clôture de C2)
+  S3  Figures & Retournement          figures H1/H4 + cassure M15 ; retournement H4 > H1 > M15 (sweep d'un niveau majeur + cassure de structure)
+  S4  CRT (Candle Range Theory)       D1/H4 (C1, C2) > M15 (cassure de structure après la clôture de C2)
 
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
@@ -15,8 +15,6 @@ import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import fib as FB                                                                                    # Fibonacci de position (S2 : premium / discount)
-from smc import body, mean_body, is_displacement, wick_sweep, close_beyond, fresh_break, mirror   # primitives SMC communes (S1 structure, S2, zones d'entrée)
 
 NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
@@ -41,6 +39,116 @@ S2_PIVOT_BARS = 36                     # pivot M5 à moins de 36 bougies M5 (3 h
 
 # --- S1 Pullback (ex-S5 Impulsion + retracement Fibonacci, portée du crt-bot : impulse.py ; l'ancienne variante « classique » EMA/ADX est supprimée) ---
 S5_CASCADES = [("D1", "H4", "H1"), ("H4", "H1", "M15"), ("H1", "M15", "M5")]   # (tendance, impulsion + Fibonacci, entrée)
+
+
+# ======================================================================================================================
+# Primitives SMC communes à S1 (Pullback), S2 (Sweep + CHoCH) et aux zones d'entrée (bloc d'ordre, FVG). Fonctions pures, sans état
+# ni réseau : une bougie est un dict {epoch, open, high, low, close}. Elles ne portent aucune règle de stratégie (seuils, sessions,
+# filtres) : chaque stratégie garde ses réglages et appelle ces primitives.
+# ======================================================================================================================
+
+def body(c):
+    """Corps d'une bougie."""
+    return abs(c["close"] - c["open"])
+
+
+def mean_body(cs):
+    """Corps moyen d'une liste de bougies (sans plafond de longueur) ; 0 si la liste est vide."""
+    return sum(body(c) for c in cs) / len(cs) if cs else 0.0
+
+
+def is_displacement(c, avg, mult):
+    """Déplacement : corps >= mult x corps moyen. Si le corps moyen est nul, tout corps passe."""
+    return body(c) >= mult * avg
+
+
+def wick_sweep(c, level, kind):
+    """Sweep d'un niveau par la mèche : la bougie dépasse le niveau et clôture de l'autre côté.
+    kind 'high' : mèche au-dessus d'un sommet, clôture dessous (vente) ; kind 'low' : mèche sous un creux, clôture dessus (achat)."""
+    return (c["high"] > level and c["close"] < level) if kind == "high" else (c["low"] < level and c["close"] > level)
+
+
+def close_beyond(c, level, up):
+    """La bougie clôture au-delà du niveau : au-dessus si `up`, en dessous sinon."""
+    return c["close"] > level if up else c["close"] < level
+
+
+def fresh_break(c, prev, level, up):
+    """Cassure par clôture : la bougie clôture au-delà du niveau alors que la précédente clôture ne l'était pas (inclus : sur le niveau)."""
+    if up:
+        return c["close"] > level and prev["close"] <= level
+    return c["close"] < level and prev["close"] >= level
+
+
+def mirror(cs):
+    """Miroir des bougies (prix x -1) : les calculs sont écrits pour un achat, la vente passe par ce miroir."""
+    return [{"epoch": c["epoch"], "open": -c["open"], "high": -c["low"], "low": -c["high"], "close": -c["close"]} for c in cs]
+
+
+# ======================================================================================================================
+# Fibonacci de position : jambe de référence et profondeur d'un prix dans la jambe (S2 : premium / discount ; S3 : profondeur du repli,
+# plafond du TP3).
+# ======================================================================================================================
+
+FIB_GOLDEN_FROM = 0.5      # 50 % -> 61,8 % : « Golden Zone »
+FIB_OTE_FROM = 0.618       # 61,8 % -> 79 % : « OTE »
+FIB_ZONE_MAX = 0.79        # au-delà : extrême de la jambe
+
+
+def fib_swing_idx(cs, kind, n):
+    """Index des swings confirmés (fractales) : plus haut/bas strict sur n bougies de chaque côté. `cs` : bougies clôturées."""
+    out = []
+    for i in range(n, len(cs) - n):
+        v = cs[i][kind]
+        around = [cs[j][kind] for j in range(i - n, i + n + 1) if j != i]
+        if (kind == "high" and v > max(around)) or (kind == "low" and v < min(around)):
+            out.append(i)
+    return out
+
+
+def fib_dealing_range(cs, n=3, lookback=120):
+    """(bas, haut) de la jambe de référence : plus bas des creux et plus haut des sommets CONFIRMÉS (fractales de n bougies)
+    parmi les `lookback` dernières bougies clôturées. None si un côté manque ou si la jambe est nulle."""
+    seg = cs[-lookback:]
+    hs, ls = fib_swing_idx(seg, "high", n), fib_swing_idx(seg, "low", n)
+    if not hs or not ls:
+        return None
+    hi = max(seg[i]["high"] for i in hs)
+    lo = min(seg[i]["low"] for i in ls)
+    return (lo, hi) if hi > lo else None
+
+
+def fib_retrace(d, price, lo, hi):
+    """Profondeur de `price` dans la jambe [lo, hi], vue du sens d : 0 au bord haut pour un achat (bas pour une vente), 0,5 à
+    l'équilibre, 1 au bord opposé. Au-delà de 0,5 on est du bon côté : discount pour un achat, premium pour une vente.
+    Peut sortir de [0, 1] si le prix dépasse la jambe."""
+    if hi <= lo:
+        return None
+    return (hi - price) / (hi - lo) if d == "BUY" else (price - lo) / (hi - lo)
+
+
+def fib_zone_name(r):
+    """Nom de la zone de profondeur r (voir fib_retrace) : « mauvais côté » sous 50 %, « Golden Zone », « OTE », « extrême »."""
+    if r is None or r < FIB_GOLDEN_FROM:
+        return "mauvais côté"
+    if r < FIB_OTE_FROM:
+        return "Golden Zone"
+    if r <= FIB_ZONE_MAX:
+        return "OTE"
+    return "extrême"
+
+
+def fib_side_word(d):
+    """« discount » pour un achat, « premium » pour une vente."""
+    return "discount" if d == "BUY" else "premium"
+
+
+def fib_pullback_depth(origin, end, extreme):
+    """Profondeur d'un repli, en espace miroir « baissier » : jambe qui descend de `origin` (haut) à `end` (bas), repli qui remonte
+    jusqu'à `extreme`. 0 = pas de repli, 0,5 = la moitié de la jambe, 1 = jambe entièrement reprise. None si la jambe est nulle."""
+    if origin <= end:
+        return None
+    return (extreme - end) / (origin - end)
 
 
 def _flag(name, default=True):
@@ -88,13 +196,23 @@ S5_D1_ALIGN = _flag("S1_D1_ALIGN", True)  # pas de trade contre une tendance D1 
 S5_OBST_ENTRY = _flag("S1_OBST_ENTRY", True)   # (intraday) entrée sur réaction à un niveau ou une zone H4/H1
 OBST_MIN_RR = 1.0                        # obstacle opposé à moins de 1 R de l'entrée : signal écarté
 OBST_BUF_ATR = 0.1                       # TP1 placé 0,1 ATR H1 avant l'obstacle
-# Tendance de S5 : définition unique de trend.py (BOS par clôture, âge en jambes), partagée avec S2 et les alertes.
+# Tendance de S5 : définition unique de setups.py (BOS par clôture, âge en jambes), partagée avec S2 et les alertes.
 
-# --- S4 CRT (Candle Range Theory) pur : voir crt.py ---
-CRT_REFS = ("H4", "H1")             # bougies de référence C1 / C2 ; la confirmation est toujours en M15
+# --- S4 CRT (Candle Range Theory) pur : voir setups.py ---
+CRT_REFS = ("D1", "H4")             # bougies de référence C1 / C2 (range daily et H4, plus de H1) ; la confirmation est toujours en M15
 CRT_PIVOT_BARS = 16                 # le swing M15 cassé date de 16 bougies M15 (4 h) au plus avant l'extrême de C2
 CRT_SL_BUF_ATR = 0.15               # marge du stop au-delà de l'extrême de C2 (x ATR M15)
 CRT_TP3_EXT = 0.5                   # TP3 = bord opposé de C1 + 50 % de son range
+# --- Garde-fous de S4 (CRT) : TP1 = milieu de C1, ratio minimal mesuré sur TP1 comme les autres stratégies
+CRT_MIN_RR = _num("S4_MIN_RR", S5_MIN_RR)       # ratio gain/risque minimal au milieu du range de C1 (TP1) : le même que S1 par défaut (0 = désactivé)
+CRT_MIN_RANGE_ATR, CRT_MAX_RANGE_ATR = 0.8, 3.5  # taille raisonnable du range de C1 (x ATR du timeframe de référence)
+CRT_SWEEP_MIN_ATR = _num("S4_SWEEP_MIN_ATR", 0.1)   # C2 doit dépasser le bord de C1 d'au moins 0,1 ATR du timeframe de référence (0 = n'importe quelle mèche)
+CRT_SESSIONS = ("Londres", "New York", "London Close")   # session de la bougie de cassure (marchés à séance seulement)
+CRT_LIMIT_MAX_ATR = 1.5                          # ordre limite à plus de 1,5 ATR M15 du prix : signal écarté
+CRT_CHASE_ATR = 0.75                             # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR M15 de la clôture de déclenchement
+CRT_MAX_AGE_MIN = _num("S4_MAX_AGE_MIN", 20.0)   # déclencheur de plus de 20 minutes : signal écarté (0 = désactivé)
+CRT_VOL_MIN_RATIO = _num("S4_VOL_MIN_RATIO", 0.5)   # ATR H1 actuel >= 0,5 x sa médiane récente (0 = off)
+CRT_CONTEXT_ALIGN = _flag("S4_CONTEXT_ALIGN", True)  # pas contre une tendance H4 ou D1 claire
 
 # --- Timeframe de confirmation / d'entrée, par stratégie : M15 ou M5 (variables S1_CONFIRM_TF ... S4_CONFIRM_TF) ---
 # Vide = comportement historique : M15 pour S1 (cascade selon INTRADAY), S3, S4 ; S2 suit INTRADAY (M15 si actif, sinon M5).
@@ -421,9 +539,9 @@ def level_taken(m15c, px, kind, t0, upto=None):
 
 
 def s2_bias(h4, h1):
-    """(sens, 'H4' | 'H1') : biais de structure (BOS, règles de trend.py) du H4, sinon du H1 si le H4 n'a pas de
+    """(sens, 'H4' | 'H1') : biais de structure (BOS, règles de tendance de setups.py) du H4, sinon du H1 si le H4 n'a pas de
     tendance claire ; (None, None) si aucun. h4 et h1 : bougies dont la dernière est en formation."""
-    import trend as TR                   # import tardif : trend.py importe ce module
+    import setups as TR                   # import tardif : setups.py importe ce module
     for tf, cs in (("H4", h4), ("H1", h1)):
         info = TR.trend_info(cs, tf)
         if info:
@@ -491,11 +609,11 @@ def s2_fib_check(d, entry, bias_tf, h4c, h1c, before, a_h1):
         return None
     tf, cs = ("H4", h4c) if bias_tf == "H4" else ("H1", h1c)
     cs = [c for c in cs if c["epoch"] + GRAN[tf] <= before]
-    rng = FB.dealing_range(cs, S2_FIB_SWING_N[tf], S2_FIB_BARS[tf])
+    rng = fib_dealing_range(cs, S2_FIB_SWING_N[tf], S2_FIB_BARS[tf])
     if rng is None or rng[1] - rng[0] < S2_FIB_MIN_ATR * a_h1:
         return None
     lo, hi = rng
-    r = FB.retrace(d, entry, lo, hi)
+    r = fib_retrace(d, entry, lo, hi)
     return {"ok": r >= S2_FIB_MIN_DEPTH, "r": r, "tf": tf, "eq": (lo + hi) / 2, "lo": lo, "hi": hi}
 
 
@@ -699,7 +817,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
         details.append(f"⚠️ Contre le biais {bias_tf} (contre-tendance)")
     details.append(f"✅ CHoCH {cf_n} sous {pivot:.{dec}f}" if d == "SELL" else f"✅ CHoCH {cf_n} au-dessus de {pivot:.{dec}f}")
     if fib_info:
-        details.append(f"✅ Entrée en {FB.side_word(d)} de la jambe {fib_info['tf']} (Fibonacci {fib_info['r'] * 100:.0f} % : {FB.zone_name(fib_info['r'])})")
+        details.append(f"✅ Entrée en {fib_side_word(d)} de la jambe {fib_info['tf']} (Fibonacci {fib_info['r'] * 100:.0f} % : {fib_zone_name(fib_info['r'])})")
     if kz:
         details.append(f"✅ Killzone {sess}")
     if not S2_BIAS_FILTER:
@@ -780,8 +898,8 @@ def htf_obstacles(provide, now):
 # ==========================================================================
 def s5_trend(htf):
     """Tendance haussière (écrite pour un achat) : {'age', 'legs'} ou None. Même définition que S2 (biais) et que les
-    alertes : trend.py (dernier sommet et dernier creux plus hauts, structure intacte, sommet cassé par une clôture)."""
-    import trend as TR                   # import tardif : trend.py importe ce module
+    alertes : setups.py (dernier sommet et dernier creux plus hauts, structure intacte, sommet cassé par une clôture)."""
+    import setups as TR                   # import tardif : setups.py importe ce module
     info = TR._up(htf[:-1], TR.SWING_N)
     return {"age": info["age"], "legs": info["legs"]} if info else None
 
@@ -1037,7 +1155,7 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
                 funnel["S5_adx"] += 1
             if S5_D1_ALIGN and htf_n != "D1":         # pas de trade contre une tendance D1 claire
                 if not d1_read:
-                    import trend as TR
+                    import setups as TR
                     d1 = provide("D1")
                     d1_info = TR.trend_info(d1, "D1") if d1 and len(d1) >= 10 else None
                     d1_read = True
@@ -1128,9 +1246,17 @@ def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market"):
     return out
 
 
-from patterns import scan_s3   # noqa: E402  (S3 Chart Patterns ; patterns.py importe strategies à l'appel, pas à l'import)
+def scan_s3(*args, **kwargs):
+    """S3 Figures & Retournement (setups.py). Import à l'appel : setups.py importe ce module."""
+    import setups
+    return setups.scan_s3(*args, **kwargs)
 
-from crt import scan_crt   # noqa: E402  (S4 CRT ; crt.py importe strategies à l'appel, pas à l'import)
+
+def scan_crt(*args, **kwargs):
+    """S4 CRT (setups.py). Import à l'appel : setups.py importe ce module."""
+    import setups
+    return setups.scan_crt(*args, **kwargs)
+
 
 STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_crt)]
 
