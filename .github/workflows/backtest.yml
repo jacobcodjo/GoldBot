@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       sym:
-        description: "Actifs séparés par des virgules (ex. frxXAUUSD,frxEURUSD) ou all (or + 7 majeures + BTC + ETH)"
+        description: "classes = un job par type d'actifs, en parallèle (or, forex_session, forex_jpy, forex_calme, crypto, synthetique) ; ou une classe (ex. forex_jpy) ; ou des actifs séparés par des virgules (ex. frxXAUUSD,frxEURUSD) ; ou all (tous les actifs, long)"
         default: "frxXAUUSD"
       days:
         description: "Jours d'historique M5 à rejouer"
@@ -22,8 +22,13 @@ on:
         default: ""
 jobs:
   run:
+    name: run (${{ matrix.sym }})
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    strategy:
+      fail-fast: false                    # un type d'actifs en échec n'arrête pas les autres
+      matrix:
+        sym: ${{ fromJSON(github.event.inputs.sym == 'classes' && '["or","forex_session","forex_jpy","forex_calme","crypto","synthetique"]' || format('["{0}"]', github.event.inputs.sym)) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,7 +38,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Backtest
         env:
-          SYM: ${{ github.event.inputs.sym }}
+          SYM: ${{ matrix.sym }}
           DAYS: ${{ github.event.inputs.days }}
           ONLY: ${{ github.event.inputs.only }}
           SPREAD: ${{ github.event.inputs.spread_pct }}
