@@ -838,11 +838,13 @@ def _s3_gate(S, sig, provide, now, funnel, kz):
                 funnel["S3_contexte"] += 1
                 return False
     if S.INTRADAY:
+        tfs = None                                                  # retournement : obstacles H4 et H1
         if extra.get("origine") == "figure":
             min_rr, on = extra.get("min_rr", S3_MIN_RR), "tp3"      # objectifs = fractions de la hauteur : ratio vers TP3
+            tfs = S.S3_FIGURE_OBST_TFS                              # figures : obstacles H4 seulement
         else:
             min_rr, on = S3_REV_MIN_RR, "tp1"              # TP1 = première liquidité : même ratio que S1 et S2
-        why = S.obstacle_filter(sig, provide, now, "S3", False, min_rr, on)
+        why = S.obstacle_filter(sig, provide, now, "S3", False, min_rr, on, tfs)
         if why:
             funnel[why] += 1                        # obstacle H4/H1 trop proche devant l'objectif
             return False
@@ -889,8 +891,7 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
                 sig = _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn, cf_n)
                 if not sig or not _s3_gate(S, sig, provide, now, funnel, kz):
                     continue
-                risk = abs(sig["entry"] - sig["sl"])
-                sig["rr_tp3"] = abs(sig["tp3"] - sig["entry"]) / risk if risk else 0
+                sig["rr_tp3"] = S.s5_rr(sig, "tp3")                    # TP3 peut manquer (objectifs ramenés avant un obstacle) : dernier objectif restant
                 if sig["dir"] not in best or sig["rr_tp3"] > best[sig["dir"]]["rr_tp3"]:
                     best[sig["dir"]] = sig
     for sig in best.values():
@@ -978,10 +979,7 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
     tc = m15c[trig]
     if not is_displacement(tc, S.body_avg(m15c[-21:-1]), S.DISP_MULT):
         return None
-    sess = S.session_name(tc["epoch"])
-    if kz and S.CRT_SESSIONS and sess not in S.CRT_SESSIONS:
-        funnel["CRT_session"] += 1                       # cassure hors des sessions de Londres / New York (marchés à séance seulement)
-        return None
+    sess = S.session_name(tc["epoch"])                   # affichage seulement : la cassure suit la clôture de C2, à toute heure
     lo1, hi1 = c1["low"], c1["high"]
     rng = hi1 - lo1
     mid = (hi1 + lo1) / 2

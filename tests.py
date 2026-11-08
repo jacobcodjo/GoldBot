@@ -19,7 +19,7 @@ import gold
 import guard as G
 import strategies as S
 S.S3_SESSIONS, S.S3_CHASE_ATR, S.S3_LIMIT_MAX_ATR = (), 1e9, 1e9      # garde-fous de S3 neutralisés dans les scénarios historiques
-S.CRT_SESSIONS, S.CRT_CHASE_ATR, S.CRT_LIMIT_MAX_ATR = (), 1e9, 1e9      # garde-fous de S4 neutralisés dans les scénarios historiques
+S.CRT_CHASE_ATR, S.CRT_LIMIT_MAX_ATR = 1e9, 1e9      # garde-fous de S4 neutralisés dans les scénarios historiques
 import tracker as T
 import setups as TR
 
@@ -2563,22 +2563,63 @@ class ChartPatterns(unittest.TestCase):
         near = e + 0.5 * (sig["tp1"] - e)                                         # obstacle entre l'entrée et TP1 (moins de 1 R)
         mk = lambda px: {"sup": [(px, px, "creux H1")] if d == "SELL" else [], "res": [] if d == "SELL" else [(px, px, "sommet H1")], "atr": 1.0}
         funnel = Counter()
-        with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n: mk(near)):
+        with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n, tfs=None: mk(near)):
             self.assertFalse(setups._s3_gate(S, dict(sig, details=list(sig["details"])), None, 0, funnel, False))
         self.assertEqual(funnel["S3_obst_cible"], 1)                              # obstacle à moins de 1 R, avant TP1 : écarté
         far = e + 0.9 * (sig["tp3"] - e)
         funnel = Counter()
-        with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n: mk(far)):
+        with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n, tfs=None: mk(far)):
             ok = setups._s3_gate(S, dict(sig, details=list(sig["details"]), extra=dict(sig["extra"], min_rr=50.0)), None, 0, funnel, False)
         self.assertFalse(ok)
         self.assertEqual(funnel["S3_obst_rr"], 1)                                 # objectifs ramenés, ratio vers TP3 sous le minimum
-        with mock.patch.object(S, "INTRADAY", False), mock.patch.object(S, "htf_obstacles", lambda pr, n: mk(near)):
+        with mock.patch.object(S, "INTRADAY", False), mock.patch.object(S, "htf_obstacles", lambda pr, n, tfs=None: mk(near)):
             self.assertTrue(setups._s3_gate(S, dict(sig, details=list(sig["details"])), None, 0, Counter(), False))   # hors intraday : pas de cadre
+
+    def test_obstacles_des_figures_h4_seulement(self):
+        import random as _r
+        _r.seed(3)
+
+        def bougies(n, pas, base=2000.0, vol=2.0):
+            out, p = [], base
+            for i in range(n):
+                o = p
+                p = o + _r.uniform(-vol, vol)
+                out.append({"epoch": 1_790_000_000 + i * pas, "open": o, "high": max(o, p) + _r.uniform(0, 1),
+                            "low": min(o, p) - _r.uniform(0, 1), "close": p})
+            return out
+        h1, h4, d1 = bougies(200, 3600), bougies(80, 14400, vol=5.0), bougies(12, 86400, vol=9.0)
+        prov = lambda tf: {"H1": h1, "H4": h4, "D1": d1}[tf]
+        both = S.htf_obstacles(prov, 1_790_000_000 + 200 * 3600)
+        h4only = S.htf_obstacles(prov, 1_790_000_000 + 200 * 3600, ("H4",))
+        names = lambda o: {nm for _, _, nm in o["sup"] + o["res"]}
+        self.assertTrue(any("H1" in nm for nm in names(both)))
+        self.assertFalse(any("H1" in nm for nm in names(h4only)))                    # plus de pivots ni de zones H1
+        self.assertTrue(any("H4" in nm for nm in names(h4only)))
+        self.assertTrue(any("veille" in nm for nm in names(h4only)))                 # la veille reste un obstacle
+        self.assertLess(len(h4only["sup"]) + len(h4only["res"]), len(both["sup"]) + len(both["res"]))
+        self.assertEqual(S.S3_FIGURE_OBST_TFS, ("H4",))
 
     def test_entonnoir_garde_fous_s3(self):
         for k in ("S3_vol", "S3_fib", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr"):
             self.assertIn(k, G.FUNNEL_ORDER)
             self.assertIn(k, G.FUNNEL_LABEL)
+
+
+    def test_tp3_absent_apres_obstacle_ne_fait_pas_planter_le_scan(self):
+        """Régression (backtest tous actifs) : un obstacle entre TP1 et TP2 ramène les objectifs et supprime TP3 ; le scan ne doit pas planter."""
+        from unittest import mock
+        import setups
+        sig, _ = self.ref_signal()
+        px = sig["tp1"] + 0.5 * (sig["tp2"] - sig["tp1"])                          # entre TP1 et TP2
+        sell = sig["dir"] == "SELL"
+        obs = {"sup": [(px, px, "creux H4")] if sell else [], "res": [] if sell else [(px, px, "sommet H4")], "atr": 1.0}
+        with mock.patch("setups.detect", return_value=None), mock.patch.object(setups, "S3_MIN_RR", 0), \
+                mock.patch.object(setups, "S3_NOCONF_MIN_RR", 0), \
+                mock.patch.multiple(S, INTRADAY=True, htf_obstacles=lambda pr, n, tfs=None: obs):
+            sigs, f = self.replay(self.DOUBLE_TOP)
+        self.assertTrue(sigs)
+        self.assertIsNone(sigs[0]["tp3"])
+        self.assertGreater(S.s5_rr(sigs[0], "tp3"), 0)                             # ratio calculé sur le dernier objectif restant
 
 
 # ==========================================================================
@@ -2768,14 +2809,12 @@ class CrtS4(unittest.TestCase):
                              env={**os.environ, "S4_MIN_RR": "", "S1_MIN_RR": ""}, capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
         self.assertEqual(out.stdout.strip(), "True")
 
-    def test_session(self):
-        sig = self.scan()[0][0]
-        sess = sig["session"]
-        other = "Londres" if sess != "Londres" else "New York"
-        sigs, f = self.scan(kz=True, CRT_SESSIONS=(other,))
-        self.assertEqual((sigs, f["CRT_session"]), ([], 1))                        # cassure hors des sessions autorisées
-        self.assertTrue(self.scan(kz=True, CRT_SESSIONS=(sess,))[0])
-        self.assertTrue(self.scan(kz=False, CRT_SESSIONS=(other,))[0])             # marchés 24h/24 : jamais de contrainte de session
+    def test_pas_de_filtre_de_session(self):
+        self.assertFalse(hasattr(S, "CRT_SESSIONS"))                               # la cassure suit la clôture de C2 : aucune restriction d'horaire
+        sig = self.scan(kz=True)[0][0]
+        self.assertIn("session", sig)                                              # la session reste affichée dans l'alerte
+        self.assertTrue(self.scan(kz=True)[0])
+        self.assertTrue(self.scan(kz=False)[0])
 
     def test_entree_trop_loin_ou_trop_tardive(self):
         sigs, f = self.scan(CRT_CHASE_ATR=-1.0)
@@ -2814,7 +2853,7 @@ class CrtS4(unittest.TestCase):
         self.assertEqual(len(sigs), 1)                                             # hors intraday : pas de cadre H4/H1
 
     def test_entonnoir_s4(self):
-        for k in ("CRT_vol", "CRT_sweep", "CRT_taille", "CRT_session", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr"):
+        for k in ("CRT_vol", "CRT_sweep", "CRT_taille", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr"):
             self.assertIn(k, G.FUNNEL_ORDER)
             self.assertIn(k, G.FUNNEL_LABEL)
 

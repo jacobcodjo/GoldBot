@@ -207,7 +207,6 @@ CRT_TP3_EXT = 0.5                   # TP3 = bord opposé de C1 + 50 % de son ran
 CRT_MIN_RR = _num("S4_MIN_RR", S5_MIN_RR)       # ratio gain/risque minimal au milieu du range de C1 (TP1) : le même que S1 par défaut (0 = désactivé)
 CRT_MIN_RANGE_ATR, CRT_MAX_RANGE_ATR = 0.8, 3.5  # taille raisonnable du range de C1 (x ATR du timeframe de référence)
 CRT_SWEEP_MIN_ATR = _num("S4_SWEEP_MIN_ATR", 0.1)   # C2 doit dépasser le bord de C1 d'au moins 0,1 ATR du timeframe de référence (0 = n'importe quelle mèche)
-CRT_SESSIONS = ("Londres", "New York", "London Close")   # session de la bougie de cassure (marchés à séance seulement)
 CRT_LIMIT_MAX_ATR = 1.5                          # ordre limite à plus de 1,5 ATR M15 du prix : signal écarté
 CRT_CHASE_ATR = 0.75                             # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR M15 de la clôture de déclenchement
 CRT_MAX_AGE_MIN = _num("S4_MAX_AGE_MIN", 20.0)   # déclencheur de plus de 20 minutes : signal écarté (0 = désactivé)
@@ -495,6 +494,7 @@ S3_MAX_AGE_MIN = _num("S3_MAX_AGE_MIN", 20.0)      # déclencheur de plus de 20 
 S3_SESSIONS = ("Londres", "New York", "London Close")   # session du déclencheur (marchés à séance seulement)
 S3_CHASE_ATR = 0.75                                # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR de la clôture de déclenchement
 S3_LIMIT_MAX_ATR = 1.5                             # figures : zone de l'ordre limite à plus de 1,5 ATR M15 du prix : signal écarté
+S3_FIGURE_OBST_TFS = ("H4",)                       # figures : seuls les obstacles H4 (et la veille) comptent devant l'objectif, pas les pivots ni zones H1
 S3_CONTEXT_ALIGN = _flag("S3_CONTEXT_ALIGN", True)  # figure de continuation : pas contre une tendance H4 ou D1 claire
 S3_FIB_FILTER = _flag("S3_FIB_FILTER", True)       # figures de continuation : le repli (la figure) ne doit pas reprendre plus de 61,8 % de la jambe précédente
 S3_FIB_CONT_MAX = 0.618                            # profondeur maximale du repli
@@ -862,9 +862,10 @@ def prev_day_range(h1c, now):
     return max(x["high"] for x in last), min(x["low"] for x in last)
 
 
-def htf_obstacles(provide, now):
+def htf_obstacles(provide, now, tfs=("H4", "H1")):
     """Niveaux et zones majeurs H4 / H1 : {'sup': [(bas, haut, nom)], 'res': [...], 'atr': ATR H1} ; None si données insuffisantes.
-    Supports : creux H1/H4, plus bas de la veille, zones de demande. Résistances : sommets, plus haut de la veille, zones d'offre."""
+    Supports : creux H1/H4, plus bas de la veille, zones de demande. Résistances : sommets, plus haut de la veille, zones d'offre.
+    `tfs` limite les timeframes pris en compte pour les pivots et les zones (("H4",) : pas de pivots ni de zones H1) ; la veille reste toujours incluse."""
     h1, h4 = provide("H1"), provide("H4")
     if not h1 or not h4:
         return None
@@ -875,7 +876,7 @@ def htf_obstacles(provide, now):
     if a <= 0:
         return None
     sup, res = [], []
-    for tf, cs in (("H4", h4c), ("H1", h1c)):
+    for tf, cs in ((t, {"H4": h4c, "H1": h1c}[t]) for t in tfs):
         win = cs[-OBST_BARS[tf]:]
         sup += [(win[i]["low"], win[i]["low"], f"creux {tf}") for i in swings(win, "low", OBST_SWING_N[tf])]
         res += [(win[i]["high"], win[i]["high"], f"sommet {tf}") for i in swings(win, "high", OBST_SWING_N[tf])]
@@ -923,12 +924,12 @@ def s5_rr(sig, on="tp2"):
     return abs(tp - sig["entry"]) / risk if risk > 0 else 0
 
 
-def obstacle_filter(sig, provide, now, prefix, entry_check, min_rr, rr_on="tp2"):
+def obstacle_filter(sig, provide, now, prefix, entry_check, min_rr, rr_on="tp2", tfs=None):
     """Cadre intraday (S1 et S2). (a) si entry_check, l'entrée doit être sur réaction à un niveau ou une zone H4/H1 du bon côté ; (b) TP1 ne dépasse jamais
     le prochain obstacle opposé : à moins de OBST_MIN_RR R, le signal est écarté, sinon les objectifs sont ramenés avant lui et le ratio
     minimal est recontrôlé. Retourne None si le signal passe (objectifs éventuellement modifiés), sinon la clé d'entonnoir du refus.
     Les clés de refus sont préfixées (S1 : « S5 », S2 : « S2 »). Sans données H1/H4 suffisantes, le signal passe."""
-    obs = htf_obstacles(provide, now)
+    obs = htf_obstacles(provide, now) if tfs is None else htf_obstacles(provide, now, tfs)
     if obs is None:
         return None
     d, e, sl, a = sig["dir"], sig["entry"], sig["sl"], obs["atr"]

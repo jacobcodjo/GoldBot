@@ -23,7 +23,7 @@ Le bot **n'exécute aucun ordre** : il envoie des alertes (entrée, stop, TP1 à
 
 - **Par défaut, toutes les stratégies actives tournent sur chaque actif**, indices synthétiques compris. Les distances sont en ATR, mais les règles ont été pensées pour l'or : compare actif par actif au backtest et retire ceux qui ne tiennent pas (variable `SYMBOLS`).
 - **Exposition par devise** : un trade compte long ou short sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; or acheté = short USD) ; 2 trades au plus dans le même sens sur une même devise. BTC et ETH : 2 au plus dans le même sens. Pas de limite pour les indices.
-- **Cryptos et indices (24h/24)** : pas de rollover ni de fermeture de week-end ; seules les annonces USD bloquent les alertes (pas les indices) ; S2 et S4 sans limite d'horaire de session.
+- **Cryptos et indices (24h/24)** : pas de rollover ni de fermeture de week-end ; seules les annonces USD bloquent les alertes (pas les indices) ; les stratégies à session (S1, S2, S3) sans limite d'horaire (S4 n'en a jamais).
 - **Indices Volatility** : prix généré aléatoirement, insensible aux news, sans récapitulatif du matin. Rien ne garantit qu'une stratégie ait un avantage sur un prix aléatoire : valide au backtest (`--sym synth`) avant de te fier aux alertes. La variante Pullback « classique » (EMA/ADX) n'a pas de sens sur un prix généré ; la variante « structure » y est imposée. D1 = bougie daily de Deriv (00h GMT). **Récapitulatif du soir** : chaque jour, 4 h avant la clôture de cette bougie (`SYNTH_RECAP_HEURES`), un message par classe (« Volatility Indices », « Volatility (1s) Indices »).
 - **Spreads par défaut** (estimations, `SPREAD_PCT` ou `SPREAD_TABLE`) : or 0,015 %, majeures 0,006 %, croisements 0,007 à 0,014 %, BTC/ETH 0,05 %, indices 0,02 %.
 
@@ -177,6 +177,7 @@ Boutons **Pris / Ignoré** sous chaque alerte, et `/pris N`, `/ignore N`, `/r N 
 ## Backtest
 
 Workflow **Backtest Or** ou, en local : `python backtest.py --days 120 --split 0.6`.
+Pour tester **par type d'actifs**, lance le workflow avec `sym = classes` : un job par classe (or, forex_session, forex_jpy, forex_calme, crypto, synthetique), en parallèle, chacun avec son rapport Telegram ; un type en échec n'arrête pas les autres. Une seule classe : `sym = forex_jpy`, ou en local `--sym forex_jpy`.
 
 - Rejoue les mêmes fonctions que le bot, sans regarder le futur, avec spread (`--spread-pct` ou `SPREAD_TABLE`). Prévois environ 25 jours d'échauffement (EMA 200 du H4) : demande `--days` en plus.
 - `--sym frxXAUUSD,frxEURUSD`, `--sym all` (28 actifs), `--sym synth`, ou une classe (`forex_jpy`, `crypto`…) ; `--only S2,S3` (`--only S3` pour figures et retournement) ; `--set strategies.S5_ADX_MIN=15,18,22` pour une grille ; `--source csv` (un seul actif) ou `--source sim` (marche aléatoire, contrôle de bon sens).
@@ -490,7 +491,7 @@ la tendance, avec au moins 2 signes d'essoufflement sur 3 (divergence RSI, bougi
 - **Âge du déclencheur** : au plus 20 minutes (`S3_MAX_AGE_MIN`).
 - **Contexte** (figures de continuation seulement) : pas contre une tendance H4 ou D1 claire (`S3_CONTEXT_ALIGN`). Un retournement va par définition contre la tendance précédente : non concerné.
 - **Fibonacci** (figures) : une continuation dont le repli reprend plus de 61,8 % de la jambe précédente est écartée (`S3_FIB_FILTER`) ; le TP3 d'une figure de retournement est plafonné à l'origine de la jambe précédente (`S3_FIB_CAP_TP3`).
-- **Obstacles H4/H1** (intraday) : TP1 ne dépasse pas le prochain obstacle opposé (à moins de 1 R : signal écarté, sinon objectifs ramenés 0,1 ATR H1 avant lui puis ratio recontrôlé, vers TP3 pour les figures et sur TP1 pour le retournement).
+- **Obstacles** (intraday) : TP1 ne dépasse pas le prochain obstacle opposé (devant TP1 : signal écarté, sinon objectifs ramenés 0,1 ATR H1 avant lui puis ratio recontrôlé, vers TP3 pour les figures et sur TP1 pour le retournement). **Figures : obstacles H4 et veille seulement** (`S3_FIGURE_OBST_TFS`), sans pivots ni zones H1 ; retournement : H4 et H1.
 
 ### CRT (code S4) · D1/H4 > M15 : Candle Range Theory pur
 
@@ -501,7 +502,7 @@ Le range d'une bougie de référence (daily ou H4) est balayé, puis livré dans
 | C1 | Dernière bougie **D1 (range daily) ou H4** clôturée avant C2. **Taille raisonnable** : entre 0,8 et 3,5 x ATR du timeframe de référence (`CRT_MIN_RANGE_ATR`, `CRT_MAX_RANGE_ATR`), assez grande pour qu'un stop serré donne au moins 1:3 jusqu'au milieu du range, sans être démesurée. |
 | C2 | Bougie clôturée qui dépasse **un seul** côté de C1 d'au moins 0,1 x ATR du timeframe de référence (`S4_SWEEP_MIN_ATR`) et **clôture dans le range de C1**. Dépasser les deux côtés (englobante) ou clôturer hors du range n'est pas un CRT. |
 | C3 | Bougie en formation : la livraison se fait pendant C3. La confirmation M15 doit arriver avant sa clôture. |
-| Entrée | Première clôture M15 au-delà du dernier swing M15 (CHoCH avec déplacement), **après la clôture de C2** et à moins de `CRT_PIVOT_BARS` bougies de l'extrême de C2. Si le prix reprend l'extrême de C2 pendant C3, le sweep est annulé. Ordre limite sur le bloc d'ordre ou le FVG M15 s'il y en a un, sinon au marché. Zone à plus de 1,5 ATR M15 du prix : écartée ; au marché, prix déjà parti de plus de 0,75 ATR : écarté. Sessions : Londres, New York, London Close (`CRT_SESSIONS`, sauf actifs 24/7). |
+| Entrée | Première clôture M15 au-delà du dernier swing M15 (CHoCH avec déplacement), **après la clôture de C2** et à moins de `CRT_PIVOT_BARS` bougies de l'extrême de C2. Si le prix reprend l'extrême de C2 pendant C3, le sweep est annulé. Ordre limite sur le bloc d'ordre ou le FVG M15 s'il y en a un, sinon au marché. Zone à plus de 1,5 ATR M15 du prix : écartée ; au marché, prix déjà parti de plus de 0,75 ATR : écarté. Aucune restriction de session : la cassure suit la clôture de C2, à toute heure. |
 | Stop | Au-delà de l'extrême de C2, plus 0,15 x ATR M15 (`CRT_SL_BUF_ATR`). |
 | Objectifs | TP1 milieu de C1, TP2 bord opposé de C1, TP3 bord opposé + 50 % du range (`CRT_TP3_EXT`). **Ratio minimal 1:3 jusqu'au milieu de C1 (TP1)**, comme S1, S2 et le retournement : peut être supérieur, jamais inférieur (`S4_MIN_RR`). Le risque est ainsi borné à un sixième du range de C1. |
 | Garde-fous | Volatilité (ATR H1 d'au moins 0,5 x sa médiane, `S4_VOL_MIN_RATIO`) ; déclencheur de 20 minutes au plus (`S4_MAX_AGE_MIN`) ; **contexte** : pas contre une tendance H4 ou D1 claire (`S4_CONTEXT_ALIGN`) ; **obstacles H4/H1** (intraday) : TP1 ne dépasse pas le prochain obstacle opposé (à moins de 1 R : signal écarté, sinon objectifs ramenés avant lui puis ratio recontrôlé). Pas de plafond de risque séparé : le ratio au milieu de C1 et la taille du range le bornent. |
