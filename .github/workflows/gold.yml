@@ -108,7 +108,6 @@ jobs:
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
           DERIV_APP_ID: ${{ vars.DERIV_APP_ID }}
           DERIV_WS_URL: ${{ vars.DERIV_WS_URL }}
-          CALENDAR_URL: ${{ vars.CALENDAR_URL }}
           SYNTH_RECAP_HEURES: ${{ vars.SYNTH_RECAP_HEURES }}
           ALERT_FUSEAU_NOM: ${{ vars.ALERT_FUSEAU_NOM }}
           WEEKEND_EXIT: ${{ vars.WEEKEND_EXIT }}
