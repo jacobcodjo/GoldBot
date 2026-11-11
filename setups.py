@@ -461,7 +461,7 @@ TREND_LB = int(_f("S6_TREND_LB", 30))
 TREND_ATR = _f("S6_TREND_ATR", 1.5)
 POLE_LB = int(_f("S6_POLE_LB", 20))
 POLE_ATR = _f("S6_POLE_ATR", 3.5)
-SL_BUF_ATR = 0.2                                 # marge du stop au-delà de la figure (en ATR du timeframe de la figure)
+S3_OB_WINDOW = 12                                # le déplacement qui casse la ligne part de l'extrême des 12 dernières bougies avant la cassure
 TP_FRACTIONS = (0.5, 1.0, 1.5)                   # TP1/TP2/TP3 = ligne - fraction x hauteur de la figure (mât pour drapeau/fanion)
 S3_RISK_CAP_ATR = _f("S6_RISK_CAP_ATR", 5.0)       # risque maximal : 5 x ATR du timeframe de la figure (H1 ou H4)
 S3_MIN_RR = _f("S6_MIN_RR", 1.0)                 # ratio minimal vers TP3 (les objectifs sont des fractions de la hauteur : 1:3 sur TP2 serait inatteignable)
@@ -739,11 +739,11 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
 
     buf = BUF_ATR * d["atr"]
     k = len(m15c) - 1
-    cur = None
+    cur, ci = None, None
     for i in range(k, max(k - S.FRESH, 0), -1):
         c0, c1 = m15c[i], m15c[i - 1]
         if s * c0["close"] < lvl(c0["epoch"] + S.GRAN[cf_n]) - buf and s * c1["close"] >= lvl(c1["epoch"] + S.GRAN[cf_n]) - buf:
-            cur = c0
+            cur, ci = c0, i
             break
     if cur is None:
         return None
@@ -758,9 +758,7 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
             return None
         if depth is not None:
             fib_note = f"✅ Repli de {max(depth, 0) * 100:.0f} % de la jambe précédente (Fibonacci, maximum {S.S3_FIB_CONT_MAX * 100:.1f} %)"
-    t_now = m15[-1]["epoch"] + S.GRAN[cf_n]
     price = m15[-1]["close"]
-    sl = s * (d["slref"] + SL_BUF_ATR * d["atr"])
     ref = lvl(cur["epoch"] + S.GRAN[cf_n])
     tps = [s * (ref - m * d["height"]) for m in TP_FRACTIONS]
     # Fibonacci, figure de retournement : la mesure de la figure ne doit pas dépasser l'origine de la jambe précédente (100 %) ; un
@@ -771,12 +769,23 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
         if tp3_m < leg[0] < tp2_m:
             tps[2] = s * leg[0]
             fib_note = "ℹ️ TP3 plafonné à l'origine de la jambe précédente (100 % Fibonacci)"
-    zone = s * lvl(t_now)                          # retest de la ligne cassée
-    otype, entry = S.pick_entry(dr, price, zone, sl, mode)
+    # Entrée sur le bloc d'ordre (bord proche) ou, à défaut, le milieu du FVG du déplacement qui a cassé la ligne ; stop à l'autre bout de la
+    # zone. Le déplacement part de l'extrême des S3_OB_WINDOW dernières bougies avant la cassure. Sans bloc d'ordre ni FVG : pas de signal.
+    poi, w0 = None, max(0, ci - S3_OB_WINDOW)
+    if ci > w0:
+        lo_i = (min if dr == "BUY" else max)(range(w0, ci), key=lambda j: m15c[j]["low"] if dr == "BUY" else m15c[j]["high"])
+        poi = S.entry_zone(m15c[:ci + 2], lo_i, ci - 1, dr)
+    if poi is None:
+        funnel["S3_zone"] += 1
+        return None                                # aucun bloc d'ordre ni FVG sur le déplacement de cassure
+    zlo, zhi = poi[2]
+    sl = zlo - S.BUF_ATR * a_m15 if dr == "BUY" else zhi + S.BUF_ATR * a_m15
+    zname = "bloc d'ordre" if poi[1] == "OB" else "FVG"
+    otype, entry = S.pick_entry(dr, price, poi[0], sl, mode)
     if otype != dr:
         if abs(price - entry) > S.S3_LIMIT_MAX_ATR * a_m15:
             funnel["S3_stale"] += 1
-            return None                            # zone du retest trop loin du prix
+            return None                            # zone d'entrée trop loin du prix
     elif S.is_late(dr, price, cur["close"], a_m15, S.S3_CHASE_ATR):
         funnel["S3_stale"] += 1
         return None                                # le prix a déjà fui après la cassure
@@ -808,6 +817,7 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
         "S3", "Figures & Retournement", dr, entry, lv, m15, cf_n, f"{d['name']}|{tf}|{cur['epoch']}",
         [f"✅ Figure {tf} : {d['name']} ({fam})",
          f"✅ Cassure confirmée en {cf_n} ({'sous' if dr == 'SELL' else 'au-dessus de'} la ligne)",
+         f"✅ Entrée sur le {zname} {cf_n} du déplacement qui a cassé la ligne ({zlo:.{dec}f} - {zhi:.{dec}f}), stop à l'autre bout de la zone",
          f"✅ Objectif = hauteur de la figure ({d['height']:.{dec}f})"]
         + (["✅ Confluence : retournement possible (sweep sur niveau majeur + cassure de structure H1)"] if conf else [])
         + ([f"ℹ️ Pas de confluence de retournement : ratio minimal {S3_NOCONF_MIN_RR:g} exigé"] if conf is False else [])
@@ -815,8 +825,8 @@ def _trigger(S, d, tf, csc, m15c, m15, a_m15, funnel, dec, mode, rev_fn=lambda: 
         lines=[{"y": s * ref, "label": f"{d['name']} · cassure", "kind": "info"}],
         inval=sl, short=f"{d['name']} {tf} · {fam}", trig=cur["epoch"], otype=otype, price_now=price,
         ttl=S3_LIMIT_TTL if otype != dr else None,
-        entry_note=f"Ordre limite au retest de la ligne cassée ({entry:.{dec}f})" if otype != dr else "",
-        extra=dict({"origine": "figure", "figure": d["name"], "famille": fam, "tf_figure": tf},
+        entry_note=S.poi_note(poi, cf_n, dec) if otype != dr else "",
+        extra=dict({"origine": "figure", "figure": d["name"], "famille": fam, "tf_figure": tf, "poi": poi[1] if otype != dr else "marché"},
                    **({"confluence_retournement": conf} if conf is not None else {}), **{"min_rr": min_rr}))
 
 

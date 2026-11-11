@@ -27,7 +27,7 @@ Entrées : ordres limites au retest d'une zone (ENTRY_MODE=auto) ou au marché (
 Réalisme : spread retiré de chaque trade, stop exécuté à l'ouverture en cas de gap, trades forex/or clôturés le
 vendredi à 16h30 New York.
 Limites : spread constant (défaut par actif : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 %), pas de glissement, calendrier
-économique non appliqué (rollover, vendredi soir et NFP le sont), un fichier CSV = un actif.
+économique supprimé du bot (rollover et vendredi soir restent appliqués), un fichier CSV = un actif.
 """
 import argparse, csv, itertools, math, random, sys, time
 from collections import Counter
@@ -172,7 +172,7 @@ def run(m5, sym, spread_pct=0.0, warmup_days=35, progress=True, split=None):
                 T.archive(tr, key)
         # 2) cherche de nouveaux setups
         provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
-        found = gold.scan(sym, provide, now, sent, funnel, ())
+        found = gold.scan(sym, provide, now, sent, funnel)
         viable = [s for s, _ in found if G.risk_check(tr, sym, s["dir"], now, s["label"])[0]]
         for sig, _ in found:
             gold.add_confluence(sig, tr, viable, now)

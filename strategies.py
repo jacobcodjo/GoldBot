@@ -538,15 +538,13 @@ def level_taken(m15c, px, kind, t0, upto=None):
     return False
 
 
-def s2_bias(h4, h1):
-    """(sens, 'H4' | 'H1') : biais de structure (BOS, règles de tendance de setups.py) du H4, sinon du H1 si le H4 n'a pas de
-    tendance claire ; (None, None) si aucun. h4 et h1 : bougies dont la dernière est en formation."""
+def s2_bias(h4, h1=None):
+    """(sens, 'H4') : biais de structure (BOS, règles de tendance de setups.py) déterminé EXCLUSIVEMENT sur le H4 ;
+    (None, None) si le H4 n'a pas de tendance claire (le H1 n'est plus consulté ; `h1` n'est gardé que pour la compatibilité
+    des appels). h4 : bougies dont la dernière est en formation."""
     import setups as TR                   # import tardif : setups.py importe ce module
-    for tf, cs in (("H4", h4), ("H1", h1)):
-        info = TR.trend_info(cs, tf)
-        if info:
-            return info["dir"], tf
-    return None, None
+    info = TR.trend_info(h4, "H4")
+    return (info["dir"], "H4") if info else (None, None)
 
 
 def htf_zones(cs, d, tf, before, untouched=None):
@@ -601,7 +599,7 @@ def htf_zone_hit(h4c, h1c, d, sweep_epoch, px, ext_px, a_h1):
 
 
 def s2_fib_check(d, entry, bias_tf, h4c, h1c, before, a_h1):
-    """Fibonacci de S2 : profondeur de l'entrée dans la jambe de référence (H4 si c'est lui qui donne le biais, sinon H1), calculée sur les
+    """Fibonacci de S2 : profondeur de l'entrée dans la jambe de référence du H4 (le biais est toujours H4), calculée sur les
     bougies clôturées avant le sweep. Un achat doit se faire dans le discount (sous l'équilibre de 50 %), une vente dans le premium.
     Retourne {'ok', 'r', 'tf', 'eq', 'lo', 'hi'}, ou None si le filtre est désactivé ou sans information (jambe absente ou
     inférieure à S2_FIB_MIN_ATR x ATR H1) : dans ce cas le signal n'est pas touché."""

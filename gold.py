@@ -1105,7 +1105,7 @@ def check_symbols(api):
 _LOGGED_BLOCKS = set()      # setups bloqués déjà signalés dans le journal (le refus est réexaminé à chaque scan)
 
 
-def scan(sym, provide, now, sent, funnel, news=()):
+def scan(sym, provide, now, sent, funnel):
     """Évalue les stratégies actives sur un actif. Retourne [(signal, bougies de l'unité d'entrée)] non encore envoyés.
     Utilisé par le bot en direct et par le backtest."""
     m5 = provide("M5")
@@ -1128,7 +1128,7 @@ def scan(sym, provide, now, sent, funnel, news=()):
         tl, te = SU.alert_lines(sig["dir"], infos, now)
         sig.update(trend_lines=tl, trend_short=SU.alert_short(sig["dir"], infos, now))
         sig["extra"] = dict(sig["extra"], **te)
-        why = G.blackout(sym, now, news)
+        why = G.blackout(sym, now)
         if why:
             funnel["blackout"] += 1
             if sig["key"] not in _LOGGED_BLOCKS:         # un seul message de journal par setup bloqué
@@ -1150,13 +1150,11 @@ def main():
     now = time.time()
     cache, state = load(CACHE_FILE), load(STATE_FILE)
     tr, g = T.load_trades(), G.load_guard()
-    news = G.load_news() + G.calendar_events(g, now, notify=notify)
     api, funnel = Deriv(), Counter()
     if not (TG_TOKEN and TG_CHAT):
         print("ATTENTION : secret Telegram manquant ou vide (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID)")
     try:
         G.health_start(g, BOT, now, notify)
-        G.fomc_check(g, now, notify)
         poll_telegram(g, tr, now)
         check_symbols(api)
         track_trades(api, tr, now, g)
@@ -1184,7 +1182,7 @@ def main():
                     _m[tf] = tf_candles(api, cache, _s, tf)
                 return _m[tf]
             try:
-                found = scan(sym, provide, now, state, funnel, news)
+                found = scan(sym, provide, now, state, funnel)
                 viable = [s for s, _ in found if G.risk_check(tr, sym, s["dir"], now, s["label"])[0]]
                 for sig, ltf in found:
                     add_confluence(sig, tr, viable, now)

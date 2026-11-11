@@ -185,22 +185,6 @@ class Garde(unittest.TestCase):
         os.environ["WEEKEND_EXIT"] = "0"
         self.assertFalse(G.weekend_exit_due("frxEURUSD", ts(2026, 10, 23, 16, 45)))
 
-    def test_alerte_calendrier_indisponible(self):
-        sent, g = [], {}
-
-        def boom(url):
-            raise OSError("réseau")
-        t0 = ts(2026, 10, 21, 9)
-        G.calendar_events(g, t0, http_get=boom, notify=sent.append)
-        G.calendar_events(g, t0 + 3600, http_get=boom, notify=sent.append)
-        self.assertEqual(sent, [])                                                  # trop tôt pour alerter
-        G.calendar_events(g, t0 + 7 * 3600, http_get=boom, notify=sent.append)
-        G.calendar_events(g, t0 + 8 * 3600, http_get=boom, notify=sent.append)
-        self.assertEqual(len(sent), 1)                                              # une seule alerte
-        G.calendar_events(g, t0 + 9 * 3600, http_get=lambda u: [], notify=sent.append)
-        self.assertEqual(len(sent), 2)
-        self.assertIn("de nouveau disponible", sent[1])
-
 
 class Messages(unittest.TestCase):
     def setUp(self):
@@ -314,7 +298,7 @@ class Strategies(unittest.TestCase):
         n = 0
         for t in range(7200, 9500):
             provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
-            for sig, _ in gold.scan("frxXAUUSD", provide, data[t]["epoch"] + 300, sent, funnel, ()):
+            for sig, _ in gold.scan("frxXAUUSD", provide, data[t]["epoch"] + 300, sent, funnel):
                 n += 1
                 buy = sig["dir"] == "BUY"
                 self.assertTrue((sig["sl"] < sig["entry"] < sig["tp1"]) if buy else (sig["tp1"] < sig["entry"] < sig["sl"]))
@@ -460,17 +444,17 @@ class IndicesVolatility(unittest.TestCase):
         t = 5000
         provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
         with mock.patch.object(S, "scan_all", fake):
-            gold.scan("R_75", provide, data[t]["epoch"] + 300, {}, Counter(), ())
+            gold.scan("R_75", provide, data[t]["epoch"] + 300, {}, Counter())
         self.assertEqual(seen, {"only": list(gold.ENABLED), "kz": False, "dec": 4})
 
-    def test_marche_24h_sur_24_sans_news_ni_week_end(self):
-        samedi, news = ts(2026, 10, 24, 12), [{"start": ts(2026, 10, 24, 11), "end": ts(2026, 10, 24, 13), "note": "NFP", "cur": []}]
+    def test_marche_24h_sur_24_sans_rollover_ni_week_end(self):
+        samedi = ts(2026, 10, 24, 12)
         for sym in ("R_100", "1HZ100V"):
-            self.assertIsNone(G.blackout(sym, samedi, news))
-            self.assertIsNone(G.blackout(sym, ts(2026, 10, 23, 17, 5), news))      # pas de rollover
+            self.assertIsNone(G.blackout(sym, samedi))
+            self.assertIsNone(G.blackout(sym, ts(2026, 10, 23, 17, 5)))      # pas de rollover
             self.assertFalse(G.weekend_exit_due(sym, ts(2026, 10, 23, 16, 45)))
             self.assertTrue(gold.is_247(sym))
-        self.assertIsNotNone(G.blackout("frxEURUSD", samedi, news))                 # le forex reste bloqué
+        self.assertIsNotNone(G.blackout("frxEURUSD", samedi))                 # le forex reste bloqué
 
     def test_pas_dans_le_recap_de_tendance(self):
         asked = []
@@ -686,10 +670,11 @@ class SweepCHoCH(unittest.TestCase):
         self.assertFalse(S.level_taken(m15, 101.0, "high", 1000, upto=3))   # avant cette bougie : intact
         self.assertFalse(S.level_taken(m15, 101.0, "high", 1000 + 900 * 4))  # niveau né après la mèche
 
-    def test_biais_h4_puis_h1(self):
+    def test_biais_exclusivement_h4(self):
         up, dn, flat = zigzag(3), zigzag(3, up=False), [candle(1_700_000_000 + 3600 * i, 100, 100.5, 99.5, 100) for i in range(60)]
-        self.assertEqual(S.s2_bias(up, dn), ("BUY", "H4"))           # le H4 prime sur le H1
-        self.assertEqual(S.s2_bias(flat, dn), ("SELL", "H1"))        # H4 sans tendance : on lit le H1
+        self.assertEqual(S.s2_bias(up, dn), ("BUY", "H4"))           # le H1 est ignoré
+        self.assertEqual(S.s2_bias(flat, dn), (None, None))          # H4 sans tendance : pas de biais, le H1 n'est pas lu
+        self.assertEqual(S.s2_bias(dn, up), ("SELL", "H4"))
         self.assertEqual(S.s2_bias(flat, flat), (None, None))
 
 
@@ -956,7 +941,7 @@ class OrdresLimites(unittest.TestCase):
                 provide = lambda tf, force=False, _t=t: rp.provide(tf, _t)
                 # toutes les stratégies sur l'or, indépendamment de sa classe : le test porte sur les ordres, pas sur les classes
                 with mock.patch.dict(gold.SYMBOL_OVERRIDES, {"frxXAUUSD": ["S1", "S2", "S3"]}):
-                    scanned = gold.scan("frxXAUUSD", provide, data[t]["epoch"] + 300, sent, funnel, ())
+                    scanned = gold.scan("frxXAUUSD", provide, data[t]["epoch"] + 300, sent, funnel)
                 for sig, _ in scanned:
                     buy = sig["dir"] == "BUY"
                     if gold.is_limit(sig):
@@ -1300,7 +1285,7 @@ class ConfluenceStrategies(unittest.TestCase):
         m5 = B.gen_sim(3, 1)
         steps = {"n": 0}
 
-        def fake_scan(sym, provide, now, sent, funnel, news=()):
+        def fake_scan(sym, provide, now, sent, funnel):
             steps["n"] += 1
             if steps["n"] not in (50, 51):                     # deux alertes seulement : S2 puis S3, 5 min plus tard
                 return []
@@ -1413,7 +1398,7 @@ class ClassesDActifs(unittest.TestCase):
                 _seen["only"] = only
                 return []
             with mock.patch.object(S, "scan_all", fake):
-                gold.scan(sym, provide, data[t]["epoch"] + 300, {}, Counter(), ())
+                gold.scan(sym, provide, data[t]["epoch"] + 300, {}, Counter())
             self.assertEqual(sorted(seen.get("only", [])), sorted(self.TOUTES), sym)
 
 
@@ -1596,7 +1581,7 @@ class TestBilanHebdomadaire(unittest.TestCase):
         self.assertNotIn("Par actif", txt)                                              # un seul actif : pas de ligne en plus
         self.assertNotIn("Entonnoir", txt)
         self.assertIn("alertes : 28", txt)
-        self.assertIn("objectif déjà atteint 21 · news/horaire 2 · doublons 1 · risque 6", txt)
+        self.assertIn("objectif déjà atteint 21 · horaire 2 · doublons 1 · risque 6", txt)
         self.assertNotIn("données", txt)
         self.assertLess(len(lines), 12)
 
@@ -2326,13 +2311,16 @@ class RetournementPossible(unittest.TestCase):
             with mock.patch.object(gold.SU, "trend_info", lambda c, tf=None: self.TREND_UP), \
                     mock.patch.object(gold.SU.S, "htf_obstacles", lambda pr, n: self.OBS_UP), \
                     mock.patch.object(gold, "ENABLED", ["S3"]):
-                out = gold.scan(sym, provide, now, {}, Counter(), ())
+                out = gold.scan(sym, provide, now, {}, Counter())
             self.assertEqual(any(sig["strat"] == "S3" and sig["extra"].get("origine") == "retournement" for sig, _ in out), attendu, sym)
 
 
     def test_signes_d_essoufflement_minimaux(self):
         self.assertIsNone(self.run_detect(MIN_SIGNS=4))                               # 3 signes seulement
         self.assertIsNotNone(self.run_detect(MIN_SIGNS=3))
+
+
+REAL_ENTRY_ZONE = S.entry_zone
 
 
 class ChartPatterns(unittest.TestCase):
@@ -2346,6 +2334,15 @@ class ChartPatterns(unittest.TestCase):
             p = mock.patch.object(setups, name, val)
             p.start()
             self.addCleanup(p.stop)
+        p = mock.patch.object(S, "entry_zone", self._fake_zone)           # les séries interpolées n'ont pas de bloc d'ordre : zone simulée
+        p.start()
+        self.addCleanup(p.stop)
+
+    @staticmethod
+    def _fake_zone(cs, lo_i, hi_i, d):
+        """Bloc d'ordre simulé : la bougie qui précède la cassure (bord proche pour l'entrée)."""
+        c = cs[hi_i]
+        return S.ob_entry(d, (c["low"], c["high"])), "OB", (c["low"], c["high"])
 
     @staticmethod
     def m15_series(way, seed=1, noise=0.04, flip=False):
@@ -2373,8 +2370,10 @@ class ChartPatterns(unittest.TestCase):
                         "low": min(x["low"] for x in grp), "close": grp[-1]["close"]})
         return out
 
-    def replay(self, way, flip=False, mode="market", start=420):
+    def replay(self, way, flip=False, mode="market", start=420, tweak=None):
         m15 = self.m15_series(way, flip=flip)
+        if tweak:
+            tweak(m15)
         for e in range(start, len(m15) - 1):
             provide = lambda tf, force=False, _e=e: {"M15": m15[:_e + 1], "H1": self.agg(m15, 4, _e), "H4": self.agg(m15, 16, _e), "D1": None}[tf]
             funnel = Counter()
@@ -2443,13 +2442,14 @@ class ChartPatterns(unittest.TestCase):
         self.assertLess(sig["sl"], sig["entry"])
         self.assertTrue(sig["entry"] < sig["tp1"] < sig["tp2"] < sig["tp3"])
 
-    def test_ordre_limite_au_retest(self):
+    def test_ordre_limite_sur_la_zone_de_cassure(self):
         sigs, _ = self.replay(self.DOUBLE_TOP, mode="limit")
         sig = sigs[0]
-        if sig["otype"] != sig["dir"]:                      # ordre limite posé au retest de la ligne cassée
+        if sig["otype"] != sig["dir"]:                      # ordre limite posé sur la zone du déplacement qui a cassé la ligne
             self.assertEqual(sig["otype"], "SELL LIMIT")
             self.assertGreater(sig["entry"], sig["price_now"])
             self.assertEqual(sig["ttl"], S.LIMIT_TTL["S3"])
+            self.assertEqual(sig["extra"]["poi"], "OB")
 
     def test_tete_epaules(self):
         way = [(0, 80), (60, 90), (90, 100), (100, 95), (115, 105), (130, 95.5), (142, 100.5), (170, 90), (190, 85)]
@@ -2476,10 +2476,10 @@ class ChartPatterns(unittest.TestCase):
     def test_sans_confluence_ratio_plus_exigeant(self):
         from unittest import mock
         import setups
-        with mock.patch("setups.detect", return_value=None), mock.patch.object(setups, "S3_NOCONF_MIN_RR", 5.0):
+        with mock.patch("setups.detect", return_value=None), mock.patch.object(setups, "S3_NOCONF_MIN_RR", 500.0):
             sigs, _ = self.replay(self.DOUBLE_TOP)
             self.assertIsNone(sigs)                                                        # ratio TP3 insuffisant sans confluence
-        with mock.patch("setups.detect", return_value=dict(self.REV_SELL)), mock.patch.object(setups, "S3_NOCONF_MIN_RR", 5.0):
+        with mock.patch("setups.detect", return_value=dict(self.REV_SELL)), mock.patch.object(setups, "S3_NOCONF_MIN_RR", 500.0):
             sigs, _ = self.replay(self.DOUBLE_TOP)
             self.assertIsNotNone(sigs)                                                     # avec confluence, le ratio normal suffit
 
@@ -2560,7 +2560,8 @@ class ChartPatterns(unittest.TestCase):
         sig, _ = self.ref_signal()
         risk = abs(sig["entry"] - sig["sl"])
         d, e = sig["dir"], sig["entry"]
-        near = e + 0.5 * (sig["tp1"] - e)                                         # obstacle entre l'entrée et TP1 (moins de 1 R)
+        gap = min(0.5 * risk, 0.5 * abs(sig["tp1"] - e))                          # obstacle entre l'entrée et TP1, à moins de 1 R
+        near = e - gap if d == "SELL" else e + gap
         mk = lambda px: {"sup": [(px, px, "creux H1")] if d == "SELL" else [], "res": [] if d == "SELL" else [(px, px, "sommet H1")], "atr": 1.0}
         funnel = Counter()
         with mock.patch.object(S, "INTRADAY", True), mock.patch.object(S, "htf_obstacles", lambda pr, n, tfs=None: mk(near)):
@@ -2620,6 +2621,93 @@ class ChartPatterns(unittest.TestCase):
         self.assertTrue(sigs)
         self.assertIsNone(sigs[0]["tp3"])
         self.assertGreater(S.s5_rr(sigs[0], "tp3"), 0)                             # ratio calculé sur le dernier objectif restant
+
+
+    # --- entrée sur le bloc d'ordre / FVG du déplacement de cassure, stop à l'autre bout de la zone, mêmes objectifs
+    def zone_de_cassure(self, sig, way=None, flip=False):
+        """(bas, haut) de la bougie qui précède la cassure dans la série du scénario (zone simulée par _fake_zone)."""
+        m15 = self.m15_series(way or self.DOUBLE_TOP, flip=flip)
+        ep = sig["trig_close"] - 2 * 900                                           # bougie avant la bougie de cassure
+        c = next(x for x in m15 if x["epoch"] == ep)
+        return c["low"], c["high"]
+
+    def test_stop_a_l_autre_bout_du_bloc_d_ordre_vente(self):
+        sig, _ = self.ref_signal()
+        lo, hi = self.zone_de_cassure(sig)
+        self.assertEqual(sig["dir"], "SELL")
+        self.assertGreater(sig["sl"], hi)                                          # stop au-delà du haut du bloc d'ordre
+        self.assertLess(sig["sl"] - hi, 1.0)                                       # ... et seulement d'une petite marge (BUF_ATR x ATR)
+        self.assertLess(sig["entry"], sig["sl"])
+        self.assertTrue(any("bloc d'ordre" in x and "autre bout" in x for x in sig["details"]))
+
+    def test_stop_a_l_autre_bout_du_bloc_d_ordre_achat(self):
+        from unittest import mock
+        with mock.patch("setups.detect", return_value=None):
+            sigs, _ = self.replay(self.DOUBLE_TOP, flip=True)
+        sig = sigs[0]
+        lo, hi = self.zone_de_cassure(sig, flip=True)
+        self.assertEqual(sig["dir"], "BUY")
+        self.assertLess(sig["sl"], lo)                                             # stop sous le bas du bloc d'ordre
+        self.assertLess(lo - sig["sl"], 1.0)
+
+    def test_entree_au_bord_proche_du_bloc_d_ordre_en_limite(self):
+        from unittest import mock
+        with mock.patch("setups.detect", return_value=None):
+            sigs, _ = self.replay(self.DOUBLE_TOP, mode="limit")
+        sig = sigs[0]
+        lo, hi = self.zone_de_cassure(sig)
+        if sig["otype"] != sig["dir"]:
+            self.assertAlmostEqual(sig["entry"], S.ob_entry("SELL", (lo, hi)))     # bord proche du bloc d'ordre
+            self.assertIn("bloc d'ordre", sig["entry_note"])
+
+    def test_objectifs_inchanges_mesures_depuis_la_ligne(self):
+        sig, _ = self.ref_signal()
+        line = sig["lines"][0]["y"]                                                # ligne cassée : les objectifs se mesurent depuis elle
+        d1, d2 = abs(line - sig["tp1"]), abs(line - sig["tp2"])
+        self.assertAlmostEqual(d2, 2 * d1, places=6)                               # TP1 = 0,5 x hauteur, TP2 = 1 x hauteur, comme avant
+
+    def test_sans_bloc_d_ordre_ni_fvg_pas_de_signal(self):
+        from unittest import mock
+        with mock.patch("setups.detect", return_value=None), mock.patch.object(S, "entry_zone", lambda *a, **k: None):
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+        self.assertIsNone(sigs)
+        funnel = Counter()
+        m15 = self.m15_series(self.DOUBLE_TOP)
+        with mock.patch("setups.detect", return_value=None), mock.patch.object(S, "entry_zone", lambda *a, **k: None):
+            for e in range(420, len(m15) - 1):
+                provide = lambda tf, force=False, _e=e: {"M15": m15[:_e + 1], "H1": self.agg(m15, 4, _e), "H4": self.agg(m15, 16, _e), "D1": None}[tf]
+                S.scan_s3(provide, m15[e]["epoch"] + 900, funnel, 2, True, "market")
+        self.assertGreaterEqual(funnel["S3_zone"], 1)                              # le refus est compté dans l'entonnoir
+
+    def test_fvg_au_milieu_quand_il_n_y_a_pas_de_bloc_d_ordre(self):
+        from unittest import mock
+        fvg = lambda cs, lo_i, hi_i, d: (S.fvg_entry(d, (95.0, 96.0)), "FVG", (95.0, 96.0))
+        with mock.patch("setups.detect", return_value=None), mock.patch.object(S, "entry_zone", fvg):
+            sigs, _ = self.replay(self.DOUBLE_TOP)
+        sig = sigs[0]
+        self.assertGreater(sig["sl"], 96.0)                                        # stop à l'autre bout du FVG (au-delà de son haut pour une vente)
+        self.assertTrue(any("FVG" in x for x in sig["details"]))
+
+    def test_vraie_detection_du_bloc_d_ordre_sur_la_cassure(self):
+        """Sans zone simulée : bougie haussière avant la cassure d'une vente = bloc d'ordre ; entrée sur son bord proche, stop au-delà de son haut."""
+        from unittest import mock
+        sig0, _ = self.ref_signal()
+        ci_epoch = sig0["trig_close"] - 900                                        # bougie de cassure
+        base = self.m15_series(self.DOUBLE_TOP)
+        idx = next(i for i, c in enumerate(base) if c["epoch"] == ci_epoch)
+
+        def tweak(m):
+            c = m[idx - 1]
+            m[idx - 1] = dict(c, open=c["close"], close=c["open"], high=c["high"] + 0.3)     # bougie haussière nette : le bloc d'ordre
+        with mock.patch("setups.detect", return_value=None), mock.patch.object(S, "entry_zone", REAL_ENTRY_ZONE):
+            sigs, _ = self.replay(self.DOUBLE_TOP, mode="limit", tweak=tweak)
+        self.assertTrue(sigs)
+        sig = sigs[0]
+        c = base[idx - 1]
+        hi = c["high"] + 0.3
+        self.assertGreater(sig["sl"], hi)
+        self.assertLess(sig["sl"] - hi, 1.0)
+        self.assertEqual(sig["extra"]["figure"], "Double sommet")
 
 
 # ==========================================================================

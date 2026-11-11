@@ -1,7 +1,7 @@
-"""Garde-fous du bot (or, paires majeures, BTC et ETH) : fenêtres sans alerte (news, rollover, week-end),
+"""Garde-fous du bot (or, paires majeures, BTC et ETH) : fenêtres sans alerte (rollover, week-end),
 un seul trade actif par actif, stratégie et sens, exposition corrélée par devise, surveillance du bot, entonnoir de filtres et bilan hebdomadaire.
 Autonome : aucun import de bot.py (les fonctions d'envoi sont passées en argument)."""
-import json, math, os, re
+import json, math, os
 from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -11,7 +11,6 @@ import tracker as T
 
 NY = ZoneInfo("America/New_York")
 GUARD_FILE = "guard.json"
-NEWS_FILE = "news.json"
 
 # --- Limites de risque ---
 # Un seul trade par actif et par sens, toutes stratégies confondues (ONE_TRADE_PER_SIDE=0 : un par stratégie, ancien comportement).
@@ -22,35 +21,17 @@ GROUP_LIMIT = 2            # exposition nette maximale par devise (USD, EUR, JPY
 ROLLOVER = (16 * 60 + 55, 17 * 60 + 15)     # minutes NY : élargissement des spreads
 FRIDAY_CLOSE_FROM = 15 * 60 + 30            # vendredi : trop proche de la fermeture hebdomadaire
 SUNDAY_OPEN = (17 * 60, 18 * 60)            # dimanche : ouverture de semaine (gap)
-NFP = (8 * 60, 9 * 60 + 30)                 # premier vendredi du mois, publication à 8h30 NY
-# --- Calendrier économique automatique (flux gratuit Forex Factory / Fair Economy) ---
-CALENDAR_URLS = [u for u in (
-    os.getenv("CALENDAR_URL"),                                   # pour forcer une autre source
-    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
-) if u]
-CALENDAR_REFRESH = 6 * 3600     # le flux n'est interrogé qu'une fois toutes les 6 h
-CALENDAR_RETRY = 900            # nouvel essai après 15 min en cas d'échec
-CALENDAR_ALERT_AFTER = 6 * 3600  # alerte Telegram si le flux reste indisponible plus de 6 h
-CALENDAR_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"}
-NEWS_BEFORE_MIN = 15            # pas d'alerte 15 min avant un événement à fort impact
-NEWS_AFTER_MIN = 45             # ... ni 45 min après
-BIG_AFTER_MIN = 90              # 90 min après une décision de taux ou une conférence de presse
-BIG_EVENT = re.compile(r"rate|fomc|press conference|monetary policy|statement|minutes", re.I)
-# Décisions de taux de la Fed 2026 (14h ET, conférence de presse à 14h30). Source : calendrier officiel de la Fed.
-FOMC_2026 = ["2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
-             "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09"]
 # --- Surveillance ---
 GAP_ALERT_MIN = 30         # alerte si le bot reprend après plus de 30 min sans scan
 FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée Deriv
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
 FUNNEL_ORDER = ["data", "S2_niveau", "S2_vol", "S2_sweep", "S2_biais", "S2_zone", "S2_stale", "S2_risque", "S2_fib", "S2_rr", "S2_age", "S2_obst_entree", "S2_obst_cible", "S2_obst_rr",
-                "S2_signal", "S3_figure", "S3_vol", "S3_cassure", "S3_fib", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr", "S3_signal", "S3_retournement", "CRT_vol", "CRT_sweep", "CRT_taille", "CRT_c2", "CRT_choch", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr", "CRT_signal", "S5_regime", "S5_tendance", "S5_adx", "S5_d1", "S5_impulsion", "S5_session", "S5_risque", "S5_signal", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr", "signal", "stale", "blackout", "dedupe", "risk", "alert"]
+                "S2_signal", "S3_figure", "S3_vol", "S3_cassure", "S3_fib", "S3_zone", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr", "S3_signal", "S3_retournement", "CRT_vol", "CRT_sweep", "CRT_taille", "CRT_c2", "CRT_choch", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr", "CRT_signal", "S5_regime", "S5_tendance", "S5_adx", "S5_d1", "S5_impulsion", "S5_session", "S5_risque", "S5_signal", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr", "signal", "stale", "blackout", "dedupe", "risk", "alert"]
 FUNNEL_LABEL = {"data": "données", "S2_niveau": "Sweep + CHoCH : niveaux",
-                "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4/H1", "S2_zone": "sur zone H1/H4", "S2_vol": "écartés S2 (marché trop calme)", "S2_stale": "écartés S2 (entrée trop loin ou trop tardive)", "S2_risque": "écartés S2 (stop trop large)", "S2_fib": "écartés S2 (mauvais côté Fibonacci)", "S2_rr": "écartés S2 (ratio sous le minimum)", "S2_age": "écartés S2 (déclencheur trop ancien)", "S2_obst_entree": "écartés S2 (hors niveau H4/H1)", "S2_obst_cible": "écartés S2 (obstacle devant l'objectif)", "S2_obst_rr": "écartés S2 (ratio sous le minimum après obstacle)", "S2_signal": "signal Sweep + CHoCH", "S3_figure": "Figures & Retournement : figures H1/H4", "S3_cassure": "cassure confirmée M15", "S3_vol": "écartés S3 (marché trop calme)", "S3_fib": "écartés S3 (repli Fibonacci trop profond)", "S3_stale": "écartés S3 (entrée trop loin ou trop tardive)", "S3_risque": "écartés S3 (stop trop large)", "S3_rr": "écartés S3 (ratio sous le minimum)", "S3_session": "écartés S3 (hors session)", "S3_age": "écartés S3 (déclencheur trop ancien)", "S3_contexte": "écartés S3 (contre la tendance H4/D1)", "S3_obst_cible": "écartés S3 (obstacle devant l'objectif)", "S3_obst_rr": "écartés S3 (ratio sous le minimum après obstacle)", "CRT_c2": "CRT : C2 balaye C1 et clôture dedans", "CRT_vol": "écartés CRT (marché trop calme)", "CRT_sweep": "écartés CRT (balayage de C2 trop faible)", "CRT_taille": "écartés CRT (range de C1 hors taille)", "CRT_stale": "écartés CRT (entrée trop loin ou trop tardive)", "CRT_rr": "écartés CRT (ratio au milieu de C1 sous le minimum)", "CRT_age": "écartés CRT (déclencheur trop ancien)", "CRT_contexte": "écartés CRT (contre la tendance H4/D1)", "CRT_obst_cible": "écartés CRT (obstacle devant l'objectif)", "CRT_obst_rr": "écartés CRT (ratio sous le minimum après obstacle)", "CRT_choch": "CRT : cassure M15 après C2", "CRT_signal": "signal CRT", "S3_signal": "signal Figures & Retournement", "S3_retournement": "retournements détectés (ex-S7)",
+                "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4/H1", "S2_zone": "sur zone H1/H4", "S2_vol": "écartés S2 (marché trop calme)", "S2_stale": "écartés S2 (entrée trop loin ou trop tardive)", "S2_risque": "écartés S2 (stop trop large)", "S2_fib": "écartés S2 (mauvais côté Fibonacci)", "S2_rr": "écartés S2 (ratio sous le minimum)", "S2_age": "écartés S2 (déclencheur trop ancien)", "S2_obst_entree": "écartés S2 (hors niveau H4/H1)", "S2_obst_cible": "écartés S2 (obstacle devant l'objectif)", "S2_obst_rr": "écartés S2 (ratio sous le minimum après obstacle)", "S2_signal": "signal Sweep + CHoCH", "S3_figure": "Figures & Retournement : figures H1/H4", "S3_cassure": "cassure confirmée M15", "S3_vol": "écartés S3 (marché trop calme)", "S3_fib": "écartés S3 (repli Fibonacci trop profond)", "S3_zone": "écartés S3 (pas de bloc d'ordre ni de FVG de cassure)", "S3_stale": "écartés S3 (entrée trop loin ou trop tardive)", "S3_risque": "écartés S3 (stop trop large)", "S3_rr": "écartés S3 (ratio sous le minimum)", "S3_session": "écartés S3 (hors session)", "S3_age": "écartés S3 (déclencheur trop ancien)", "S3_contexte": "écartés S3 (contre la tendance H4/D1)", "S3_obst_cible": "écartés S3 (obstacle devant l'objectif)", "S3_obst_rr": "écartés S3 (ratio sous le minimum après obstacle)", "CRT_c2": "CRT : C2 balaye C1 et clôture dedans", "CRT_vol": "écartés CRT (marché trop calme)", "CRT_sweep": "écartés CRT (balayage de C2 trop faible)", "CRT_taille": "écartés CRT (range de C1 hors taille)", "CRT_stale": "écartés CRT (entrée trop loin ou trop tardive)", "CRT_rr": "écartés CRT (ratio au milieu de C1 sous le minimum)", "CRT_age": "écartés CRT (déclencheur trop ancien)", "CRT_contexte": "écartés CRT (contre la tendance H4/D1)", "CRT_obst_cible": "écartés CRT (obstacle devant l'objectif)", "CRT_obst_rr": "écartés CRT (ratio sous le minimum après obstacle)", "CRT_choch": "CRT : cassure M15 après C2", "CRT_signal": "signal CRT", "S3_signal": "signal Figures & Retournement", "S3_retournement": "retournements détectés (ex-S7)",
                 "S5_regime": "Pullback : volatilité normale", "S5_tendance": "tendance HTF (naissante/établie)", "S5_adx": "ADX suffisant", "S5_d1": "écartés (contre la tendance D1)", "S5_impulsion": "impulsion + Fibonacci", "S5_session": "écartés (hors session)", "S5_risque": "écartés (stop trop large)", "S5_signal": "signal Pullback", "S5_obst_entree": "écartés (hors niveau H4/H1)", "S5_obst_cible": "écartés (obstacle devant l'objectif)", "S5_obst_rr": "écartés (ratio sous le minimum après obstacle)",
-                "signal": "signaux valides", "stale": "écartés (objectif déjà atteint)", "blackout": "bloqués (news/horaire)",
+                "signal": "signaux valides", "stale": "écartés (objectif déjà atteint)", "blackout": "bloqués (horaire)",
                 "dedupe": "doublons", "risk": "bloqués (risque)", "alert": "alertes"}
 
 
@@ -72,103 +53,8 @@ def save_guard(g, path=GUARD_FILE):
 
 
 # --------------------------------------------------------------------------
-# Fenêtres sans alerte : rollover, week-end, NFP, calendrier perso (news.json)
+# Fenêtres sans alerte : rollover, week-end (le calendrier économique n'est plus utilisé)
 # --------------------------------------------------------------------------
-def load_news(path=NEWS_FILE):
-    """news.json : [{"start": "2026-10-28T18:00:00Z", "end": "2026-10-28T19:30:00Z",
-    "note": "FOMC", "currencies": ["USD"]}] ; 'currencies' est facultatif (sinon tous les actifs réels)."""
-    try:
-        with open(path) as f:
-            out = []
-            for n in json.load(f):
-                p = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-                out.append({"start": p(n["start"]), "end": p(n["end"]),
-                            "note": n.get("note", "news"),
-                            "cur": [c.upper() for c in n.get("currencies", [])]})
-            return out
-    except Exception:
-        return []
-
-
-def fomc_events():
-    """Fenêtres FOMC intégrées : de 13h45 à 16h00 New York les jours de décision."""
-    out = []
-    for d in FOMC_2026:
-        day = datetime.fromisoformat(d)
-        t = lambda h, m: day.replace(hour=h, minute=m, tzinfo=NY).timestamp()
-        out.append({"start": t(13, 45), "end": t(16, 0), "note": "FOMC", "cur": ["USD"]})
-    return out
-
-
-def fomc_check(g, now, notify):
-    """Prévient (au plus tous les 14 jours) quand il reste moins de 30 jours de dates FOMC dans le code."""
-    last = max(datetime.fromisoformat(d).replace(hour=16, tzinfo=NY).timestamp() for d in FOMC_2026)
-    if last - now > 30 * 86400 or now - g.get("fomc_warned", 0) < 14 * 86400:
-        return
-    g["fomc_warned"] = int(now)
-    if last < now:
-        notify("⚠️ Plus aucune date FOMC dans guard.py (FOMC_2026). Ajoute les décisions de l'année à venir. "
-               "Le calendrier automatique reste actif, mais ce filet de sécurité est vide.")
-    else:
-        notify(f"⚠️ La dernière date FOMC de guard.py (FOMC_2026) est le {max(FOMC_2026)}. "
-               f"Ajoute bientôt les décisions de l'année suivante.")
-
-
-def _parse_calendar(data):
-    """Événements à fort impact des 8 grandes devises -> fenêtres sans alerte."""
-    out = []
-    for it in data if isinstance(data, list) else []:
-        try:
-            cur = str(it.get("country", "")).upper()
-            if str(it.get("impact", "")).lower() != "high" or cur not in CALENDAR_CURRENCIES:
-                continue
-            ts = datetime.fromisoformat(str(it["date"]).replace("Z", "+00:00")).timestamp()
-            title = str(it.get("title", "événement"))
-            after = BIG_AFTER_MIN if BIG_EVENT.search(title) else NEWS_AFTER_MIN
-            out.append({"start": ts - NEWS_BEFORE_MIN * 60, "end": ts + after * 60,
-                        "note": f"{cur} {title}", "cur": [cur]})
-        except Exception:
-            continue
-    return out
-
-
-def calendar_events(g, now, http_get=None, notify=None):
-    """Fenêtres sans alerte issues du calendrier automatique + des décisions FOMC intégrées.
-    Le flux est rafraîchi toutes les 6 h ; en cas d'échec, les dernières données restent utilisées."""
-    cal = g.setdefault("calendar", {"fetched": 0, "events": []})
-    if now - cal["fetched"] >= CALENDAR_REFRESH:
-        events, ok = [], False
-        for url in CALENDAR_URLS:
-            try:
-                if http_get is None:
-                    import requests
-                    r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (compatible; gold-bot/1.0)"})
-                    r.raise_for_status()
-                    data = r.json()
-                else:
-                    data = http_get(url)
-                events += _parse_calendar(data)
-                ok = True
-            except Exception as e:
-                print(f"Calendrier indisponible ({url.rsplit('/', 1)[-1]}) : {str(e)[:80]}")
-        if ok:
-            cal["events"], cal["fetched"] = events, int(now)
-            print(f"Calendrier mis à jour : {len(events)} événement(s) à fort impact.")
-            if cal.get("alerted") and notify:
-                notify("✅ Calendrier économique de nouveau disponible : les annonces bloquent à nouveau les alertes.")
-            cal["fail_since"], cal["alerted"] = 0, False
-        else:
-            cal["fetched"] = int(now) - CALENDAR_REFRESH + CALENDAR_RETRY
-            cal["fail_since"] = cal.get("fail_since") or int(now)
-            if notify and not cal.get("alerted") and now - cal["fail_since"] >= CALENDAR_ALERT_AFTER:
-                cal["alerted"] = True
-                notify(f"⚠️ Calendrier économique indisponible depuis {(now - cal['fail_since']) / 3600:.0f} h : "
-                       "les annonces à venir ne bloquent plus les alertes (seules les décisions FOMC intégrées et "
-                       "news.json restent actives). Vérifie le flux ou ajoute les annonces dans news.json.")
-    upcoming = [e for e in cal["events"] if e["end"] >= now - 3600]
-    return upcoming + fomc_events()
-
-
 WEEKEND_EXIT_FROM = 16 * 60 + 30     # vendredi 16h30 New York : les trades forex/or encore ouverts sont clôturés
 
 
@@ -176,7 +62,7 @@ SYNTH_PREFIXES = ("R_", "1HZ")   # indices synthétiques Deriv : R_100, 1HZ100V.
 
 
 def is_synthetic(sym):
-    """Indice synthétique Deriv (Volatility) : prix aléatoire, 24h/24 et 7j/7, insensible aux news."""
+    """Indice synthétique Deriv (Volatility) : prix aléatoire, 24h/24 et 7j/7, insensible aux annonces."""
     return sym.startswith(SYNTH_PREFIXES)
 
 
@@ -190,13 +76,10 @@ def weekend_exit_due(sym, now):
     return (wd == 4 and mins >= WEEKEND_EXIT_FROM) or wd == 5 or (wd == 6 and mins < SUNDAY_OPEN[0])
 
 
-def blackout(sym, now, news=()):
+def blackout(sym, now):
     """Motif de blocage si l'alerte tombe dans une fenêtre à éviter, sinon None."""
     if is_synthetic(sym):
-        return None                    # indices synthétiques : ni news, ni rollover, ni fermeture hebdomadaire
-    for n in news:
-        if n["start"] <= now <= n["end"] and (not n["cur"] or any(c in sym.upper() for c in n["cur"])):
-            return f"news : {n['note']}"
+        return None                    # indices synthétiques : ni rollover ni fermeture hebdomadaire
     if not sym.startswith("frx"):
         return None                    # cryptos : marché 24/7, pas de rollover ni de fermeture hebdomadaire
     dt = datetime.fromtimestamp(now, NY)
@@ -209,8 +92,6 @@ def blackout(sym, now, news=()):
         return "fermeture hebdomadaire proche"
     if wd == 6 and SUNDAY_OPEN[0] <= mins < SUNDAY_OPEN[1]:
         return "ouverture de semaine"
-    if wd == 4 and dt.day <= 7 and NFP[0] <= mins < NFP[1]:
-        return "NFP"
     return None
 
 
@@ -318,7 +199,7 @@ def _short(label, s):
 
 
 REPORT_VALID_TRADES = 100
-REPORT_FILTERS = (("stale", "objectif déjà atteint"), ("blackout", "news/horaire"),
+REPORT_FILTERS = (("stale", "objectif déjà atteint"), ("blackout", "horaire"),
                   ("dedupe", "doublons"), ("risk", "risque"))
 
 
