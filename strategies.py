@@ -1,4 +1,4 @@
-"""Stratégies S1, S2, S3 et S4 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans le README (section Stratégies).
+"""Stratégies S1, S2, S3, S4 et S9 pour l'or (XAUUSD), les paires forex majeures et BTC/ETH. Toutes les règles sont décrites dans le README (section Stratégies).
 
 Module autonome : aucune entrée/sortie réseau. Chaque stratégie reçoit provide(tf) -> bougies du
 timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
@@ -7,11 +7,12 @@ timeframe (la dernière est en formation) et renvoie un signal (dict) ou None.
   S2  Sweep + CHoCH                   M15 (sweep) > M5 (cassure de structure), killzones
   S3  Figures & Retournement          figures H1/H4 + cassure M15 ; retournement H4 > H1 > M15 (sweep d'un niveau majeur + cassure de structure)
   S4  CRT (Candle Range Theory)       D1/H4 (C1, C2) > M15 (cassure de structure après la clôture de C2)
+  S9  Market Profiles                 range > manipulation (sweep) > expansion : 5 setups A à E (profiles.py), niveaux clés, entrée au retest
 
 Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
+import math
 import os
-import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,15 +21,12 @@ NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
 
 # --- Paramètres communs ---
-ATR_N = 14
-DISP_MULT = 1.2           # corps de la bougie de cassure >= 1,2 x corps moyen (20 dernières bougies)
+DISP_MULT = 1.2           # corps de la bougie de cassure >= 1,2 x corps de référence (0,4 unité du timeframe)
 FRESH = 2                 # la bougie de déclenchement doit être l'une des 2 dernières clôturées
-BUF_ATR = 0.15            # marge du stop au-delà de l'extrême : 0,15 x ATR du timeframe d'entrée
-MIN_RISK_ATR = 0.5        # risque minimal : 0,5 x ATR du timeframe d'entrée (sinon le stop est éloigné)
+BUF_ATR = 0.15            # marge du stop au-delà de l'extrême : 0,15 unité du timeframe d'entrée
+MIN_RISK_ATR = 0.5        # risque minimal : 0,5 unité du timeframe d'entrée (sinon le stop est éloigné)
 TP_MULTS = (1.0, 2.0, 3.0)  # TP1, TP2, TP3 en multiples du risque (valeurs par défaut de build_levels)
 KILLZONES_NY = [("Asie", 20, 24), ("Asie", 0, 2), ("Londres", 2, 5), ("New York", 7, 10), ("London Close", 10, 12)]
-
-H4_EMA_FAST = 50                       # EMA du H4 utilisée par le biais h4_ema_bias (S2)
 
 
 # --- S2 Prise de liquidité + CHoCH ---
@@ -52,13 +50,8 @@ def body(c):
     return abs(c["close"] - c["open"])
 
 
-def mean_body(cs):
-    """Corps moyen d'une liste de bougies (sans plafond de longueur) ; 0 si la liste est vide."""
-    return sum(body(c) for c in cs) / len(cs) if cs else 0.0
-
-
 def is_displacement(c, avg, mult):
-    """Déplacement : corps >= mult x corps moyen. Si le corps moyen est nul, tout corps passe."""
+    """Déplacement : corps >= mult x corps de référence (ref_body). Si la référence est nulle, tout corps passe."""
     return body(c) >= mult * avg
 
 
@@ -188,10 +181,7 @@ S5_MIN_RR = _num("S1_MIN_RR", 3.0)       # ratio gain/risque minimal sur TP1 (0 
 S5_RISK_CAP_H1 = _num("S1_RISK_CAP_H1", 2.0)   # risque maximal en ATR H1 (0 = aucun)
 S5_MAX_PROGRESS = 0.5                    # ordre limite écarté si le prix a déjà fait plus de 50 % du chemin entrée -> TP1
 S5_SESSIONS = ("Londres", "New York", "London Close")   # session de la bougie de déclenchement (marchés à séance seulement)
-S5_VOL_FAST, S5_VOL_SLOW = 14, 100       # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
-S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0        # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
 S5_TREND_AGES_OK = ("naissante", "établie")   # âges de tendance acceptés (« mûre » est écartée)
-S5_ADX_MIN = _num("S1_ADX_MIN", 20.0)    # ADX(14) minimal du timeframe de tendance (0 = désactivé)
 S5_D1_ALIGN = _flag("S1_D1_ALIGN", True)  # pas de trade contre une tendance D1 claire (sans effet si la tendance de la cascade est le D1)
 S5_OBST_ENTRY = _flag("S1_OBST_ENTRY", True)   # (intraday) entrée sur réaction à un niveau ou une zone H4/H1
 OBST_MIN_RR = 1.0                        # obstacle opposé à moins de 1 R de l'entrée : signal écarté
@@ -210,7 +200,6 @@ CRT_SWEEP_MIN_ATR = _num("S4_SWEEP_MIN_ATR", 0.1)   # C2 doit dépasser le bord 
 CRT_LIMIT_MAX_ATR = 1.5                          # ordre limite à plus de 1,5 ATR M15 du prix : signal écarté
 CRT_CHASE_ATR = 0.75                             # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR M15 de la clôture de déclenchement
 CRT_MAX_AGE_MIN = _num("S4_MAX_AGE_MIN", 20.0)   # déclencheur de plus de 20 minutes : signal écarté (0 = désactivé)
-CRT_VOL_MIN_RATIO = _num("S4_VOL_MIN_RATIO", 0.5)   # ATR H1 actuel >= 0,5 x sa médiane récente (0 = off)
 CRT_CONTEXT_ALIGN = _flag("S4_CONTEXT_ALIGN", True)  # pas contre une tendance H4 ou D1 claire
 
 # --- Timeframe de confirmation / d'entrée, par stratégie : M15 ou M5 (variables S1_CONFIRM_TF ... S4_CONFIRM_TF) ---
@@ -243,79 +232,70 @@ def bars(n_m15, tf):
 
 
 # ==========================================================================
-# Indicateurs
+# Unité de prix (aucun indicateur : ni ATR, ni ADX, ni RSI, ni EMA)
 # ==========================================================================
-def body_avg(cs, n=20):
-    cs = cs[-n:]
-    return mean_body(cs)
+# Toutes les distances du bot (stops, plafonds de risque, impulsion minimale, FVG, sweep...) s'expriment en « unités ».
+# L'unité d'un timeframe est un pourcentage FIXE du prix, propre à chaque actif, mis à l'échelle de la durée de la bougie
+# (racine du temps : M5 0,29 ; M15 0,5 ; H1 1 ; H4 2 ; D1 4,9). Aucune donnée de marché n'est moyennée.
+# Valeurs = pourcentage du prix pour une bougie H1 ; ce sont des ESTIMATIONS de départ à calibrer (variable UNIT_PCT).
+UNIT_H1_PCT = {
+    "frxXAUUSD": 0.35,
+    "frxEURUSD": 0.08, "frxGBPUSD": 0.10, "frxUSDCAD": 0.08, "frxEURGBP": 0.06, "frxEURAUD": 0.10,
+    "frxEURCAD": 0.08, "frxGBPAUD": 0.12,
+    "frxUSDJPY": 0.09, "frxEURJPY": 0.10, "frxGBPJPY": 0.13, "frxAUDJPY": 0.11,
+    "frxUSDCHF": 0.08, "frxEURCHF": 0.06, "frxAUDUSD": 0.09, "frxNZDUSD": 0.10,
+    "cryBTCUSD": 0.60, "cryETHUSD": 0.90,
+    "R_10": 0.17, "1HZ10V": 0.17, "R_25": 0.43, "1HZ25V": 0.43, "R_50": 0.85, "1HZ50V": 0.85,
+    "R_75": 1.28, "1HZ75V": 1.28, "R_100": 1.70, "1HZ100V": 1.70,
+}
+UNIT_DEFAULT_PCT = 0.10                  # actif inconnu
 
 
-def atr(cs, n=ATR_N):
-    cs = cs[-(n + 1):]
-    trs = [max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"]))
-           for p, c in zip(cs, cs[1:])]
-    return sum(trs) / len(trs) if trs else 0.0
-
-
-def ema(vals, n):
-    """EMA (graine = moyenne simple des n premières valeurs). None avant la n-ième valeur."""
-    out = [None] * len(vals)
-    if len(vals) < n:
-        return out
-    k = 2 / (n + 1)
-    e = sum(vals[:n]) / n
-    out[n - 1] = e
-    for i in range(n, len(vals)):
-        e = vals[i] * k + e * (1 - k)
-        out[i] = e
+def _unit_overrides():
+    out = {}
+    for part in (os.getenv("UNIT_PCT") or "").split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            try:
+                out[k.strip()] = float(v)
+            except ValueError:
+                pass
     return out
 
 
-def rsi_series(closes, n=14):
-    """RSI de Wilder pour chaque bougie (None au début)."""
-    out = [None] * len(closes)
-    if len(closes) <= n:
-        return out
-    gains = [max(closes[i] - closes[i - 1], 0) for i in range(1, n + 1)]
-    losses = [max(closes[i - 1] - closes[i], 0) for i in range(1, n + 1)]
-    ag, al = sum(gains) / n, sum(losses) / n
-    out[n] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
-    for i in range(n + 1, len(closes)):
-        d = closes[i] - closes[i - 1]
-        ag = (ag * (n - 1) + max(d, 0)) / n
-        al = (al * (n - 1) + max(-d, 0)) / n
-        out[i] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
-    return out
+UNIT_OVERRIDES = _unit_overrides()
+_CUR_SYM = [None]
 
 
-def adx(cs, n=14):
-    """ADX de Wilder (dernière valeur), ou None si l'historique est insuffisant (< 2n + 1 bougies)."""
-    if len(cs) < 2 * n + 1:
-        return None
-    tr, pdm, mdm = [], [], []
-    for p, c in zip(cs, cs[1:]):
-        up, dn = c["high"] - p["high"], p["low"] - c["low"]
-        pdm.append(up if up > dn and up > 0 else 0.0)
-        mdm.append(dn if dn > up and dn > 0 else 0.0)
-        tr.append(max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"])))
-    s_tr, s_p, s_m = sum(tr[:n]), sum(pdm[:n]), sum(mdm[:n])
-    dxs = []
-    for i in range(n, len(tr) + 1):
-        if i > n:
-            s_tr = s_tr - s_tr / n + tr[i - 1]
-            s_p = s_p - s_p / n + pdm[i - 1]
-            s_m = s_m - s_m / n + mdm[i - 1]
-        if s_tr <= 0:
-            dxs.append(0.0)
-            continue
-        pdi, mdi = 100 * s_p / s_tr, 100 * s_m / s_tr
-        dxs.append(0.0 if pdi + mdi == 0 else 100 * abs(pdi - mdi) / (pdi + mdi))
-    if len(dxs) < n:
-        return None
-    a = sum(dxs[:n]) / n
-    for d in dxs[n:]:
-        a = (a * (n - 1) + d) / n
-    return a
+def set_symbol(sym):
+    """Actif en cours d'analyse (renseigné par gold.scan) : détermine l'unité de prix."""
+    _CUR_SYM[0] = sym
+
+
+def unit_pct(sym=None):
+    sym = sym or _CUR_SYM[0]
+    return UNIT_OVERRIDES.get(sym) or UNIT_H1_PCT.get(sym) or UNIT_DEFAULT_PCT
+
+
+def unit(cs):
+    """Unité de prix du timeframe de la liste de bougies `cs` : pourcentage fixe du dernier prix, mis à l'échelle de la durée de
+    la bougie (écart minimal entre les dernières bougies, robuste aux trous de week-end). 0 si moins de 2 bougies."""
+    if len(cs) < 2:
+        return 0.0
+    t = cs[-7:]
+    gap = min((b["epoch"] - a["epoch"] for a, b in zip(t, t[1:]) if b["epoch"] > a["epoch"]), default=0)
+    price = cs[-1]["close"]
+    if gap <= 0 or price <= 0:
+        return 0.0
+    return price * unit_pct() / 100.0 * math.sqrt(gap / 3600.0)
+
+
+BODY_REF_UNIT = 0.4                      # corps de référence d'une bougie ordinaire = 0,4 unité
+
+
+def ref_body(cs):
+    """Corps de référence servant à reconnaître un déplacement (remplace l'ancien corps moyen)."""
+    return BODY_REF_UNIT * unit(cs)
 
 
 def swings(cs, kind, n):
@@ -368,7 +348,24 @@ def build_levels(d, entry, sl, a_ltf, tps=None):
 # --- Ordres limites (entrée au retest d'une zone plutôt qu'au marché) ---
 LIMIT_OB_FRACTION = 0.0     # bloc d'ordre : 0 = bord proche (extrémité touchée en premier), 0,5 = milieu, 1 = bord lointain
 LIMIT_FVG_FRACTION = 0.5    # FVG : 0,5 = milieu du déséquilibre
-LIMIT_TTL = {"S2": 3600, "S5": 86400, "S3": 10800, "S4": 3600}   # validité de l'ordre limite, en secondes
+LIMIT_TTL = {"S2": 3600, "S5": 86400, "S3": 10800, "S4": 3600, "S9": 3600}
+
+
+def _stop_mode(name):
+    """Placement du stop de S1, S2 et S4 : « sweep » (défaut : au-delà de l'extrême du sweep) ou « ob » (à l'autre extrémité de la zone
+    d'entrée : bloc d'ordre, sinon FVG). Variable propre à la stratégie, sinon STOP_MODE."""
+    v = (os.getenv(name) or os.getenv("STOP_MODE") or "sweep").strip().lower()
+    return "ob" if v in ("ob", "bloc", "bloc d'ordre", "order block", "orderblock") else "sweep"
+
+
+S1_STOP_MODE = _stop_mode("S1_STOP_MODE")
+S2_STOP_MODE = _stop_mode("S2_STOP_MODE")
+S4_STOP_MODE = _stop_mode("S4_STOP_MODE")
+
+
+def zone_stop(d, zone, a):
+    """Stop à l'autre extrémité de la zone d'entrée (bas de la zone pour un achat, haut pour une vente), plus la marge BUF_ATR du timeframe."""
+    return zone[0] - BUF_ATR * a if d == "BUY" else zone[1] + BUF_ATR * a   # validité de l'ordre limite, en secondes
 
 
 def ob_zone(cs, lo_i, hi_i, d):
@@ -391,7 +388,7 @@ def fvg_zone(cs, lo_i, d):
     """Dernier FVG (déséquilibre sur 3 bougies) créé par un déplacement après cs[lo_i], dans le sens du trade d, et
     non comblé : achat, le haut de la bougie 1 est sous le bas de la bougie 3 ; vente, l'inverse. La bougie du milieu
     doit être un déplacement (corps >= DISP_MULT x corps moyen). Retourne (bas, haut) ou None."""
-    avg = body_avg(cs[max(0, lo_i - 20):max(lo_i, 1)])
+    avg = ref_body(cs)
     for i in range(len(cs) - 2, lo_i, -1):               # i = bougie du milieu ; la bougie i+1 doit être clôturée
         a, m, b = cs[i - 1], cs[i], cs[i + 1]
         if d == "BUY" and a["high"] < b["low"]:
@@ -458,13 +455,7 @@ def _signal(strat, label, d, price, lv, ltf, ltf_n, key, details, **kw):
     return sig
 
 
-def h4_ema_bias(h4):
-    """+1 si le dernier H4 clôturé est au-dessus de l'EMA 50, -1 sinon, 0 si inconnu."""
-    closes = [c["close"] for c in h4[:-1]]
-    e = ema(closes, H4_EMA_FAST)[-1] if closes else None
-    if e is None:
-        return 0
-    return 1 if closes[-1] > e else -1
+
 
 
 # ==========================================================================
@@ -485,11 +476,8 @@ S2_RISK_CAP_H1 = _num("S2_RISK_CAP_H1", 1.5)       # risque maximal en ATR H1 (0
 S2_LIMIT_MAX_ATR = 1.5                             # ordre limite à plus de 1,5 ATR de confirmation du prix actuel : signal écarté
 S2_CHASE_ATR = 0.75                                # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR de la clôture de déclenchement
 S2_MAX_AGE_MIN = _num("S2_MAX_AGE_MIN", 20.0)      # signal plus vieux (clôture du déclencheur) que 20 minutes : écarté (0 = désactivé)
-S2_VOL_MIN_RATIO = _num("S2_VOL_MIN_RATIO", 0.5)   # écarté si l'ATR H1 actuel < 0,5 x sa médiane récente (marché mort : le spread domine) ; 0 = off
-VOL_LOOKBACK = 240                                 # fenêtre (en bougies H1) de la médiane de l'ATR (S2 et S3)
 S2_SWEEP_MIN_ATR = _num("S2_SWEEP_MIN_ATR", 0.1)   # la mèche doit dépasser le niveau d'au moins 0,1 ATR M15 (0 = n'importe quelle mèche)
 # --- Garde-fous de S3 (figures et retournement)
-S3_VOL_MIN_RATIO = _num("S3_VOL_MIN_RATIO", 0.5)   # ATR H1 actuel >= 0,5 x sa médiane récente (0 = off)
 S3_MAX_AGE_MIN = _num("S3_MAX_AGE_MIN", 20.0)      # déclencheur de plus de 20 minutes : signal écarté (0 = désactivé)
 S3_SESSIONS = ("Londres", "New York", "London Close")   # session du déclencheur (marchés à séance seulement)
 S3_CHASE_ATR = 0.75                                # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR de la clôture de déclenchement
@@ -557,7 +545,7 @@ def htf_zones(cs, d, tf, before, untouched=None):
     out = []
     for j in range(max(21, len(cs) - S2_HTF_BARS[tf]), len(cs)):
         c = cs[j]
-        avg = body_avg(cs[j - 20:j])
+        avg = ref_body(cs)
         if (c["close"] > c["open"]) != (d == "BUY") or avg <= 0 or not is_displacement(c, avg, DISP_MULT):
             continue
         prev = cs[max(0, j - 5):j]
@@ -625,16 +613,6 @@ def s2_is_late(d, price, trig_close, a_ltf):
     return is_late(d, price, trig_close, a_ltf, S2_CHASE_ATR)
 
 
-def vol_ratio(h1c):
-    """ATR H1 actuel rapporté à sa médiane sur les ~240 dernières bougies H1 (1 = volatilité normale)."""
-    n = len(h1c)
-    if n < 60:
-        return 1.0
-    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - VOL_LOOKBACK), n + 1, 6)]
-    med = statistics.median(pts) if pts else 0.0
-    return atr(h1c) / med if med > 0 else 1.0
-
-
 def liquidity_targets(levels, m15c, d, entry, risk, a_m15):
     """[(nom, prix cible, distance en R)] du plus proche au plus lointain : liquidité opposée encore intacte, située
     entre S2_TP_MIN_R et S2_TP_MAX_R du risque. L'objectif est placé S2_TP_BUF_ATR x ATR M15 avant le niveau."""
@@ -673,16 +651,13 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
     h4c, h1c, m15c, m5c = h4[:-1], h1[:-1], m15[:-1], m5[:-1]
     if len(h1c) < 40 or len(m15c) < 40 or len(m5c) < 60:
         return None
-    a_h1, a_m15, a_m5 = atr(h1c), atr(m15c), atr(m5c)
+    a_h1, a_m15, a_m5 = unit(h1c), unit(m15c), unit(m5c)
     if min(a_h1, a_m15, a_m5) <= 0:
         return None
     if confirm_tf("S2") == "M15":      # confirmation (CHoCH, bloc d'ordre, FVG) en M15 (cadre intraday) ou en M5
         cf, cfc, a_cf, cf_n, pivot_bars = m15, m15c, a_m15, "M15", S2_PIVOT_BARS_M15
     else:
         cf, cfc, a_cf, cf_n, pivot_bars = m5, m5c, a_m5, "M5", S2_PIVOT_BARS
-    if S2_VOL_MIN_RATIO and vol_ratio(h1c) < S2_VOL_MIN_RATIO:
-        funnel["S2_vol"] += 1
-        return None                                   # marché trop calme : le spread domine
     levels = liquidity_levels(h1c, d1, m15c, now, a_h1)
     if not levels:
         return None
@@ -746,7 +721,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     if not piv:
         return None
     pivot = cfc[piv[-1]][pk]
-    avg = body_avg(cfc[-21:-1])
+    avg = ref_body(cfc)
     trig = next((i for i in range(ext_i + 1, len(cfc))
                  if close_beyond(cfc[i], pivot, d == "BUY")), None)
     if trig is None or trig < len(cfc) - FRESH:
@@ -764,6 +739,8 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     price = cf[-1]["close"]
     sl = ext_px + BUF_ATR * a_m15 if d == "SELL" else ext_px - BUF_ATR * a_m15
     poi = entry_zone(cfc, ext_i, trig - 1, d)
+    if S2_STOP_MODE == "ob" and poi:
+        sl = zone_stop(d, poi[2], a_m15)              # stop à l'autre extrémité du bloc d'ordre (ou du FVG) d'entrée
     otype, entry = pick_entry(d, price, poi[0] if poi else None, sl, mode)
     if otype != d:
         if abs(price - entry) > S2_LIMIT_MAX_ATR * a_cf:
@@ -801,8 +778,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
         funnel["S2_rr"] += 1
         return None                                   # ratio gain/risque sur TP1 (première liquidité) sous le minimum
     funnel["S2_signal"] += 1
-    emab = h4_ema_bias(h4)
-    aligned = emab == (-1 if d == "SELL" else 1)
+    aligned = bias == d                               # aligné avec le biais de structure H4
     details = [f"✅ Liquidité prise : {name} {px:.{dec}f} (mèche {ext_px:.{dec}f})"]
     if zone:
         zname = "bloc d'ordre" if zone["kind"] == "OB" else "FVG"
@@ -810,7 +786,7 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
     if bias == d:
         details.append(f"✅ Biais {bias_tf} {'haussier' if d == 'BUY' else 'baissier'} (structure)")
     elif bias is None:
-        details.append("⚠️ Aucun biais de structure clair (H4 et H1)")
+        details.append("⚠️ Aucun biais de structure clair (H4)")
     else:
         details.append(f"⚠️ Contre le biais {bias_tf} (contre-tendance)")
     details.append(f"✅ CHoCH {cf_n} sous {pivot:.{dec}f}" if d == "SELL" else f"✅ CHoCH {cf_n} au-dessus de {pivot:.{dec}f}")
@@ -818,8 +794,6 @@ def _s2_setup(cand, bias, bias_tf, levels, h4, h4c, h1c, m15c, cf, cfc, cf_n, a_
         details.append(f"✅ Entrée en {fib_side_word(d)} de la jambe {fib_info['tf']} (Fibonacci {fib_info['r'] * 100:.0f} % : {fib_zone_name(fib_info['r'])})")
     if kz:
         details.append(f"✅ Killzone {sess}")
-    if not S2_BIAS_FILTER:
-        details.append("✅ Aligné avec l'EMA 50 du H4" if aligned else "⚠️ Contre l'EMA 50 du H4 (contre-tendance)")
     details += tp_lines
     zones = [{"lo": zone["lo"], "hi": zone["hi"], "label": f"{zone['kind']} {zone['tf']}",
               "kind": "ob" if zone["kind"] == "OB" else "fvg"}] if zone else []
@@ -870,7 +844,7 @@ def htf_obstacles(provide, now, tfs=("H4", "H1")):
     h1c, h4c = h1[:-1], h4[:-1]
     if len(h1c) < 40 or len(h4c) < 20:
         return None
-    a = atr(h1c)
+    a = unit(h1c)
     if a <= 0:
         return None
     sup, res = [], []
@@ -903,16 +877,7 @@ def s5_trend(htf):
     return {"age": info["age"], "legs": info["legs"]} if info else None
 
 
-def s5_vol_ok(mtf):
-    """Régime de volatilité : ATR rapide / ATR lent du timeframe d'impulsion entre S5_VOL_MIN et S5_VOL_MAX.
-    Sans assez d'historique (moins de S5_VOL_SLOW + 1 bougies clôturées), le filtre ne s'applique pas."""
-    if not (S5_VOL_MIN or S5_VOL_MAX):
-        return True
-    cs = mtf[:-1]
-    if len(cs) < S5_VOL_SLOW + 1:
-        return True
-    slow = atr(cs, S5_VOL_SLOW)
-    return slow <= 0 or S5_VOL_MIN <= atr(cs, S5_VOL_FAST) / slow <= S5_VOL_MAX
+
 
 
 def s5_rr(sig, on="tp2"):
@@ -994,9 +959,9 @@ def s5_find_impulse(mtf):
             continue                                  # pas de cassure de structure
         lo, hi = m[o]["low"], m[e]["high"]
         leg = hi - lo
-        if leg <= 0 or leg < S5_IMPULSE_ATR * atr(m[:e + 1]):
+        if leg <= 0 or leg < S5_IMPULSE_ATR * unit(m[:e + 1]):
             continue
-        avg = mean_body(m[max(0, o - 10):o + 1])
+        avg = ref_body(m)
         if avg and not any(is_displacement(x, avg, S5_IMPULSE_DISP) for x in m[o + 1:e + 1]):
             continue                                  # pas de déplacement
         if any(x["close"] < hi - S5_ZONE[1] * leg for x in m[e + 1:]):
@@ -1016,7 +981,7 @@ def s5_find_entry(ltf, imp, mtf_gran, mode="limit"):
     if first is None:
         return None
     m = closed[first:]
-    a = atr(closed)
+    a = unit(closed)
     if len(m) < 8 or a <= 0:
         return None
     touch = next((i for i, c in enumerate(m) if c["low"] <= zone[1] and c["high"] >= zone[0]), None)
@@ -1038,7 +1003,7 @@ def s5_find_entry(ltf, imp, mtf_gran, mode="limit"):
             level = m[sh[-1]]["high"]
             if not fresh_break(m[j], m[j - 1], level, True):
                 continue                              # pas de cassure de structure
-            avg = mean_body(m[max(0, j - 8):j])
+            avg = ref_body(m)
             if avg and not is_displacement(m[j], avg, S5_DISP):
                 continue                              # pas de déplacement
             i = next((ii for ii in (j, j + 1)
@@ -1067,6 +1032,8 @@ def _s5_evaluate(found, m, ltf, zone, lo, hi, leg, a, mode="limit"):
     """Stop, cibles et type d'ordre d'un candidat (None si le trade est refusé). Écrit pour un achat."""
     ob, fvg, price = found["ob"], found["fvg"], ltf[-1]["close"]
     sl = found["sweep_low"] - S5_SL_BUF_ATR * a
+    if S1_STOP_MODE == "ob":
+        sl = ob[0] - S5_SL_BUF_ATR * a                # stop sous le bas du bloc d'ordre d'entrée
     tp1, tp2 = hi, lo + S5_EXT[0] * leg
     if price <= sl or price >= tp1:
         return None
@@ -1136,9 +1103,6 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
         htf, mtf = provide(htf_n), provide(mtf_n)
         if not htf or not mtf:
             continue
-        if not s5_vol_ok(mtf):
-            continue                                  # volatilité en compression extrême ou en pic
-        funnel["S5_regime"] += 1
         ltf = None
         for d in ("BUY", "SELL"):
             buy = d == "BUY"
@@ -1147,11 +1111,6 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
             if not trend or trend["age"] not in S5_TREND_AGES_OK:
                 continue
             funnel["S5_tendance"] += 1
-            if S5_ADX_MIN:                            # force de tendance (ADX du timeframe de tendance)
-                a_htf = adx(H[:-1])
-                if a_htf is not None and a_htf < S5_ADX_MIN:
-                    continue
-                funnel["S5_adx"] += 1
             if S5_D1_ALIGN and htf_n != "D1":         # pas de trade contre une tendance D1 claire
                 if not d1_read:
                     import setups as TR
@@ -1179,7 +1138,7 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
                 continue
             if S5_RISK_CAP_H1:
                 if a_h1 is None:
-                    a_h1 = atr((provide("H1") or [])[:-1])
+                    a_h1 = unit((provide("H1") or [])[:-1])
                 if a_h1 > 0 and abs(r["entry"] - r["sl"]) > S5_RISK_CAP_H1 * a_h1:
                     funnel["S5_risque"] += 1          # stop trop large pour la volatilité H1
                     continue
@@ -1223,8 +1182,24 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
 
 
 
-STRAT_LABELS = {"S1": "Pullback", "S2": "Sweep + CHoCH", "S3": "Figures & Retournement", "S4": "CRT"}
-# Numérotation continue S1 à S4. S5, S6, S7 et S8 sont d'anciens codes (alias ou libellés de trades déjà enregistrés).
+# --- S9 Market Profiles (profiles.py : range -> manipulation -> expansion, 5 setups A à E, prix pur) ---
+S9_TF = (os.getenv("S9_TF") or "M15").strip().upper()          # timeframe d'analyse et d'entrée : M5, M15 (défaut) ou H1
+if S9_TF not in ("M5", "M15", "H1"):
+    S9_TF = "M15"
+S9_BARS = int(_num("S9_BARS", 160))                            # nombre de bougies clôturées analysées
+S9_MIN_RR = _num("S9_MIN_RR", S5_MIN_RR)                       # ratio gain/risque minimal sur TP1 (celui de S1 par défaut, 0 = 3)
+S9_RISK_CAP_H1 = _num("S9_RISK_CAP_H1", 2.0)                   # risque maximal en unités H1 (0 = aucun)
+S9_SL_BUF_ATR = _num("S9_SL_BUF_ATR", BUF_ATR)                 # marge du stop au-delà de l'extrême du sweep (en unités ; 0 = stop exactement sur l'extrême)
+S9_LIMIT_MAX_ATR = 1.5                                         # ordre limite à plus de 1,5 unité du prix : signal écarté
+S9_CHASE_ATR = 0.75                                            # au marché : le prix ne doit pas avoir fui de plus de 0,75 unité du déclencheur
+S9_MAX_AGE_MIN = _num("S9_MAX_AGE_MIN", 20.0)                  # déclencheur plus vieux que 20 minutes : signal écarté (0 = désactivé)
+S9_SESSION_FILTER = _flag("S9_SESSION_FILTER", True)           # marchés à séance : déclencheur à Londres, New York ou London Close
+S9_SESSIONS = ("Londres", "New York", "London Close")
+S9_TP_MAX_R = 6.0                                              # liquidité retenue pour TP2/TP3 : au plus 6 R au-delà de TP1
+S9_H4_SWINGS = 6                                               # niveaux clés H4 : derniers sommets et creux (fractale de 2)
+
+STRAT_LABELS = {"S1": "Pullback", "S2": "Sweep + CHoCH", "S3": "Figures & Retournement", "S4": "CRT", "S9": "Market Profiles"}
+# Numérotation S1 à S4, puis S9. S5, S6, S7 et S8 sont d'anciens codes (alias ou libellés de trades déjà enregistrés) : la nouvelle stratégie prend donc S9.
 # Mean Reversion (ancienne S3) est supprimée : elle garde le code « MR » (S3 est maintenant Figures & Retournement), et ses trades déjà enregistrés gardent leur libellé.
 RETIRED_LABELS = {"MR": "Mean Reversion"}
 # Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback » ; Chart Patterns et S7 (Reversal)
@@ -1257,7 +1232,13 @@ def scan_crt(*args, **kwargs):
     return setups.scan_crt(*args, **kwargs)
 
 
-STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_crt)]
+def scan_profiles(*args, **kwargs):
+    """S9 Market Profiles (setups.py, profiles.py). Import à l'appel : setups.py importe ce module."""
+    import setups
+    return setups.scan_profiles(*args, **kwargs)
+
+
+STRATEGIES = [("S1", scan_pullback), ("S2", scan_s2), ("S3", scan_s3), ("S4", scan_crt), ("S9", scan_profiles)]
 
 
 def scan_all(provide, now, funnel, only=None, dec=2, kz=True, modes=None):

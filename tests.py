@@ -6,10 +6,11 @@ backtest), pas la rentabilité des stratégies.
 """
 import glob, os, re
 os.environ.setdefault("INTRADAY", "0")
-for _k, _v in (("S4_MIN_RR", "0"), ("S4_MAX_AGE_MIN", "0"), ("S4_VOL_MIN_RATIO", "0"), ("S4_CONTEXT_ALIGN", "0"), ("S3_VOL_MIN_RATIO", "0"), ("S3_MAX_AGE_MIN", "0"), ("S3_CONTEXT_ALIGN", "0"), ("S7_RISK_CAP_ATR", "10"), ("S3_REV_MIN_RR", "0")):
+for _k, _v in (("S4_MIN_RR", "0"), ("S4_MAX_AGE_MIN", "0"), ("S4_CONTEXT_ALIGN", "0"), ("S3_MAX_AGE_MIN", "0"), ("S3_CONTEXT_ALIGN", "0"), ("S7_RISK_CAP_ATR", "10"), ("S3_REV_MIN_RR", "0")):
     os.environ.setdefault(_k, _v)             # garde-fous de S3 neutralisés dans les scénarios historiques ; leurs tests les remettent      # les tests historiques décrivent l'ancien comportement ; le cadre intraday a ses propres tests
 import random
 import unittest
+from unittest import mock
 from collections import Counter
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -22,6 +23,26 @@ S.S3_SESSIONS, S.S3_CHASE_ATR, S.S3_LIMIT_MAX_ATR = (), 1e9, 1e9      # garde-fo
 S.CRT_CHASE_ATR, S.CRT_LIMIT_MAX_ATR = 1e9, 1e9      # garde-fous de S4 neutralisés dans les scénarios historiques
 import tracker as T
 import setups as TR
+
+# Les scénarios de test ci-dessous ont été calibrés sur l'amplitude réelle de leurs bougies. Pour tester la LOGIQUE des stratégies
+# (filtres, stops, ratios), on remplace l'unité de prix de production (pourcentage fixe par actif) par une unité calculée sur
+# les bougies du scénario. La vraie fonction de production reste testée à part (classe UnitePrix).
+PROD_UNIT, PROD_REF_BODY = S.unit, S.ref_body
+
+
+def _unite_de_test(cs, n=14):
+    cs = cs[-(n + 1):]
+    trs = [max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"])) for p, c in zip(cs, cs[1:])]
+    return sum(trs) / len(trs) if trs else 0.0
+
+
+def _corps_de_test(cs):
+    import statistics
+    w = cs[-30:]
+    return statistics.median(S.body(c) for c in w) if w else 0.0       # corps « ordinaire » du scénario
+
+
+S.unit, S.ref_body = _unite_de_test, _corps_de_test
 
 NY = ZoneInfo("America/New_York")
 
@@ -68,13 +89,6 @@ def new_buy(entry=100.0, sl=99.0, tp=(101.0, 102.0, 103.0), now=1000):
 
 
 class Indicateurs(unittest.TestCase):
-    def test_ema_rsi(self):
-        cs = [{"open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100.5 + i} for i in range(80)]
-        closes = [c["close"] for c in cs]
-        self.assertIsNone(S.ema(closes, 10)[8])
-        self.assertAlmostEqual(S.ema(closes, 10)[9], sum(closes[:10]) / 10)
-        self.assertEqual(S.rsi_series(closes)[-1], 100.0)
-
     def test_swings_strict(self):
         cs = [candle(i, 10, 10 + (3 if i == 5 else 1) + 0.01 * i, 9, 10) for i in range(11)]
         self.assertEqual(S.swings(cs, "high", 2), [5])
@@ -222,8 +236,8 @@ class Messages(unittest.TestCase):
         self.assertEqual(gold.age_txt({"age_min": 0.2}), "à l'instant")
 
     def test_variables_vides(self):
-        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4"])      # variable GitHub non définie
-        self.assertEqual(gold.parse_strategies(None), ["S1", "S2", "S3", "S4"])
+        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4", "S9"])      # variable GitHub non définie
+        self.assertEqual(gold.parse_strategies(None), ["S1", "S2", "S3", "S4", "S9"])
         self.assertEqual(gold.parse_strategies("S1,S5,S2"), ["S1", "S2"])               # ancien code S5 = Pullback (S1), sans doublon
         self.assertEqual(gold.parse_strategies(" s2 , S3 "), ["S2", "S3"])
 
@@ -338,7 +352,7 @@ def s2_scenario(stale, pad=10):
 
 
 # Garde-fous de S2 neutralisés par défaut dans les scénarios synthétiques ; chaque test les remet pour vérifier le sien.
-S2_NEUTRAL = dict(S2_FIB_FILTER=False, S2_RISK_CAP_H1=0, S2_MIN_RR=0, S2_MAX_AGE_MIN=0, S2_VOL_MIN_RATIO=0, S2_SWEEP_MIN_ATR=0,
+S2_NEUTRAL = dict(S2_FIB_FILTER=False, S2_RISK_CAP_H1=0, S2_MIN_RR=0, S2_MAX_AGE_MIN=0, S2_SWEEP_MIN_ATR=0,
                   S2_LIMIT_MAX_ATR=1e9, S2_CHASE_ATR=1e9)
 
 
@@ -796,12 +810,6 @@ class SweepCHoCH(unittest.TestCase):
         self.assertIsNone(self.first_pad(False, S2_RISK_CAP_H1=0.0001, **self.OFF))
         self.assertIsNotNone(self.first_pad(False, S2_RISK_CAP_H1=0, **self.OFF))
 
-    def test_volatilite_minimale(self):
-        self.assertIsNone(self.first_pad(False, S2_VOL_MIN_RATIO=100.0, **self.OFF))
-        self.assertIsNotNone(self.first_pad(False, S2_VOL_MIN_RATIO=0, **self.OFF))
-        flat = [candle(1000 + 3600 * i, 100, 100.5, 99.5, 100) for i in range(30)]
-        self.assertEqual(S.vol_ratio(flat), 1.0)                                  # historique court : volatilité considérée normale
-
     def test_sweep_trop_faible_ecarte(self):
         self.assertIsNone(self.first_pad(False, S2_SWEEP_MIN_ATR=100.0, **self.OFF))      # la mèche doit dépasser le niveau d'au moins 100 ATR
         self.assertIsNotNone(self.first_pad(False, S2_SWEEP_MIN_ATR=0, **self.OFF))
@@ -861,7 +869,7 @@ class SweepCHoCH(unittest.TestCase):
             self.assertEqual(S.obstacle_filter(sg3, None, 0, "S2", False, 50.0), "S2_obst_rr")     # ratio sous le minimum après ramenage
 
     def test_entonnoir_garde_fous_s2(self):
-        for k in ("S2_vol", "S2_stale", "S2_risque", "S2_fib", "S2_rr", "S2_age", "S2_obst_entree", "S2_obst_cible", "S2_obst_rr"):
+        for k in ("S2_stale", "S2_risque", "S2_fib", "S2_rr", "S2_age", "S2_obst_entree", "S2_obst_cible", "S2_obst_rr"):
             self.assertIn(k, G.FUNNEL_ORDER)
             self.assertIn(k, G.FUNNEL_LABEL)
 
@@ -1130,9 +1138,9 @@ class ImpulsionS5(unittest.TestCase):
 
     def test_marche_instantane_et_entree_tardive(self):
         from unittest import mock
-        tfs = s5_series(4)
+        tfs = s5_series(6)
         with mock.patch.multiple(S, **S5_RELAX):
-            provide, t = s5_provider(tfs, 5566)
+            provide, t = s5_provider(tfs, 1864)
             sigs = S.scan_s5(provide, t + 60, Counter(), 3, True, "limit") or []
         mk = [x for x in sigs if x["otype"] == "BUY"]
         self.assertTrue(mk)
@@ -1857,18 +1865,11 @@ class TestSmcPrimitives(unittest.TestCase):
         self.assertTrue(smc.is_displacement(b, 1.0, 1.2) and not smc.is_displacement(a, 1.0, 1.2))
         self.assertTrue(smc.is_displacement(a, 0.0, 1.2))                             # corps moyen nul : tout corps passe
 
-    def test_miroir_et_corps_moyen(self):
-        import strategies as smc
-        cs = [self.c(99, 100, 98, 99.5), self.c(99.5, 102, 99, 101)]
-        self.assertEqual(smc.mirror(smc.mirror(cs)), cs)
-        self.assertAlmostEqual(smc.mean_body(cs), (0.5 + 1.5) / 2)
-        self.assertEqual(smc.mean_body([]), 0.0)
-
     def test_s1_et_s2_utilisent_les_memes_primitives(self):
         import setups
         self.assertIs(setups.is_displacement, S.is_displacement)                    # S3 / S4 (setups.py) réutilisent les primitives de strategies.py
         self.assertIs(setups.close_beyond, S.close_beyond)
-        self.assertTrue(all(callable(getattr(S, n)) for n in ("body", "mean_body", "is_displacement", "wick_sweep", "close_beyond", "fresh_break", "mirror")))
+        self.assertTrue(all(callable(getattr(S, n)) for n in ("body", "ref_body", "is_displacement", "wick_sweep", "close_beyond", "fresh_break", "mirror")))
 
 
 class UnTradeParSens(unittest.TestCase):
@@ -1958,10 +1959,10 @@ class TestCodesRenumerotes(unittest.TestCase):
     """Les quatre stratégies actives sont numérotées S1 à S4 sans trou (Pullback, Sweep + CHoCH, Figures & Retournement, CRT) ; S5, S7 et S8 sont d'anciens codes lus comme S1, S3 et S4 ; Mean Reversion (ancienne S3) est supprimée sous le code « MR »."""
 
     def test_numerotation(self):
-        self.assertEqual([n for n, _ in S.STRATEGIES], ["S1", "S2", "S3", "S4"])
-        self.assertEqual(S.STRAT_LABELS, {"S1": "Pullback", "S2": "Sweep + CHoCH", "S3": "Figures & Retournement", "S4": "CRT"})
+        self.assertEqual([n for n, _ in S.STRATEGIES], ["S1", "S2", "S3", "S4", "S9"])
+        self.assertEqual(S.STRAT_LABELS, {"S1": "Pullback", "S2": "Sweep + CHoCH", "S3": "Figures & Retournement", "S4": "CRT", "S9": "Market Profiles"})
         self.assertEqual(S.STRAT_ALIAS, {"S5": "S1", "S7": "S3", "S8": "S4"})          # anciens codes (fusions, ancienne numérotation de la CRT)
-        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4"])
+        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4", "S9"])
         self.assertEqual(gold.parse_strategies("S5, s7"), ["S1", "S3"])
         self.assertEqual(gold.parse_strategies("s8"), ["S4"])                            # l'ancien code de la CRT
         for name, code in (("scan_pullback", "S1"), ("scan_s2", "S2"), ("scan_s3", "S3"), ("scan_crt", "S4")):
@@ -1997,7 +1998,6 @@ class TestPullbackFusionne(unittest.TestCase):
         for name in ("scan_s1", "s1_trend", "parse_variant", "PULLBACK_VARIANT", "S1_EMA_SLOW", "S1_ADX_MIN"):
             self.assertFalse(hasattr(S, name), name)
         self.assertFalse(hasattr(gold, "pullback_variants"))
-        self.assertEqual(S.H4_EMA_FAST, 50)                                    # utilisée par le biais H4 de S2
 
     def test_pullback_renvoie_la_structure_sous_le_code_s1(self):
         from unittest import mock
@@ -2135,7 +2135,7 @@ class RetournementPossible(unittest.TestCase):
         self.assertEqual((rev["dir"], rev["trend_dir"], rev["age"]), ("SELL", "BUY", "mûre"))
         self.assertEqual(rev["level"], (112.0, "sommet H4"))
         self.assertEqual((rev["ext"], rev["pivot"]), (113.0, 109.6))
-        self.assertEqual(rev["signs"], ["divergence RSI H1", "bougies qui rétrécissent", "mèche de rejet"])
+        self.assertEqual(rev["signs"], ["bougies qui rétrécissent", "mèche de rejet"])
 
     def test_retournement_haussier_apres_tendance_baissiere_mure(self):
         mirror = S.mirror(self.h1_sweep())                   # même scénario en miroir : creux pris, remontée
@@ -2183,28 +2183,13 @@ class RetournementPossible(unittest.TestCase):
                 mock.patch.object(R.S, "htf_obstacles", lambda pr, n: self.OBS_UP):
             self.assertIsNone(R.detect(lambda tf: h1, h1[-1]["epoch"] + 3 * 86400))    # week-end : données H1 anciennes
 
-    def test_indicateurs(self):
-        import setups as R
-        h = self.h1_sweep()[:-1]
-        plat = [dict(c, open=100.0, close=100.5) for c in h]                          # corps constants : pas de rétrécissement
-        self.assertFalse(R.shrinking_candles(plat, 69))
-        self.assertTrue(R.shrinking_candles(h, 69))
-        self.assertFalse(R.shrinking_candles(h, 5))                                   # pas assez d'historique
-        self.assertTrue(R.rejection_wick({"open": 111.3, "high": 113.0, "low": 111.0, "close": 111.2}))
-        self.assertFalse(R.rejection_wick({"open": 100.0, "high": 101.0, "low": 99.5, "close": 100.9}))
-        self.assertFalse(R.rejection_wick({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}))
-        up = [{"epoch": i, "open": 100 + i, "high": 101 + i, "low": 99.5 + i, "close": 100.8 + i} for i in range(40)]
-        self.assertFalse(R.rsi_divergence(up, 30, 39))                                # RSI au plus haut avec le prix : pas de divergence
-        self.assertFalse(R.rsi_divergence(up, 39, 30))                                # ordre invalide
-        self.assertTrue(R.rsi_divergence(h, 60, 69))
-
     def test_message(self):
         import setups as R
         rev = self.run_detect()
         txt = R.message(rev, "XAUUSD", 2, "08h15 Bénin")
         self.assertTrue(txt.startswith("🔄 Retournement possible · XAUUSD · baissier"))
         for part in ("tendance H4 haussier mûre (5 jambes)", "sommet H1 112.00 (sommet H4)", "extrême 113.00",
-                     "sous le dernier creux (109.60)", "divergence RSI H1 · bougies qui rétrécissent · mèche de rejet",
+                     "sous le dernier creux (109.60)", "bougies qui rétrécissent · mèche de rejet",
                      "Invalidation : retour au-dessus de 113.00", "aucun ordre, aucun suivi", "08h15 Bénin"):
             self.assertIn(part, txt)
         buy = dict(rev, dir="BUY", trend_dir="SELL")
@@ -2316,8 +2301,8 @@ class RetournementPossible(unittest.TestCase):
 
 
     def test_signes_d_essoufflement_minimaux(self):
-        self.assertIsNone(self.run_detect(MIN_SIGNS=4))                               # 3 signes seulement
-        self.assertIsNotNone(self.run_detect(MIN_SIGNS=3))
+        self.assertIsNone(self.run_detect(MIN_SIGNS=3))                               # 2 signes seulement (plus de RSI)
+        self.assertIsNotNone(self.run_detect(MIN_SIGNS=2))
 
 
 REAL_ENTRY_ZONE = S.entry_zone
@@ -2497,10 +2482,6 @@ class ChartPatterns(unittest.TestCase):
         with mock.patch("setups.detect", return_value=None), mock.patch.multiple(S, **{"S3_FIB_LB": S.S3_FIB_LB, **patch}):
             return self.replay(way or self.DOUBLE_TOP, start=start)
 
-    def test_volatilite_s3(self):
-        sigs, f = self.blocked(S3_VOL_MIN_RATIO=100.0)
-        self.assertIsNone(sigs)
-
     def test_session_s3(self):
         sig, _ = self.ref_signal()
         sess = S.session_name(sig["trig_close"] - 1)
@@ -2601,7 +2582,7 @@ class ChartPatterns(unittest.TestCase):
         self.assertEqual(S.S3_FIGURE_OBST_TFS, ("H4",))
 
     def test_entonnoir_garde_fous_s3(self):
-        for k in ("S3_vol", "S3_fib", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr"):
+        for k in ("S3_fib", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr"):
             self.assertIn(k, G.FUNNEL_ORDER)
             self.assertIn(k, G.FUNNEL_LABEL)
 
@@ -2839,7 +2820,7 @@ class CrtS4(unittest.TestCase):
         self.assertEqual(S.STRAT_LABELS["S4"], "CRT")
         self.assertIn("S4", [c for c, _ in S.STRATEGIES])
         self.assertIn("S4", gold.ENABLED if "STRATEGIES" not in os.environ else ["S4"])
-        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4"])
+        self.assertEqual(gold.parse_strategies(""), ["S1", "S2", "S3", "S4", "S9"])
         self.assertEqual(gold.parse_strategies("S4"), ["S4"])
         self.assertEqual(gold.parse_strategies("S5,S4"), ["S1", "S4"])        # S5 reste l'ancien code de Pullback : pas de collision avec S4
         self.assertEqual(gold.ENTRY_MODES["S4"], "limit")
@@ -2915,10 +2896,6 @@ class CrtS4(unittest.TestCase):
         self.assertEqual((sigs, f["CRT_age"]), ([], 1))
         self.assertTrue(self.scan(CRT_MAX_AGE_MIN=0)[0])
 
-    def test_volatilite(self):
-        sigs, f = self.scan(CRT_VOL_MIN_RATIO=100.0)
-        self.assertEqual((sigs, f["CRT_vol"]), ([], 1))
-
     def test_contexte_h4_d1(self):
         from unittest import mock
         import setups as TR
@@ -2941,7 +2918,7 @@ class CrtS4(unittest.TestCase):
         self.assertEqual(len(sigs), 1)                                             # hors intraday : pas de cadre H4/H1
 
     def test_entonnoir_s4(self):
-        for k in ("CRT_vol", "CRT_sweep", "CRT_taille", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr"):
+        for k in ("CRT_sweep", "CRT_taille", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr"):
             self.assertIn(k, G.FUNNEL_ORDER)
             self.assertIn(k, G.FUNNEL_LABEL)
 
@@ -3068,9 +3045,240 @@ class ConfirmationM5(unittest.TestCase):
 # ==========================================================================
 # Mean Reversion (ancienne S3) supprimée : plus de scan ; elle garde le code « MR » et ses anciens trades restent reconnus
 # ==========================================================================
+class UnitePrix(unittest.TestCase):
+    """Aucun indicateur : l'unité de prix est un pourcentage fixe du prix, propre à l'actif, mis à l'échelle de la durée de la bougie."""
+
+    def bougies(self, gap, n=10, px=1000.0):
+        return [{"epoch": 1_700_000_000 + gap * i, "open": px, "high": px + 1, "low": px - 1, "close": px} for i in range(n)]
+
+    def test_unite_fixe_par_actif_et_echelle_de_temps(self):
+        saved = (S.UNIT_OVERRIDES, S._CUR_SYM[0])
+        try:
+            S.UNIT_OVERRIDES = {}
+            S.set_symbol("frxXAUUSD")
+            h1 = PROD_UNIT(self.bougies(3600))
+            self.assertAlmostEqual(h1, 1000.0 * S.UNIT_H1_PCT["frxXAUUSD"] / 100)           # pourcentage fixe du prix
+            self.assertAlmostEqual(PROD_UNIT(self.bougies(900)), h1 * 0.5)                  # M15 = moitié du H1 (racine du temps)
+            self.assertAlmostEqual(PROD_UNIT(self.bougies(14400)), h1 * 2)                  # H4 = double
+            hl = self.bougies(3600)
+            hl[-1]["high"], hl[-1]["low"] = 5000.0, 1.0                                      # l'amplitude des bougies ne compte pas
+            self.assertAlmostEqual(PROD_UNIT(hl), h1)
+            S.set_symbol("R_100")
+            self.assertGreater(PROD_UNIT(self.bougies(3600)), h1)                           # chaque actif a son pourcentage
+            S.set_symbol("inconnu")
+            self.assertAlmostEqual(PROD_UNIT(self.bougies(3600)), 1000.0 * S.UNIT_DEFAULT_PCT / 100)
+            S.UNIT_OVERRIDES = {"inconnu": 0.5}                                              # variable UNIT_PCT
+            self.assertAlmostEqual(PROD_UNIT(self.bougies(3600)), 5.0)
+            self.assertEqual(PROD_UNIT(self.bougies(3600, n=1)), 0.0)
+            S.unit = PROD_UNIT                                                              # ref_body appelle S.unit (remplacée dans les tests)
+            self.assertAlmostEqual(PROD_REF_BODY(self.bougies(3600)), 0.4 * 5.0)
+        finally:
+            S.UNIT_OVERRIDES, S._CUR_SYM[0] = saved
+            S.unit = _unite_de_test
+
+    def test_aucun_indicateur_dans_le_code(self):
+        for f in ("strategies.py", "setups.py", "gold.py"):
+            with open(os.path.join(os.path.dirname(__file__), f), encoding="utf-8") as fh:
+                src = fh.read()
+            for mot in ("def atr(", "def adx(", "def rsi", "def ema(", "def body_avg(", "def vol_ratio(", "rsi_divergence"):
+                self.assertNotIn(mot, src, f"{f} : {mot}")
+        for nom in ("atr", "adx", "rsi_series", "ema", "body_avg", "mean_body", "vol_ratio", "h4_ema_bias"):
+            self.assertFalse(hasattr(S, nom), nom)
+
+
+class MarketProfilesS9(unittest.TestCase):
+    """S9 Market Profiles : setups de profiles.py (A range + sweep, B break & retest, C, D, E) branchés sur le bot."""
+
+    @staticmethod
+    def epoch_ny(h, mi=0):
+        return int(datetime(2026, 10, 21, h, mi, tzinfo=ZoneInfo("America/New_York")).timestamp())
+
+    def scenario_a(self, hour=3, minute=15, last_close=111.5):
+        """Range 100-110, sweep à 98 (clôture 101), CHoCH par une clôture à 111 ; la bougie de déclenchement est la dernière clôturée."""
+        vals = []
+        for _ in range(7):
+            vals += [100, 102, 104, 106, 108, 110, 108, 106, 104, 102]
+        vals += [110, 108, 106, 104, 102]
+        c, prev = [], 100.0
+        for v in vals:
+            c.append({"open": prev, "close": v, "high": max(prev, v) + 0.3, "low": min(prev, v) - 0.3})
+            prev = v
+        c.append({"open": 102, "close": 101, "high": 102.2, "low": 98.0})
+        for v in (103, 106, 109, 111):
+            o = c[-1]["close"]
+            c.append({"open": o, "close": v, "high": max(o, v) + 0.3, "low": min(o, v) - 0.3})
+        t0 = self.epoch_ny(hour, minute)
+        m15 = [dict(x, epoch=t0 + 900 * (i - 79)) for i, x in enumerate(c)]
+        m15.append({"epoch": t0 + 900, "open": 111, "high": max(111.8, last_close), "low": min(110.9, last_close), "close": last_close})
+        h1 = [{"epoch": t0 - 3600 * (60 - i), "open": 100, "high": 110, "low": 90, "close": 100 if i % 2 else 101} for i in range(60)]
+        return {"M15": m15, "H1": h1}, t0
+
+    def scan(self, hour=3, minute=15, last_close=111.5, mode="limit", kz=True, delay=120):
+        tfs, t0 = self.scenario_a(hour, minute, last_close)
+        f = Counter()
+        out = TR.scan_profiles(lambda tf, force=False: tfs.get(tf), t0 + 900 + delay, f, 2, kz, mode)
+        return out, f
+
+    def test_enregistrement(self):
+        self.assertEqual(S.STRAT_LABELS["S9"], "Market Profiles")
+        self.assertIn("S9", [n for n, _ in S.STRATEGIES])
+        self.assertEqual(S.LIMIT_TTL["S9"], 3600)
+        self.assertEqual(gold.ENTRY_MODES["S9"], "limit")
+        self.assertIn("S9", gold.parse_strategies(None))                 # active par défaut
+        self.assertEqual(gold.canon_codes(["S5", "S9", "S9"]), ["S1", "S9"])     # S5 reste l'alias de S1
+        for k in ("S9_setup", "S9_session", "S9_stale", "S9_rr", "S9_risque", "S9_age", "S9_obst_cible", "S9_obst_rr", "S9_signal"):
+            self.assertIn(k, G.FUNNEL_ORDER)
+            self.assertIn(k, G.FUNNEL_LABEL)
+
+    def test_setup_a_range_sweep_ordre_limite(self):
+        out, f = self.scan()
+        sig = next(s for s in out if s["extra"]["setup"].startswith("A"))
+        self.assertEqual((sig["strat"], sig["label"], sig["dir"], sig["otype"]), ("S9", "Market Profiles", "BUY", "BUY LIMIT"))
+        self.assertAlmostEqual(sig["entry"], 110.3)                       # retest du niveau de CHoCH
+        self.assertLess(sig["sl"], 98.0)                                  # sous le sweep, plus la marge du stop
+        self.assertLess(sig["entry"], sig["tp1"])
+        self.assertLess(sig["tp1"], sig["tp2"])
+        self.assertLess(sig["tp2"], sig["tp3"])
+        self.assertGreaterEqual((sig["tp1"] - sig["entry"]) / (sig["entry"] - sig["sl"]), 3 - 1e-9)
+        self.assertEqual((sig["ttl"], sig["session"], sig["ltf"]), (3600, "Londres", "M15"))
+        self.assertTrue(sig["key"].startswith("S9|BUY|A|"))
+        self.assertGreaterEqual(f["S9_signal"], 1)
+        self.assertTrue(any(s["extra"]["setup"].startswith("B") for s in out))      # le même mouvement est aussi un break & retest
+
+    def test_marche(self):
+        out, _ = self.scan(mode="market")
+        sig = next(s for s in out if s["extra"]["setup"].startswith("A"))
+        self.assertEqual((sig["otype"], sig["ttl"]), ("BUY", None))
+        self.assertAlmostEqual(sig["entry"], 111.5)
+        self.assertGreaterEqual((sig["tp1"] - sig["entry"]) / (sig["entry"] - sig["sl"]), 3 - 1e-9)
+
+    def test_garde_fous(self):
+        out, f = self.scan(delay=25 * 60)                                 # déclencheur vieux de 25 minutes
+        self.assertEqual((out, f["S9_age"]), ([], 2))
+        out, f = self.scan(hour=13)                                       # hors session
+        self.assertEqual((out, f["S9_session"]), ([], 2))
+        out, f = self.scan(hour=13, kz=False)                             # actif 24h/24 : pas de session
+        self.assertEqual(len(out), 2)
+        out, f = self.scan(last_close=109.5)                              # repassé sous le niveau de retest
+        self.assertEqual((out, f["S9_stale"]), ([], 2))
+        out, f = self.scan(last_close=130.0)                              # retest trop loin du prix
+        self.assertEqual((out, f["S9_stale"]), ([], 2))
+        with mock.patch.object(S, "S9_RISK_CAP_H1", 0.1):
+            out, f = self.scan()
+            self.assertEqual((out, f["S9_risque"]), ([], 2))
+        with mock.patch.object(S, "S9_SESSION_FILTER", False):
+            self.assertEqual(len(self.scan(hour=13)[0]), 2)
+        with mock.patch.object(S, "S9_MAX_AGE_MIN", 0):
+            self.assertEqual(len(self.scan(delay=25 * 60)[0]), 2)
+
+    def test_ratio_minimal_sur_liquidite(self):
+        import profiles as P
+        tfs, t0 = self.scenario_a()
+        st = P.Setup("A Range+Sweep", "BUY", 110.3, 98.0, 112.0, 0.14, "test", 79, {"extreme": 98.0, "level": 110.3})
+        f = Counter()
+        with mock.patch.object(P, "scan_all", lambda *a, **k: [st]):
+            out = TR.scan_profiles(lambda tf, force=False: tfs.get(tf), t0 + 1020, f, 2, True, "limit")
+        self.assertEqual((out, f["S9_rr"]), ([], 1))                      # TP1 sur une liquidité trop proche : ratio sous 3
+        st2 = P.Setup("A Range+Sweep", "BUY", 110.3, 98.0, 160.0, 4.0, "test", 79, {"extreme": 98.0, "level": 110.3})
+        with mock.patch.object(P, "scan_all", lambda *a, **k: [st2]):
+            out = TR.scan_profiles(lambda tf, force=False: tfs.get(tf), t0 + 1020, Counter(), 2, True, "limit")
+        self.assertEqual((len(out), out[0]["tp1"], out[0]["extra"]["tp"]), (1, 160.0, "liquidité"))
+
+    def test_lecture_aleatoire_sans_erreur(self):
+        import profiles as P
+        n_set = n_sig = 0
+        for seed in range(60):
+            rnd = random.Random(seed)
+            px, c = 100.0, []
+            for i in range(220):
+                o = px
+                cl = o + (100 - px) * 0.1 + rnd.gauss(0, 0.7)
+                c.append({"epoch": 1_700_000_000 + 900 * i, "open": o, "high": max(o, cl) + abs(rnd.gauss(0, 0.4)),
+                          "low": min(o, cl) - abs(rnd.gauss(0, 0.4)), "close": cl})
+                px = cl
+            kl = [round(100 + rnd.uniform(-5, 5), 2) for _ in range(3)]
+            for st in P.scan_all(c[:-1], kl):
+                n_set += 1
+                self.assertTrue(0 <= st.trig < len(c) - 1)
+                self.assertTrue((st.sl < st.entry < st.tp1) if st.side == "BUY" else (st.tp1 < st.entry < st.sl))
+                self.assertGreaterEqual(st.rr_tp1, 3 - 1e-9)
+            h1 = [{"epoch": 1_700_000_000 + 3600 * i, "open": 100, "high": 103, "low": 97, "close": 100} for i in range(60)]
+            tfs = {"M15": c, "H1": h1}
+            for sig in TR.scan_profiles(lambda tf, force=False: tfs.get(tf), c[-1]["epoch"] + 900, Counter(), 2, False, "limit"):
+                n_sig += 1
+                self.assertTrue((sig["sl"] < sig["entry"] < sig["tp1"] < sig["tp2"] < sig["tp3"]) if sig["dir"] == "BUY"
+                                else (sig["sl"] > sig["entry"] > sig["tp1"] > sig["tp2"] > sig["tp3"]))
+        self.assertGreater(n_set, 0)
+
+
+class StopModeBlocDOrdre(unittest.TestCase):
+    """STOP_MODE : « sweep » (défaut) ou « ob » (autre extrémité de la zone d'entrée) pour S1, S2 et S4."""
+
+    def test_lecture_des_variables(self):
+        for var in ("S1_STOP_MODE", "S2_STOP_MODE", "S4_STOP_MODE"):
+            self.assertEqual(getattr(S, var), "sweep")                       # défaut : comportement historique
+        base = {k: v for k, v in os.environ.items() if k not in ("STOP_MODE", "S2_STOP_MODE")}
+        with mock.patch.dict(os.environ, {**base, "STOP_MODE": "ob"}, clear=True):
+            self.assertEqual(S._stop_mode("S2_STOP_MODE"), "ob")              # valeur globale
+        with mock.patch.dict(os.environ, {**base, "STOP_MODE": "ob", "S2_STOP_MODE": "sweep"}, clear=True):
+            self.assertEqual(S._stop_mode("S2_STOP_MODE"), "sweep")           # la variable de la stratégie prime
+        with mock.patch.dict(os.environ, {**base, "STOP_MODE": "Bloc d'ordre"}, clear=True):
+            self.assertEqual(S._stop_mode("S2_STOP_MODE"), "ob")
+        with mock.patch.dict(os.environ, {**base, "STOP_MODE": "n'importe quoi"}, clear=True):
+            self.assertEqual(S._stop_mode("S2_STOP_MODE"), "sweep")
+
+    def test_zone_stop(self):
+        self.assertAlmostEqual(S.zone_stop("BUY", (100.0, 101.0), 2.0), 100.0 - S.BUF_ATR * 2.0)
+        self.assertAlmostEqual(S.zone_stop("SELL", (100.0, 101.0), 2.0), 101.0 + S.BUF_ATR * 2.0)
+
+    def test_s1_stop_sous_le_bloc_d_ordre(self):
+        res = {}
+        for mode in ("sweep", "ob"):
+            with mock.patch.multiple(S, S1_STOP_MODE=mode, **S5_RELAX):
+                provide, t = s5_provider(s5_series(6), 1864)
+                res[mode] = (S.scan_s5(provide, t + 60, Counter(), 3, True, "limit") or [None])[0]
+        a, b = res["sweep"], res["ob"]
+        self.assertTrue(a and b)
+        self.assertGreater(b["sl"], a["sl"])                                  # achat : stop plus haut = plus court
+        self.assertLess(b["sl"], b["inval"])                                  # sous le bas du bloc d'ordre (marge comprise)
+        self.assertEqual((a["entry"], a["tp1"], a["inval"]), (b["entry"], b["tp1"], b["inval"]))   # le reste ne bouge pas
+
+    def test_s2_stop_a_l_autre_bout_de_la_zone(self):
+        orig = S.entry_zone
+
+        def etroite(cs, a, b, d):                                             # bloc d'ordre étroit, distinct de la bougie du sweep
+            poi = orig(cs, a, b, d)
+            if not poi:
+                return poi
+            e = poi[0]
+            return (poi[0], poi[1], (e - 0.3, e) if d == "BUY" else (e, e + 0.3))
+
+        off = dict(S2_BIAS_FILTER=False, S2_HTF_ZONE=False, S2_LIQ_TARGETS=False, MIN_RISK_ATR=0, entry_zone=etroite)
+        m5 = s2_scenario(False, 0)
+        a = s2_first_signal(m5, S2_STOP_MODE="sweep", **off)
+        b = s2_first_signal(m5, S2_STOP_MODE="ob", **off)
+        self.assertTrue(a and b)
+        self.assertEqual(a["dir"], "SELL")
+        self.assertLess(b["sl"], a["sl"])                                     # vente : stop plus bas = plus court
+        self.assertGreater(b["sl"], b["entry"] + 0.3 - 1e-9)                  # au-delà de l'autre bout de la zone
+        self.assertEqual(a["entry"], b["entry"])
+        rr = lambda s: abs(s["tp1"] - s["entry"]) / abs(s["entry"] - s["sl"])
+        self.assertAlmostEqual(rr(a), rr(b))                                  # sans liquidité, TP1 suit le risque : le ratio reste identique
+
+    def test_s4_stop_a_l_autre_bout_de_la_zone(self):
+        case = CrtS4()
+        for buy in (False, True):
+            a, _ = case.scan(buy=buy, S4_STOP_MODE="sweep")
+            b, _ = case.scan(buy=buy, S4_STOP_MODE="ob")
+            self.assertEqual((len(a), len(b)), (1, 1))
+            a, b = a[0], b[0]
+            self.assertTrue((b["sl"] < a["sl"]) if not buy else (b["sl"] > a["sl"]))   # stop plus court des deux côtés
+            self.assertEqual((a["entry"], a["tp1"], a["inval"]), (b["entry"], b["tp1"], b["inval"]))
+
+
 class MeanReversionSupprimee(unittest.TestCase):
     def test_plus_de_strategie_mean_reversion(self):
-        self.assertEqual([c for c, _ in S.STRATEGIES], ["S1", "S2", "S3", "S4"])
+        self.assertEqual([c for c, _ in S.STRATEGIES], ["S1", "S2", "S3", "S4", "S9"])
         self.assertNotIn("MR", S.STRAT_LABELS)
         self.assertNotIn("MR", gold.ENTRY_MODES)
         self.assertNotIn("MR", S.LIMIT_TTL)
@@ -3138,22 +3346,9 @@ class GardeFousS1(unittest.TestCase):
         self.assertEqual((out, f["S5_risque"]), ([], 1))
         self.assertTrue(self.scan(S5_RISK_CAP_H1=0)[0])
 
-    def test_regime_de_volatilite(self):
-        out, f = self.scan(S5_VOL_MIN=100.0)
-        self.assertEqual((out, f["S5_regime"]), ([], 0))
-        self.assertTrue(self.scan(S5_VOL_MIN=0, S5_VOL_MAX=0)[0])
-
     def test_age_de_tendance(self):
         self.assertEqual(self.scan(S5_TREND_AGES_OK=())[0], [])
         self.assertTrue(self.scan(S5_TREND_AGES_OK=("naissante", "établie", "mûre"))[0])
-
-    def test_adx(self):
-        out, f = self.scan(S5_ADX_MIN=100.0)
-        self.assertEqual((out, f["S5_adx"]), ([], 0))
-        self.assertTrue(self.scan(S5_ADX_MIN=0)[0])
-        cs = [{"open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100.5 + i} for i in range(80)]
-        self.assertGreater(S.adx(cs), 90)
-        self.assertIsNone(S.adx(cs[:20]))
 
     def test_tendance_d1_opposee(self):
         from unittest import mock
@@ -3228,7 +3423,7 @@ class GardeFousS1(unittest.TestCase):
             self.assertTrue(self.scan()[0])                                         # hors intraday : pas de cadre H4/H1
 
     def test_entonnoir_et_ttl(self):
-        for k in ("S5_regime", "S5_adx", "S5_d1", "S5_session", "S5_risque", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr"):
+        for k in ("S5_d1", "S5_session", "S5_risque", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr"):
             self.assertIn(k, G.FUNNEL_ORDER)
             self.assertIn(k, G.FUNNEL_LABEL)
         import tracker as T2

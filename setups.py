@@ -28,7 +28,7 @@ Une tendance H4 mûre peut se retourner. On n'alerte que lorsque plusieurs élé
   2. sweep : une bougie H1 prend un sommet (creux) récent puis referme de l'autre côté ;
   3. ce sommet (creux) se trouve sur un niveau majeur : sommet / creux H4, zone H4, plus haut / bas de la veille ;
   4. cassure de structure H1 contre la tendance : clôture sous le dernier creux (au-dessus du dernier sommet) formé avant le sweep ;
-  5. signes d'essoufflement (au moins REVERSAL_MIN_SIGNS sur 3) : divergence RSI H1, bougies qui rétrécissent, mèche de rejet.
+  5. signes d'essoufflement (au moins REVERSAL_MIN_SIGNS sur 2) : bougies qui rétrécissent, mèche de rejet.
 
 Le raisonnement est écrit pour une tendance haussière ; une tendance baissière est traitée en miroir (prix inversés).
 
@@ -115,7 +115,7 @@ def _up(h, n=SWING_N):
     start = min(sh[-(legs + 1)], sl[-(legs + 1)])
     impulsive = False
     if brk is not None and brk >= 1:
-        avg = S.body_avg(h[max(0, brk - 20):brk])
+        avg = S.ref_body(h)
         impulsive = avg > 0 and S.body(h[brk]) >= S.DISP_MULT * avg
     return {"legs": legs, "age": age, "start_epoch": h[start]["epoch"], "invalid": lows[-1],
             "impulsive": impulsive}
@@ -230,8 +230,7 @@ PIVOT_BARS = 12                   # le creux (sommet) cassé a été formé dans
 LEVEL_BARS = 80                   # sommets (creux) candidats : les 80 dernières bougies H1
 REV_SWING_N = 2
 STALE = 3 * 3600                  # données H1 plus vieilles : marché fermé, pas d'alerte
-RSI_N, RSI_MARGIN = 14, 1.0       # divergence : RSI au nouveau sommet inférieur d'au moins 1 point à celui du sommet précédent
-FADE_RATIO = 0.6                  # 3 dernières bougies < 60 % du corps moyen des 10 précédentes
+FADE_RATIO = 0.6                  # corps moyen des 3 dernières bougies < 60 % du corps de référence (0,4 unité)
 WICK_RATIO = 2.0                  # mèche haute >= 2 fois le corps et >= la moitié de la bougie
 MAJOR_WORDS = ("H4", "veille")    # niveaux « majeurs » parmi les obstacles de strategies.htf_obstacles
 
@@ -240,24 +239,14 @@ def _body(c):
     return abs(c["close"] - c["open"])
 
 
-def rsi_divergence(h, p, e, rsi=None):
-    """Divergence baissière (sens haussier, voir le module) : le plus haut de la bougie e dépasse celui de la bougie p, mais le RSI
-    de e est inférieur à celui de p. h : bougies clôturées, p < e. Retourne False si le RSI n'est pas calculable."""
-    if rsi is None:
-        rsi = S.rsi_series([c["close"] for c in h], RSI_N)
-    if p >= e or rsi[p] is None or rsi[e] is None:
-        return False
-    return h[e]["high"] > h[p]["high"] and rsi[e] < rsi[p] - RSI_MARGIN
-
-
 def shrinking_candles(h, e):
-    """Élan qui s'éteint : corps moyen des 3 bougies jusqu'à e (comprise) < FADE_RATIO fois celui des 10 bougies précédentes."""
+    """Élan qui s'éteint : corps moyen des 3 bougies jusqu'à e (comprise) < FADE_RATIO fois le corps de référence du timeframe
+    (0,4 unité de prix, fixe : aucune moyenne glissante du marché). Il faut au moins 12 bougies d'historique."""
     if e < 12:
         return False
     last = [_body(c) for c in h[e - 2:e + 1]]
-    prior = [_body(c) for c in h[e - 12:e - 2]]
-    mean_prior = sum(prior) / len(prior)
-    return mean_prior > 0 and sum(last) / len(last) < FADE_RATIO * mean_prior
+    ref = S.ref_body(h[:e + 1])
+    return ref > 0 and sum(last) / len(last) < FADE_RATIO * ref
 
 
 def rejection_wick(c):
@@ -323,10 +312,7 @@ def detect(provide, now):
                 break
     if REQUIRE_LEVEL and level_name is None:
         return None
-    rsi = S.rsi_series([c["close"] for c in h], RSI_N)
     signs = []
-    if rsi_divergence(h, found["level_i"], found["ext_i"], rsi):
-        signs.append("divergence RSI H1")
     if shrinking_candles(h, found["ext_i"]):
         signs.append("bougies qui rétrécissent")
     if rejection_wick(h[found["ext_i"]]) or rejection_wick(h[found["sweep_i"]]):
@@ -364,7 +350,7 @@ def _f(name, default):
 
 
 try:
-    MIN_SIGNS = int(os.getenv("REVERSAL_MIN_SIGNS") or 2)             # signes d'essoufflement exigés (sur 3)
+    MIN_SIGNS = int(os.getenv("REVERSAL_MIN_SIGNS") or 2)             # signes d'essoufflement exigés (sur 2)
 except ValueError:
     MIN_SIGNS = 2
 
@@ -397,7 +383,7 @@ def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
     if not m15 or not h1:
         return None
     m15c = m15[:-1]
-    a_m15, a_h1 = S.atr(m15c), S.atr(h1[:-1])
+    a_m15, a_h1 = S.unit(m15c), S.unit(h1[:-1])
     if a_m15 <= 0 or a_h1 <= 0:
         return None
     d, price = rev["dir"], m15[-1]["close"]
@@ -872,13 +858,9 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     m15c = m15[:-1]
     if len(m15c) < 20:
         return None
-    a_m15 = S.atr(m15c)
+    a_m15 = S.unit(m15c)
     if a_m15 <= 0:
         return None
-    h1v = provide("H1")
-    if S.S3_VOL_MIN_RATIO and h1v and S.vol_ratio(h1v[:-1]) < S.S3_VOL_MIN_RATIO:
-        funnel["S3_vol"] += 1
-        return None                                 # marché trop calme : le spread domine
     memo = {}
 
     def rev_fn():                                   # alerte de retournement, calculée une seule fois par scan, et seulement si utile
@@ -924,10 +906,10 @@ def crt_pair(S, rc, funnel=None):
     """(sens, C1, C2, ATR) si les deux dernières bougies clôturées `rc` forment un CRT : C2 balaie UN côté de C1 (d'au moins
     CRT_SWEEP_MIN_ATR x ATR) et clôture dans son range, et le range de C1 a une taille raisonnable (entre CRT_MIN_RANGE_ATR et
     CRT_MAX_RANGE_ATR x ATR) : assez grand pour qu'un stop serré donne 1:3 jusqu'au milieu du range, pas démesuré. Sinon None."""
-    if len(rc) < S.ATR_N + 3:
+    if len(rc) < 17:
         return None
     c1, c2 = rc[-2], rc[-1]
-    a = S.atr(rc)
+    a = S.unit(rc)
     if a <= 0:
         return None
     up, dn = c2["high"] > c1["high"], c2["low"] < c1["low"]
@@ -987,7 +969,7 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
     funnel["CRT_choch"] += 1
     ext_i, ext_px, trig, pivot = cfm["ext_i"], cfm["ext_px"], cfm["trig"], cfm["pivot"]
     tc = m15c[trig]
-    if not is_displacement(tc, S.body_avg(m15c[-21:-1]), S.DISP_MULT):
+    if not is_displacement(tc, S.ref_body(m15c), S.DISP_MULT):
         return None
     sess = S.session_name(tc["epoch"])                   # affichage seulement : la cassure suit la clôture de C2, à toute heure
     lo1, hi1 = c1["low"], c1["high"]
@@ -997,6 +979,8 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
     price = m15[-1]["close"]
     sl = ext_px + S.CRT_SL_BUF_ATR * a_m15 if d == "SELL" else ext_px - S.CRT_SL_BUF_ATR * a_m15
     poi = S.entry_zone(m15c, ext_i, trig - 1, d)
+    if S.S4_STOP_MODE == "ob" and poi:
+        sl = S.zone_stop(d, poi[2], a_m15)               # stop à l'autre extrémité du bloc d'ordre (ou du FVG) d'entrée
     otype, entry = S.pick_entry(d, price, poi[0] if poi else None, sl, mode)
     if otype != d:
         if abs(price - entry) > S.CRT_LIMIT_MAX_ATR * a_m15:
@@ -1047,12 +1031,9 @@ def scan_crt(provide, now, funnel, dec=2, kz=True, mode="market"):
     m15c, h1c = m15[:-1], h1[:-1]
     if len(m15c) < 40 or len(h1c) < 40:
         return []
-    a_m15, a_h1 = S.atr(m15c), S.atr(h1c)
+    a_m15, a_h1 = S.unit(m15c), S.unit(h1c)
     if min(a_m15, a_h1) <= 0:
         return []
-    if S.CRT_VOL_MIN_RATIO and S.vol_ratio(h1c) < S.CRT_VOL_MIN_RATIO:
-        funnel["CRT_vol"] += 1
-        return []                                         # marché trop calme : le spread domine
     out = []
     for tf in S.CRT_REFS:
         ref = provide(tf)
@@ -1082,3 +1063,154 @@ def _crt_gate(S, sig, provide, now, funnel):
             funnel[why] += 1                             # obstacle H4/H1 trop proche devant l'objectif
             return False
     return True
+
+
+# ==========================================================================
+# S9 Market Profiles (profiles.py : range -> manipulation -> expansion, prix pur)
+# ==========================================================================
+def _profile_key_levels(S, provide, now, a_h1):
+    """Niveaux clés (prix) : PDH/PDL, extrêmes de la plage asiatique, equal highs/lows H1 (liquidity_levels) et derniers sommets/creux H4.
+    Les niveaux à moins de 0,1 unité H1 l'un de l'autre sont fusionnés."""
+    h1, m15, d1, h4 = provide("H1"), provide("M15"), provide("D1"), provide("H4")
+    out = []
+    if h1 and m15:
+        out += [px for _, px, _, _ in S.liquidity_levels(h1[:-1], d1 or [], m15[:-1], now, a_h1)]
+    if h4 and len(h4) > 12:
+        h4c = h4[:-1]
+        for kind in ("high", "low"):
+            out += [h4c[i][kind] for i in S.swings(h4c, kind, 2)[-S.S9_H4_SWINGS:]]
+    uniq = []
+    for px in sorted(out):
+        if not uniq or px - uniq[-1] > 0.1 * a_h1:
+            uniq.append(px)
+    return uniq
+
+
+def _profile_tps(S, P, closed, d, entry, risk, tp1):
+    """TP2 / TP3 : liquidité opposée suivante (pivot) à plus de 0,5 R de l'objectif précédent et à moins de S9_TP_MAX_R au-delà de TP1,
+    sinon l'objectif précédent + 1 R. TP1 vient de profiles.py (première liquidité opposée, sinon le ratio minimal)."""
+    sgn = 1 if d == "BUY" else -1
+    typ = "H" if d == "BUY" else "L"
+    liq = sorted((p for _, t, p in P.pivots(closed) if t == typ and 0 < sgn * (p - tp1) <= S.S9_TP_MAX_R * risk), key=lambda p: sgn * p)
+    tps, prev = [], tp1
+    for _ in range(2):
+        nxt = next((p for p in liq if sgn * (p - prev) > 0.5 * risk), None)
+        prev = nxt if nxt is not None else prev + sgn * risk
+        tps.append(prev)
+    return tps[0], tps[1]
+
+
+def _profile_one(S, P, st, closed, cs, tf, a_ltf, a_h1, funnel, dec, kz, mode):
+    d = st.side
+    sgn = 1 if d == "BUY" else -1
+    if not 0 <= st.trig < len(closed):
+        return None
+    tc = closed[st.trig]
+    sess = S.session_name(tc["epoch"])
+    if kz and S.S9_SESSION_FILTER and sess not in S.S9_SESSIONS:
+        funnel["S9_session"] += 1
+        return None                                      # marchés à séance : déclencheur hors Londres / New York / London Close
+    price = cs[-1]["close"]
+    retest_done = abs(price - st.entry) < 0.1 * a_ltf    # setup B après retest : l'entrée est le prix actuel
+    if not retest_done and sgn * (price - st.entry) < 0:
+        funnel["S9_stale"] += 1
+        return None                                      # le prix est repassé du mauvais côté du niveau de retest
+    sl = st.sl - sgn * S.S9_SL_BUF_ATR * a_ltf
+    otype, entry = S.pick_entry(d, price, None if retest_done else st.entry, sl, mode)
+    if otype != d:
+        if abs(price - entry) > S.S9_LIMIT_MAX_ATR * a_ltf:
+            funnel["S9_stale"] += 1
+            return None                                  # niveau de retest trop loin du prix
+    elif S.is_late(d, price, tc["close"], a_ltf, S.S9_CHASE_ATR):
+        funnel["S9_stale"] += 1
+        return None                                      # le prix a déjà fui après le déclencheur
+    risk0 = abs(entry - sl)
+    tp1 = st.tp1
+    if risk0 <= 0 or sgn * (tp1 - entry) <= 0:
+        funnel["stale"] += 1
+        return None                                      # objectif déjà atteint
+    min_rr = S.S9_MIN_RR or 3.0
+    liq = abs(tp1 - (st.entry + sgn * min_rr * abs(st.entry - st.sl))) > 1e-9 * max(1.0, abs(tp1))   # TP1 = vraie liquidité (sinon : ratio minimal)
+    lv = S.build_levels(d, entry, sl, a_ltf, tps=[tp1, tp1, tp1])
+    if lv is None:
+        return None
+    if not liq:
+        tp1 = entry + sgn * min_rr * lv["risk"]          # sans liquidité : TP1 au ratio minimal du risque réel (marge du stop comprise)
+    tp2, tp3 = _profile_tps(S, P, closed, d, entry, lv["risk"], tp1)
+    lv["tp"] = [tp1, tp2, tp3]
+    if S.S9_MIN_RR and abs(tp1 - entry) / lv["risk"] < S.S9_MIN_RR - 1e-9:
+        funnel["S9_rr"] += 1
+        return None                                      # ratio gain/risque sous le minimum après la marge du stop
+    if S.S9_RISK_CAP_H1 and lv["risk"] > S.S9_RISK_CAP_H1 * a_h1:
+        funnel["S9_risque"] += 1
+        return None                                      # stop trop large
+    letter, m = st.name.split()[0], st.meta
+    is_b = letter == "B"
+    details = [f"✅ Setup {st.name} : {st.note}"]
+    if m.get("range"):
+        details.append(f"✅ Range {m['range'][0]:.{dec}f} - {m['range'][1]:.{dec}f}")
+    if m.get("key") is not None:
+        details.append(f"✅ Niveau clé {m['key']:.{dec}f}")
+    if m.get("extreme") is not None:
+        details.append(f"✅ {'Stop au-delà de l’extrême' if is_b else 'Sweep à'} {m['extreme']:.{dec}f}")
+    if m.get("level") is not None:
+        details.append(f"✅ Cassure du niveau {m['level']:.{dec}f}, retest attendu" if is_b else
+                       f"✅ CHoCH : clôture {'au-dessus' if d == 'BUY' else 'sous'} {m['level']:.{dec}f}")
+    details.append("🎯 TP1 sur la prochaine liquidité opposée" if liq else f"🎯 TP1 au ratio minimal ({S.S9_MIN_RR or 3.0:g} R) : aucune liquidité opposée repérée")
+    lines = []
+    if m.get("range"):
+        lines += [{"y": m["range"][1], "label": "Range haut", "kind": "range"}, {"y": m["range"][0], "label": "Range bas", "kind": "range"}]
+    if m.get("key") is not None:
+        lines.append({"y": m["key"], "label": "Niveau clé", "kind": "info"})
+    if m.get("extreme") is not None and not is_b:
+        lines.append({"y": m["extreme"], "label": "Sweep", "kind": "sweep"})
+    if m.get("level") is not None:
+        lines.append({"y": m["level"], "label": "Retest" if is_b else "CHoCH", "kind": "info"})
+    zones = [{"lo": m["range"][0], "hi": m["range"][1], "label": "Range", "kind": "fib"}] if m.get("range") else []
+    return S._signal(
+        "S9", "Market Profiles", d, entry, lv, cs, tf, f"{letter}|{tc['epoch']}", details,
+        lines=lines, zones=zones, inval=st.sl, session=sess,
+        extra={"setup": st.name, "poi": "niveau" if otype != d else "marché", "tp": "liquidité" if liq else "ratio"},
+        short=f"{st.name} · {tf}", trig=tc["epoch"], otype=otype, price_now=price,
+        ttl=S.LIMIT_TTL["S9"] if otype != d else None,
+        entry_note=f"Ordre limite au retest de {entry:.{dec}f} ({st.note})" if otype != d else "")
+
+
+def _profile_gate(S, sig, provide, now, funnel):
+    """Garde-fous appliqués au signal construit : âge du déclencheur, obstacles H4/H1 (intraday)."""
+    if S.S9_MAX_AGE_MIN and sig.get("trig_close") and (now - sig["trig_close"]) / 60 > S.S9_MAX_AGE_MIN:
+        funnel["S9_age"] += 1                            # déclencheur trop ancien (retard du cron ou du workflow)
+        return False
+    if S.INTRADAY:
+        why = S.obstacle_filter(sig, provide, now, "S9", False, S.S9_MIN_RR, "tp1")
+        if why:
+            funnel[why] += 1                             # obstacle H4/H1 trop proche devant l'objectif
+            return False
+    funnel["S9_signal"] += 1
+    return True
+
+
+def scan_profiles(provide, now, funnel, dec=2, kz=True, mode="market"):
+    """S9 Market Profiles : une liste de signaux (au plus un par setup A à E), vide s'il n'y a rien.
+    Les 5 setups de profiles.py (range + sweep, break & retest, reversal sur niveau clé, manipulation sur support, retracement + deep
+    sweep) sont évalués sur les bougies clôturées du timeframe S9_TF ; les niveaux clés viennent du bot (veille, plage asiatique, EQH/EQL, H4)."""
+    import profiles as P
+    import strategies as S
+    tf = S.S9_TF
+    cs, h1 = provide(tf), provide("H1")
+    if not (cs and h1):
+        return []
+    closed, h1c = cs[:-1][-S.S9_BARS:], h1[:-1]
+    if len(closed) < 40 or len(h1c) < 40:
+        return []
+    a_ltf, a_h1 = S.unit(closed), S.unit(h1c)
+    if min(a_ltf, a_h1) <= 0:
+        return []
+    levels = _profile_key_levels(S, provide, now, a_h1)
+    out = []
+    for st in P.scan_all(closed, levels, min_rr=S.S9_MIN_RR or 3.0):
+        funnel["S9_setup"] += 1
+        sig = _profile_one(S, P, st, closed, cs, tf, a_ltf, a_h1, funnel, dec, kz, mode)
+        if sig and _profile_gate(S, sig, provide, now, funnel):
+            out.append(sig)
+    return out

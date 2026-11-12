@@ -101,7 +101,7 @@ def parse_sym_strats(text):
     return out
 
 
-ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit"}   # défaut : ordres limites partout
+ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit", "S9": "limit"}   # défaut : ordres limites partout
 for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S3:market"
     _k, _, _v = _p.partition(":")
     _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
@@ -190,7 +190,7 @@ def is_247(sym):
     return sym.startswith("cry") or G.is_synthetic(sym)
 def parse_strategies(text):
     """'S1,S2' -> ['S1', 'S2'] ; vide ou absent -> toutes les stratégies (S1, S2, S3, S4 ; GitHub transmet une chaîne vide si la variable n'existe pas)."""
-    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4"]
+    return canon_codes([x.strip().upper() for x in (text or "").split(",") if x.strip()]) or ["S1", "S2", "S3", "S4", "S9"]
 
 
 ENABLED = parse_strategies(os.getenv("STRATEGIES"))
@@ -951,6 +951,7 @@ def build_recap(api, cache, now, syms=None):
             if not h1 or now - h1[-1]["epoch"] > RECAP_STALE:
                 closed.append(name_of(sym))
                 continue
+            S.set_symbol(sym)
             infos = {tf: SU.trend_info(tf_candles(api, cache, sym, tf) or [], tf) for tf in SU.TIMEFRAMES}
             blocks.append((SU.symbol_line if RECAP_FORMAT == "compact" else SU.symbol_block)(name_of(sym), infos, now, dec_of(sym)))
         except Exception as ex:
@@ -1026,6 +1027,7 @@ def synth_block(api, cache, sym, now):
     if not cs["H1"] or now - cs["H1"][-1]["epoch"] > RECAP_STALE:
         return None
     dec = dec_of(sym)
+    S.set_symbol(sym)
     infos = {tf: SU.trend_info(cs[tf], tf) for tf in SU.TIMEFRAMES}
     if RECAP_FORMAT == "compact":                       # une ligne : tendances, extrêmes de la bougie daily
         line = SU.symbol_line(name_of(sym), infos, now, dec)
@@ -1108,6 +1110,7 @@ _LOGGED_BLOCKS = set()      # setups bloqués déjà signalés dans le journal (
 def scan(sym, provide, now, sent, funnel):
     """Évalue les stratégies actives sur un actif. Retourne [(signal, bougies de l'unité d'entrée)] non encore envoyés.
     Utilisé par le bot en direct et par le backtest."""
+    S.set_symbol(sym)                  # détermine l'unité de prix de l'actif (aucun indicateur)
     m5 = provide("M5")
     if not m5 or now - m5[-1]["epoch"] > STALE_DATA:
         return []                      # données absentes ou marché fermé
