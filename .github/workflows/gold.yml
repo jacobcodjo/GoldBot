@@ -105,6 +105,18 @@ jobs:
           REVERSAL_ALERTS: ${{ vars.REVERSAL_ALERTS }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
+          UNIT_PCT: ${{ vars.UNIT_PCT }}
+          STOP_MODE: ${{ vars.STOP_MODE }}
+          S1_STOP_MODE: ${{ vars.S1_STOP_MODE }}
+          S2_STOP_MODE: ${{ vars.S2_STOP_MODE }}
+          S4_STOP_MODE: ${{ vars.S4_STOP_MODE }}
+          S9_TF: ${{ vars.S9_TF }}
+          S9_BARS: ${{ vars.S9_BARS }}
+          S9_MIN_RR: ${{ vars.S9_MIN_RR }}
+          S9_RISK_CAP_H1: ${{ vars.S9_RISK_CAP_H1 }}
+          S9_SL_BUF_ATR: ${{ vars.S9_SL_BUF_ATR }}
+          S9_MAX_AGE_MIN: ${{ vars.S9_MAX_AGE_MIN }}
+          S9_SESSION_FILTER: ${{ vars.S9_SESSION_FILTER }}
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
           DERIV_APP_ID: ${{ vars.DERIV_APP_ID }}
           DERIV_WS_URL: ${{ vars.DERIV_WS_URL }}
