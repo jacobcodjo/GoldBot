@@ -24,6 +24,8 @@ S.CRT_CHASE_ATR, S.CRT_LIMIT_MAX_ATR = 1e9, 1e9      # garde-fous de S4 neutrali
 import tracker as T
 import setups as TR
 
+TR.REVERSAL_RSI, TR.MIN_SIGNS = True, 2        # les scénarios du retournement ont été écrits avec la divergence RSI (le défaut de production est sans RSI)
+
 # Les scénarios de test ci-dessous ont été calibrés sur l'amplitude réelle de leurs bougies. Pour tester la LOGIQUE des stratégies
 # (filtres, stops, ratios), on remplace l'unité de prix de production (pourcentage fixe par actif) par une unité calculée sur
 # les bougies du scénario. La vraie fonction de production reste testée à part (classe UnitePrix).
@@ -2135,7 +2137,7 @@ class RetournementPossible(unittest.TestCase):
         self.assertEqual((rev["dir"], rev["trend_dir"], rev["age"]), ("SELL", "BUY", "mûre"))
         self.assertEqual(rev["level"], (112.0, "sommet H4"))
         self.assertEqual((rev["ext"], rev["pivot"]), (113.0, 109.6))
-        self.assertEqual(rev["signs"], ["bougies qui rétrécissent", "mèche de rejet"])
+        self.assertEqual(rev["signs"], ["divergence RSI H1", "bougies qui rétrécissent", "mèche de rejet"])
 
     def test_retournement_haussier_apres_tendance_baissiere_mure(self):
         mirror = S.mirror(self.h1_sweep())                   # même scénario en miroir : creux pris, remontée
@@ -2189,7 +2191,7 @@ class RetournementPossible(unittest.TestCase):
         txt = R.message(rev, "XAUUSD", 2, "08h15 Bénin")
         self.assertTrue(txt.startswith("🔄 Retournement possible · XAUUSD · baissier"))
         for part in ("tendance H4 haussier mûre (5 jambes)", "sommet H1 112.00 (sommet H4)", "extrême 113.00",
-                     "sous le dernier creux (109.60)", "bougies qui rétrécissent · mèche de rejet",
+                     "sous le dernier creux (109.60)", "divergence RSI H1 · bougies qui rétrécissent · mèche de rejet",
                      "Invalidation : retour au-dessus de 113.00", "aucun ordre, aucun suivi", "08h15 Bénin"):
             self.assertIn(part, txt)
         buy = dict(rev, dir="BUY", trend_dir="SELL")
@@ -2301,8 +2303,11 @@ class RetournementPossible(unittest.TestCase):
 
 
     def test_signes_d_essoufflement_minimaux(self):
-        self.assertIsNone(self.run_detect(MIN_SIGNS=3))                               # 2 signes seulement (plus de RSI)
-        self.assertIsNotNone(self.run_detect(MIN_SIGNS=2))
+        self.assertIsNone(self.run_detect(MIN_SIGNS=4))                               # 3 signes seulement
+        self.assertIsNotNone(self.run_detect(MIN_SIGNS=3))
+        with mock.patch.object(TR, "REVERSAL_RSI", False):                            # sans RSI : 2 signes seulement
+            self.assertIsNone(self.run_detect(MIN_SIGNS=3))
+            self.assertEqual(self.run_detect(MIN_SIGNS=2)["signs"], ["bougies qui rétrécissent", "mèche de rejet"])
 
 
 REAL_ENTRY_ZONE = S.entry_zone
@@ -3052,8 +3057,9 @@ class UnitePrix(unittest.TestCase):
         return [{"epoch": 1_700_000_000 + gap * i, "open": px, "high": px + 1, "low": px - 1, "close": px} for i in range(n)]
 
     def test_unite_fixe_par_actif_et_echelle_de_temps(self):
-        saved = (S.UNIT_OVERRIDES, S._CUR_SYM[0])
+        saved = (S.UNIT_OVERRIDES, S._CUR_SYM[0], S.UNIT_MODE)
         try:
+            S.UNIT_MODE = "fixed"
             S.UNIT_OVERRIDES = {}
             S.set_symbol("frxXAUUSD")
             h1 = PROD_UNIT(self.bougies(3600))
@@ -3073,17 +3079,101 @@ class UnitePrix(unittest.TestCase):
             S.unit = PROD_UNIT                                                              # ref_body appelle S.unit (remplacée dans les tests)
             self.assertAlmostEqual(PROD_REF_BODY(self.bougies(3600)), 0.4 * 5.0)
         finally:
-            S.UNIT_OVERRIDES, S._CUR_SYM[0] = saved
+            S.UNIT_OVERRIDES, S._CUR_SYM[0], S.UNIT_MODE = saved
             S.unit = _unite_de_test
 
-    def test_aucun_indicateur_dans_le_code(self):
+    def test_pas_d_adx_ni_ema(self):
         for f in ("strategies.py", "setups.py", "gold.py"):
             with open(os.path.join(os.path.dirname(__file__), f), encoding="utf-8") as fh:
                 src = fh.read()
-            for mot in ("def atr(", "def adx(", "def rsi", "def ema(", "def body_avg(", "def vol_ratio(", "rsi_divergence"):
+            for mot in ("def adx(", "def ema(", "def body_avg(", "def h4_ema_bias("):
                 self.assertNotIn(mot, src, f"{f} : {mot}")
-        for nom in ("atr", "adx", "rsi_series", "ema", "body_avg", "mean_body", "vol_ratio", "h4_ema_bias"):
+        for nom in ("adx", "ema", "body_avg", "mean_body", "h4_ema_bias"):
             self.assertFalse(hasattr(S, nom), nom)
+        self.assertTrue(callable(S.atr))                                     # l'ATR est de retour (unité de prix par défaut)
+        self.assertTrue(callable(S.rsi_series))                              # le RSI aussi (divergence du retournement de S3)
+
+    def test_rsi(self):
+        up = S.rsi_series([float(i) for i in range(1, 40)])
+        self.assertEqual((up[:14], up[14], up[-1]), ([None] * 14, 100.0, 100.0))        # hausse continue : RSI 100
+        dn = S.rsi_series([float(40 - i) for i in range(40)])
+        self.assertEqual(dn[-1], 0.0)                                                    # baisse continue : RSI 0
+        zig = S.rsi_series([100 + (i % 2) for i in range(60)])
+        self.assertTrue(all(40 < v < 60 for v in zig[20:]))                              # alternance régulière : milieu de plage
+        self.assertEqual(S.rsi_series([1.0] * 10), [None] * 10)                          # historique trop court
+        closes = [100 + 2 * k for k in range(21)] + [140 - 2 * k for k in range(1, 6)] + [130 + 1.3 * k for k in range(1, 9)]
+        h = [{"open": c, "high": c + 0.5, "low": c - 0.5, "close": c} for c in closes]
+        p, e = 20, len(h) - 1                                                            # sommet à 140 (RSI 100), puis nouveau sommet plus mou
+        rsi = S.rsi_series(closes)
+        self.assertGreater(h[e]["high"], h[p]["high"])
+        self.assertLess(rsi[e], rsi[p] - TR.RSI_MARGIN)
+        self.assertTrue(TR.rsi_divergence(h, p, e, rsi))                                 # prix plus haut, RSI plus bas : divergence
+        self.assertFalse(TR.rsi_divergence(h, e, p, rsi))                                # p doit précéder e
+        h2 = [dict(c, high=c["high"] - 5) if i == e else c for i, c in enumerate(h)]
+        self.assertFalse(TR.rsi_divergence(h2, p, e, rsi))                               # pas de nouveau sommet : pas de divergence
+
+    def test_mode_par_defaut_price_action(self):
+        self.assertEqual(S.UNIT_MODE, "fixed")                               # défaut : aucune moyenne de marché
+        base = {k: v for k, v in os.environ.items() if k not in ("UNIT_MODE", "REVERSAL_RSI", "REVERSAL_MIN_SIGNS")}
+        with mock.patch.dict(os.environ, base, clear=True):
+            self.assertEqual(S._unit_mode(), "fixed")
+            self.assertFalse(TR._env_rsi())                                  # pas de RSI par défaut
+        self.assertEqual((TR._default_min_signs(False), TR._default_min_signs(True)), (1, 2))
+        with mock.patch.object(S, "UNIT_MODE", "atr"):
+            cs = self.bougies(3600, n=30)
+            for i, c in enumerate(cs):
+                c["high"], c["low"] = c["close"] + 1 + i % 3, c["close"] - 1
+            self.assertAlmostEqual(PROD_UNIT(cs), S.atr(cs))                 # mode atr : unité = ATR(14) du timeframe
+            self.assertAlmostEqual(PROD_REF_BODY(cs), 0.4 * S.atr(cs))
+            self.assertGreater(S.atr(cs), 2.0)
+
+    def test_lecture_de_unit_mode(self):
+        base = {k: v for k, v in os.environ.items() if k != "UNIT_MODE"}
+        for val, att in (("", "fixed"), ("atr", "atr"), ("ATR", "atr"), ("fixed", "fixed"), ("n'importe quoi", "fixed")):
+            with mock.patch.dict(os.environ, {**base, "UNIT_MODE": val}, clear=True):
+                self.assertEqual(S._unit_mode(), att)
+
+    def test_filtres_de_volatilite_atr(self):
+        cs = [{"epoch": 1_700_000_000 + 3600 * i, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0} for i in range(300)]
+        self.assertTrue(S.s5_vol_ok(cs))                                     # volatilité normale
+        calme = [dict(c, high=100.1, low=99.9) for c in cs[:-15]] + cs[-15:]
+        self.assertAlmostEqual(S.vol_ratio(cs), 1.0, places=2)
+        pic = cs[:-15] + [dict(c, high=106.0, low=94.0) for c in cs[-15:]]
+        self.assertFalse(S.s5_vol_ok(pic))                                   # pic : ATR 14 / ATR 100 > 2
+        mort = [dict(c, high=101.0, low=99.0) for c in cs[:-30]] + [dict(c, high=100.2, low=99.8) for c in cs[-30:]]
+        self.assertLess(S.vol_ratio(mort), 0.5)                              # marché mort : ATR H1 sous la moitié de sa médiane
+        with mock.patch.object(S, "UNIT_MODE", "fixed"):
+            self.assertEqual(PROD_UNIT(cs), S.unit_fixed(cs))                # mode fixe : aucune moyenne de marché
+
+    def test_marche_mort_ecarte_s2_et_s4(self):
+        mort = lambda h1c: 0.1
+        off = dict(S2_BIAS_FILTER=False, S2_HTF_ZONE=False, S2_LIQ_TARGETS=False)
+        m5 = s2_scenario(False, 0)
+        self.assertIsNotNone(s2_first_signal(m5, UNIT_MODE="atr", **off))
+        self.assertIsNone(s2_first_signal(m5, vol_ratio=mort, UNIT_MODE="atr", **off))        # S2 écarté (mode atr)
+        self.assertIsNotNone(s2_first_signal(m5, vol_ratio=mort, **off))                      # le filtre n'existe pas en mode fixed (défaut)
+        case = CrtS4()
+        sigs, f = case.scan(UNIT_MODE="atr")
+        self.assertEqual(len(sigs), 1)
+        sigs, f = case.scan(vol_ratio=mort)
+        self.assertEqual(len(sigs), 1)
+        sigs, f = case.scan(vol_ratio=mort, UNIT_MODE="atr")
+        self.assertEqual((sigs, f["CRT_vol"]), ([], 1))                      # S4 écarté
+
+
+class ControleDesUnites(unittest.TestCase):
+    def test_message_de_test(self):
+        def h1(price, rng):
+            return [{"epoch": 1_700_000_000 + 3600 * i, "open": price, "high": price + rng / 2, "low": price - rng / 2, "close": price}
+                    for i in range(120)]
+        data = {"frxXAUUSD": h1(4000.0, 14.0), "frxEURUSD": h1(1.15, 1.0), "R_100": h1(1000.0, 17.0)}   # l'EURUSD est ici très mal réglé
+        with mock.patch.object(gold, "SYMBOLS", list(data)), mock.patch.object(gold, "tf_candles", lambda api, cache, sym, tf: data[sym]):
+            txt = gold.unit_check_text(None, {})
+        self.assertIn("2/3 actifs cohérents", txt)
+        self.assertIn("EURUSD", txt)
+        self.assertNotIn("XAUUSD (", txt)
+        with mock.patch.object(S, "UNIT_MODE", "atr"):
+            self.assertEqual(gold.unit_check_text(None, {}), "")             # contrôle propre au mode fixed
 
 
 class MarketProfilesS9(unittest.TestCase):

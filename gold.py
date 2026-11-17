@@ -1142,6 +1142,31 @@ def scan(sym, provide, now, sent, funnel):
     return out
 
 
+def unit_check_text(api, cache):
+    """Contrôle affiché dans le message de test : unité de prix fixe de chaque actif rapportée à l'amplitude médiane réelle de ses bougies H1
+    (hors mode fixed : rien). Un écart d'un facteur supérieur à 2 signale une unité mal réglée (UNIT_PCT)."""
+    if S.UNIT_MODE != "fixed":
+        return ""
+    bad, n = [], 0
+    for sym in SYMBOLS:
+        try:
+            h1 = tf_candles(api, cache, sym, "H1")
+        except Exception:
+            continue
+        if not h1 or len(h1) < 60:
+            continue
+        h = h1[:-1][-200:]
+        S.set_symbol(sym)
+        obs = sorted(c["high"] - c["low"] for c in h)[len(h) // 2]
+        fx = S.unit_fixed(h)
+        n += 1
+        if obs > 0 and not 0.5 <= fx / obs <= 2.0:
+            bad.append(f"{name_of(sym)} (unité {fx:.4g}, bougie H1 médiane {obs:.4g})")
+    if not n:
+        return ""
+    return f"Unités de prix : {n - len(bad)}/{n} actifs cohérents" + (f" ; à vérifier : {', '.join(bad)}" if bad else "") + "."
+
+
 def main():
     if "--stats" in sys.argv:
         tr, g = T.load_trades(), G.load_guard()
@@ -1204,6 +1229,7 @@ def main():
             G.report_sent(g, now)
         if os.getenv("NOTIFY_OK") == "1":
             notify(f"Bot OK : {len(SYMBOLS)} actifs, {funnel['alert']} alerte(s). Stratégies actives : {', '.join(ENABLED)}.\n"
+                   f"{unit_check_text(api, cache)}\n"
                    f"Entonnoir : {G.funnel_text(funnel)}\n{T.stats_text(tr, now, groups=('cascade',))}")
         print(f"Scan terminé : {len(SYMBOLS)} actifs, {funnel['alert']} alerte(s). Entonnoir : {G.funnel_text(funnel)}")
     finally:

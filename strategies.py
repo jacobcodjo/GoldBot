@@ -13,6 +13,7 @@ Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
 import math
 import os
+import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,7 @@ NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
 
 # --- Paramètres communs ---
+ATR_N = 14
 DISP_MULT = 1.2           # corps de la bougie de cassure >= 1,2 x corps de référence (0,4 unité du timeframe)
 FRESH = 2                 # la bougie de déclenchement doit être l'une des 2 dernières clôturées
 BUF_ATR = 0.15            # marge du stop au-delà de l'extrême : 0,15 unité du timeframe d'entrée
@@ -232,7 +234,7 @@ def bars(n_m15, tf):
 
 
 # ==========================================================================
-# Unité de prix (aucun indicateur : ni ATR, ni ADX, ni RSI, ni EMA)
+# Unité de prix : pourcentage fixe par actif par défaut (UNIT_MODE=fixed, price action pur), ou ATR(14) (UNIT_MODE=atr). Ni ADX, ni EMA.
 # ==========================================================================
 # Toutes les distances du bot (stops, plafonds de risque, impulsion minimale, FVG, sweep...) s'expriment en « unités ».
 # L'unité d'un timeframe est un pourcentage FIXE du prix, propre à chaque actif, mis à l'échelle de la durée de la bougie
@@ -249,6 +251,20 @@ UNIT_H1_PCT = {
     "R_75": 1.28, "1HZ75V": 1.28, "R_100": 1.70, "1HZ100V": 1.70,
 }
 UNIT_DEFAULT_PCT = 0.10                  # actif inconnu
+
+# Mode de l'unité de prix : « fixed » (défaut, price action pur) = pourcentage fixe du prix propre à l'actif (UNIT_H1_PCT / UNIT_PCT), sans
+# aucune moyenne de marché ; « atr » = ATR(14) du timeframe, qui s'adapte à la volatilité. Les filtres de volatilité n'existent qu'en mode « atr ».
+def _unit_mode():
+    return "atr" if (os.getenv("UNIT_MODE") or "fixed").strip().lower() == "atr" else "fixed"
+
+
+UNIT_MODE = _unit_mode()
+S5_VOL_FAST, S5_VOL_SLOW = 14, 100       # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
+S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0        # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
+VOL_LOOKBACK = 240                       # fenêtre (en bougies H1) de la médiane de l'ATR (S2, S3 et S4)
+S2_VOL_MIN_RATIO = _num("S2_VOL_MIN_RATIO", 0.5)    # écarté si l'ATR H1 actuel < 0,5 x sa médiane récente (marché mort : le spread domine) ; 0 = off
+S3_VOL_MIN_RATIO = _num("S3_VOL_MIN_RATIO", 0.5)    # idem pour S3
+CRT_VOL_MIN_RATIO = _num("S4_VOL_MIN_RATIO", 0.5)   # idem pour S4
 
 
 def _unit_overrides():
@@ -277,9 +293,56 @@ def unit_pct(sym=None):
     return UNIT_OVERRIDES.get(sym) or UNIT_H1_PCT.get(sym) or UNIT_DEFAULT_PCT
 
 
-def unit(cs):
-    """Unité de prix du timeframe de la liste de bougies `cs` : pourcentage fixe du dernier prix, mis à l'échelle de la durée de
-    la bougie (écart minimal entre les dernières bougies, robuste aux trous de week-end). 0 si moins de 2 bougies."""
+def atr(cs, n=ATR_N):
+    """ATR : moyenne simple du vrai range (le plus grand de haut-bas, haut-clôture précédente, bas-clôture précédente) des n dernières bougies."""
+    cs = cs[-(n + 1):]
+    trs = [max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"]))
+           for p, c in zip(cs, cs[1:])]
+    return sum(trs) / len(trs) if trs else 0.0
+
+
+def vol_ratio(h1c):
+    """ATR H1 actuel rapporté à sa médiane sur les ~240 dernières bougies H1 (1 = volatilité normale)."""
+    n = len(h1c)
+    if n < 60:
+        return 1.0
+    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - VOL_LOOKBACK), n + 1, 6)]
+    med = statistics.median(pts) if pts else 0.0
+    return atr(h1c) / med if med > 0 else 1.0
+
+
+def s5_vol_ok(mtf):
+    """Régime de volatilité : ATR rapide / ATR lent du timeframe d'impulsion entre S5_VOL_MIN et S5_VOL_MAX.
+    Sans assez d'historique (moins de S5_VOL_SLOW + 1 bougies clôturées), le filtre ne s'applique pas."""
+    if not (S5_VOL_MIN or S5_VOL_MAX):
+        return True
+    cs = mtf[:-1]
+    if len(cs) < S5_VOL_SLOW + 1:
+        return True
+    slow = atr(cs, S5_VOL_SLOW)
+    return slow <= 0 or S5_VOL_MIN <= atr(cs, S5_VOL_FAST) / slow <= S5_VOL_MAX
+
+
+def rsi_series(closes, n=14):
+    """RSI de Wilder pour chaque bougie (None au début). Utilisé uniquement par la divergence RSI du retournement de S3."""
+    out = [None] * len(closes)
+    if len(closes) <= n:
+        return out
+    gains = [max(closes[i] - closes[i - 1], 0) for i in range(1, n + 1)]
+    losses = [max(closes[i - 1] - closes[i], 0) for i in range(1, n + 1)]
+    ag, al = sum(gains) / n, sum(losses) / n
+    out[n] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+    for i in range(n + 1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        ag = (ag * (n - 1) + max(d, 0)) / n
+        al = (al * (n - 1) + max(-d, 0)) / n
+        out[i] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+    return out
+
+
+def unit_fixed(cs):
+    """Unité de prix fixe : pourcentage du dernier prix propre à l'actif, mis à l'échelle de la durée de la bougie (racine du temps).
+    0 si moins de 2 bougies."""
     if len(cs) < 2:
         return 0.0
     t = cs[-7:]
@@ -288,6 +351,11 @@ def unit(cs):
     if gap <= 0 or price <= 0:
         return 0.0
     return price * unit_pct() / 100.0 * math.sqrt(gap / 3600.0)
+
+
+def unit(cs):
+    """Unité de prix du timeframe de `cs` : pourcentage fixe de l'actif en mode « fixed » (défaut), ATR(14) en mode « atr »."""
+    return atr(cs) if UNIT_MODE == "atr" else unit_fixed(cs)
 
 
 BODY_REF_UNIT = 0.4                      # corps de référence d'une bougie ordinaire = 0,4 unité
@@ -658,6 +726,9 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
         cf, cfc, a_cf, cf_n, pivot_bars = m15, m15c, a_m15, "M15", S2_PIVOT_BARS_M15
     else:
         cf, cfc, a_cf, cf_n, pivot_bars = m5, m5c, a_m5, "M5", S2_PIVOT_BARS
+    if UNIT_MODE == "atr" and S2_VOL_MIN_RATIO and vol_ratio(h1c) < S2_VOL_MIN_RATIO:
+        funnel["S2_vol"] += 1
+        return None                                   # marché trop calme : le spread domine
     levels = liquidity_levels(h1c, d1, m15c, now, a_h1)
     if not levels:
         return None
@@ -1103,6 +1174,9 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
         htf, mtf = provide(htf_n), provide(mtf_n)
         if not htf or not mtf:
             continue
+        if UNIT_MODE == "atr" and not s5_vol_ok(mtf):
+            continue                                  # volatilité en compression extrême ou en pic
+        funnel["S5_regime"] += 1
         ltf = None
         for d in ("BUY", "SELL"):
             buy = d == "BUY"

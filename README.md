@@ -49,7 +49,7 @@ Anciens codes toujours lus : `S5` = S1, `S7` = S3, `S8` = S4 ; la 5e stratégie 
 | `charts.py` | Graphique joint à chaque alerte (matplotlib) |
 | `backtest.py` | Rejeu M5 des mêmes fonctions que le bot en direct, deux périodes, grille de réglages |
 | `profiles.py` | Détection des setups A à E de Market Profiles (prix pur, retourne des `Setup`) ; branché sur le bot par `setups.scan_profiles` |
-| `tests.py` | 275 tests unitaires (`python -m unittest tests -v`), sans réseau |
+| `tests.py` | 281 tests unitaires (`python -m unittest tests -v`), sans réseau |
 | `.github/workflows/` | `gold.yml` (scan, déclenché de l'extérieur), `backtest.yml` (manuel), `tests.yml` (à chaque push) |
 
 Dépendances (`requirements.txt`) : `websocket-client`, `requests`, `matplotlib`. Python 3.12 dans les workflows.
@@ -96,15 +96,16 @@ Seules les variables **transmises par `gold.yml`** agissent sur le bot en direct
 | `INTRADAY` | `0` désactive le cadre intraday ; `INTRADAY_RUNNERS=1` laisse courir le reste après TP1 en fin de séance ; `CRYPTO_INTRADAY=1` soumet les cryptos à la fin de séance |
 | `S1_MIN_RR`, `S1_RISK_CAP_H1`, `S1_D1_ALIGN`, `S1_OBST_ENTRY` | Garde-fous de S1 (défauts : 3 ; 2 ; actif ; actif) ; `0` désactive les valeurs numériques |
 | `S2_BIAS_FILTER`, `S2_HTF_ZONE`, `S2_FIB_FILTER` | Garde-fous de S2 : biais de structure, sweep sur zone H1/H4, côté Fibonacci (défaut : actifs ; `0` désactive) |
-| `S2_MIN_RR`, `S2_RISK_CAP_H1`, `S2_MAX_AGE_MIN`, `S2_SWEEP_MIN_ATR` | Ratio minimal sur TP1 (défaut : celui de S1, soit 3), risque maximal en unités H1 (1,5), âge maximal du déclencheur en minutes (20), dépassement minimal de la mèche en unités M15 (0,1) |
+| `S2_MIN_RR`, `S2_RISK_CAP_H1`, `S2_MAX_AGE_MIN`, `S2_VOL_MIN_RATIO`, `S2_SWEEP_MIN_ATR` | Ratio minimal sur TP1 (défaut : celui de S1, soit 3), risque maximal en unités H1 (1,5), âge maximal du déclencheur en minutes (20), ATR H1 minimal rapporté à sa médiane (0,5), dépassement minimal de la mèche en unités M15 (0,1) |
 | `S3_FIB_FILTER`, `S3_FIB_CAP_TP3`, `S3_CONTEXT_ALIGN` | Repli Fibonacci des continuations, plafond de TP3 des retournements, contexte H4/D1 des continuations (défaut : actifs) |
-| `S3_MAX_AGE_MIN`, `S3_REV_MIN_RR` | Âge du déclencheur (20 min), ratio minimal du retournement sur TP1 (celui de S1) |
+| `S3_VOL_MIN_RATIO`, `S3_MAX_AGE_MIN`, `S3_REV_MIN_RR` | Volatilité (0,5), âge du déclencheur (20 min), ratio minimal du retournement sur TP1 (celui de S1) |
 | `S6_TOL_ATR`, `S6_RISK_CAP_ATR`, `S6_MIN_RR`, `S6_NOCONF_MIN_RR`, `S6_CONF_RISK_FACTOR` | Figures de S3 : tolérance de touche des lignes (0,5), risque maximal en unités de la figure (5), ratio minimal vers TP3 (1), idem sans confluence (1,5), facteur de risque avec confluence (1,4) |
-| `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR`, `REVERSAL_MIN_SIGNS` | Retournement de S3 : risque maximal en unités H1 (3), retest maximal à 1 unité H1 du prix, signes d'essoufflement exigés sur 2 (2) |
-| `S4_MIN_RR`, `S4_MAX_AGE_MIN`, `S4_CONTEXT_ALIGN`, `S4_SWEEP_MIN_ATR` | CRT : ratio minimal sur TP1 (celui de S1), âge du déclencheur (20 min), pas contre une tendance H4/D1 claire (actif), dépassement minimal de C2 en unités de référence (0,1) |
+| `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR`, `REVERSAL_MIN_SIGNS` | Retournement de S3 : risque maximal en unités H1 (3), retest maximal à 1 unité H1 du prix, signes d'essoufflement exigés (défaut 1 sur 2 sans RSI, 2 sur 3 avec) ; `REVERSAL_RSI=1` ajoute la divergence RSI (désactivée par défaut) |
+| `S4_MIN_RR`, `S4_MAX_AGE_MIN`, `S4_VOL_MIN_RATIO`, `S4_CONTEXT_ALIGN`, `S4_SWEEP_MIN_ATR` | CRT : ratio minimal sur TP1 (celui de S1), âge du déclencheur (20 min), volatilité (0,5), pas contre une tendance H4/D1 claire (actif), dépassement minimal de C2 en unités de référence (0,1) |
 | `S1_CONFIRM_TF`, `S2_CONFIRM_TF`, `S3_CONFIRM_TF`, `S4_CONFIRM_TF` | Timeframe d'entrée/confirmation : `M15` ou `M5` (voir § 6.7) |
 | `S9_TF`, `S9_BARS`, `S9_MIN_RR`, `S9_RISK_CAP_H1`, `S9_SL_BUF_ATR`, `S9_MAX_AGE_MIN`, `S9_SESSION_FILTER` | Market Profiles : timeframe d'analyse `M5`, `M15` ou `H1` (M15), bougies clôturées analysées (160), ratio minimal sur TP1 (celui de S1, soit 3), risque maximal en unités H1 (2), marge du stop au-delà du sweep en unités (0,15 ; 0 = sur l'extrême), âge maximal du déclencheur en minutes (20), session obligatoire sur les marchés à séance (actif ; `0` désactive) |
-| `UNIT_PCT` | **Unité de prix par actif** (voir § 5) : pourcentage du prix pour une bougie H1, ex. `frxXAUUSD=0.4,cryBTCUSD=0.8` ; remplace les valeurs par défaut de `strategies.py` |
+| `UNIT_MODE` | Unité de prix : `fixed` (**défaut**, pourcentage fixe par actif, price action pur) ou `atr` (ATR(14) du timeframe, avec filtres de volatilité ; voir § 5) |
+| `UNIT_PCT` | Mode `fixed` : **unité de prix par actif** : pourcentage du prix pour une bougie H1, ex. `frxXAUUSD=0.4,cryBTCUSD=0.8` ; remplace les valeurs par défaut de `strategies.py` |
 | `STOP_MODE`, `S1_STOP_MODE`, `S2_STOP_MODE`, `S4_STOP_MODE` | Placement du stop de S1, S2 et S4 : `sweep` (défaut : au-delà de l'extrême du sweep) ou `ob` (à l'autre extrémité de la zone d'entrée, voir § 6.10) ; la variable de la stratégie prime sur `STOP_MODE` |
 | `ONE_TRADE_PER_SIDE` | `1` (défaut) : un seul trade par actif et par sens, toutes stratégies confondues ; `0` : un par stratégie |
 | `CONFLUENCE_MIN` | Fenêtre de confluence en minutes (défaut 60 ; `0` désactive) |
@@ -122,10 +123,10 @@ Seules les variables **transmises par `gold.yml`** agissent sur le bot en direct
 
 ## 5. Conventions communes
 
-- **Aucun indicateur** : le bot n'utilise ni ATR, ni ADX, ni RSI, ni moyenne mobile. Les entrées reposent sur le prix seul (structure, liquidité, FVG, blocs d'ordre, figures, Fibonacci). Les distances (stops, plafonds de risque, impulsion minimale, tailles de FVG et de sweep, poursuite du prix) s'expriment en **unités de prix** : l'unité d'un actif est un **pourcentage fixe du prix** pour une bougie H1, mis à l'échelle de la durée de la bougie (racine du temps : M5 0,29 ; M15 0,5 ; H1 1 ; H4 2 ; D1 4,9). Elle ne dépend d'aucune donnée de marché récente ; seul le prix courant la fait varier.
-- **Unité H1 par défaut, en % du prix** (estimations de départ, **à calibrer** avec `UNIT_PCT`) : or 0,35 ; EURUSD 0,08, GBPUSD 0,10, USDCAD 0,08, EURGBP 0,06, EURAUD 0,10, EURCAD 0,08, GBPAUD 0,12 ; USDJPY 0,09, EURJPY 0,10, GBPJPY 0,13, AUDJPY 0,11 ; USDCHF 0,08, EURCHF 0,06, AUDUSD 0,09, NZDUSD 0,10 ; BTC 0,60, ETH 0,90 ; indices Volatility (valeur théorique selon leur volatilité annuelle de 10, 25, 50, 75 et 100 %) 0,17, 0,43, 0,85, 1,28 et 1,70 ; actif inconnu 0,10. Exemple : l'or à 4 000 a une unité H1 de 14 points, M15 de 7 points.
+- **Unité de prix** : toutes les distances du bot (stops, plafonds de risque, impulsion minimale, tailles de FVG et de sweep, poursuite du prix) s'expriment en **unités**. Par défaut (`UNIT_MODE=fixed`), l'unité est un **pourcentage fixe du prix**, propre à l'actif (voir ci-dessous) : aucune donnée de marché n'est moyennée. Avec `UNIT_MODE=atr`, l'unité d'un timeframe est son **ATR(14)** (moyenne simple du vrai range des 14 dernières bougies), qui s'adapte à la volatilité du moment. Les entrées, elles, restent du prix pur (structure, liquidité, FVG, blocs d'ordre, figures, Fibonacci). **ADX et EMA ont été supprimés** ; le **RSI** n'existe que pour la divergence du retournement de S3, désactivée par défaut (`REVERSAL_RSI=1`). **Par défaut, le bot est donc purement price action** : ni ATR, ni RSI, ni ADX, ni EMA, et aucune variable à régler.
+- **Unité fixe (mode par défaut)** : pourcentage du prix, propre à l'actif, pour une bougie H1, mis à l'échelle de la durée de la bougie (racine du temps : M5 0,29 ; M15 0,5 ; H1 1 ; H4 2 ; D1 4,9). Estimations de départ ; le message de contrôle (`test = true`) compare chaque unité à l'amplitude réelle des bougies H1 et signale celles qui s'en écartent d'un facteur supérieur à 2 (réglage possible avec `UNIT_PCT`) : or 0,35 ; EURUSD 0,08, GBPUSD 0,10, USDCAD 0,08, EURGBP 0,06, EURAUD 0,10, EURCAD 0,08, GBPAUD 0,12 ; USDJPY 0,09, EURJPY 0,10, GBPJPY 0,13, AUDJPY 0,11 ; USDCHF 0,08, EURCHF 0,06, AUDUSD 0,09, NZDUSD 0,10 ; BTC 0,60, ETH 0,90 ; indices Volatility 0,17, 0,43, 0,85, 1,28 et 1,70 (V10 à V100) ; actif inconnu 0,10. Dans ce mode, les filtres de volatilité (mode `atr`) n'existent pas.
 - **Corps de référence** : 0,4 unité du timeframe ; une cassure ou un FVG doit avoir un déplacement d'au moins 1,2 à 1,5 fois ce corps (soit 0,5 à 0,6 unité).
-- **Pas de filtre de volatilité** : sans moyenne de marché, le bot ne peut plus écarter un marché « mort » ou « en pic » ; les stops et plafonds restent des multiples fixes de l'unité.
+- **Volatilité** (mode `atr`) : `vol_ratio` = ATR H1 actuel divisé par sa médiane sur environ 240 bougies H1 ; S2, S3 et S4 écartent le signal sous 0,5 (marché mort : le spread domine ; `S2_VOL_MIN_RATIO`, `S3_VOL_MIN_RATIO`, `S4_VOL_MIN_RATIO`, `0` désactive). S1 vérifie en plus que l'ATR(14) / ATR(100) du timeframe d'impulsion reste entre 0,6 et 2.
 - **Bougies clôturées uniquement** : la bougie en formation ne sert qu'au prix actuel.
 - **Heures** : le bot raisonne en heure de **New York** ; les messages affichent l'heure du Bénin (UTC+1, sans heure d'été), donc le décalage varie d'une heure avec l'heure d'été américaine (2e dimanche de mars au 1er dimanche de novembre).
 - **Déclenchement récent** : la bougie de déclenchement doit être l'une des 2 dernières clôturées (`FRESH`) ; S2, S3 et S4 écartent en plus tout signal dont le déclencheur a plus de 20 minutes.
@@ -146,8 +147,9 @@ Seules les variables **transmises par `gold.yml`** agissent sur le bot en direct
 Cascade par défaut (cadre intraday) : **tendance H4, impulsion H1, entrée M15**. Avec `INTRADAY=0`, trois cascades : D1 > H4 > H1, H4 > H1 > M15, H1 > M15 > M5. Avec `S1_CONFIRM_TF=M5`, le timeframe d'entrée devient M5. Achat et vente symétriques.
 
 **Filtres de contexte**
-1. **Tendance HTF** (structure) naissante ou établie ; la tendance mûre est écartée.
-2. **Pas contre une tendance D1 claire** (`S1_D1_ALIGN`), sauf si la tendance de la cascade est le D1.
+1. **Régime de volatilité** (mode `atr`) : ATR(14) / ATR(100) du timeframe d'impulsion entre 0,6 et 2.
+2. **Tendance HTF** (structure) naissante ou établie ; la tendance mûre est écartée.
+3. **Pas contre une tendance D1 claire** (`S1_D1_ALIGN`), sauf si la tendance de la cascade est le D1.
 
 **Impulsion** (timeframe d'impulsion) : cassure de structure avec déplacement (une bougie de la jambe ≥ 1,5 fois le corps de référence), jambe d'au moins **2 unités**, origine non reprise par le prix, extrême vieux de 48 bougies au plus, aucune clôture de retracement au-delà de **79 %** de la jambe.
 
@@ -170,16 +172,17 @@ Cascade par défaut (cadre intraday) : **tendance H4, impulsion H1, entrée M15*
 
 **Idée** : dans le sens de la structure H4/H1, le prix balaie un niveau de liquidité **dans une zone d'intérêt H1/H4**, puis casse sa structure en sens inverse ; on entre contre le balayage.
 
-1. **Niveaux de liquidité** (chacun a une date de naissance) : plus haut/bas de la veille (PDH/PDL, journée 17h-17h New York), extrêmes de la plage asiatique (20h-02h, valables dès 02h00, au moins 20 bougies M15), **equal highs/lows** H1 (deux swings à moins de 0,15 unité H1, parmi les 8 derniers). Un niveau n'est de la liquidité **qu'une fois** : s'il a déjà été dépassé par une mèche M15 depuis sa naissance, il est ignoré.
-2. **Sweep M15** parmi les 8 dernières bougies : la mèche dépasse le niveau d'au moins 0,1 unité M15 et n'est pas suivie d'une clôture au-delà.
-3. **Biais de structure** (`S2_BIAS_FILTER`, **actif par défaut**) : tendance **H4 exclusivement** (le H1 n'est jamais consulté), selon la définition de § 5. On ne prend que les ventes après un sweep de sommet dans un biais baissier, et les achats dans un biais haussier ; si le H4 n'a pas de tendance claire, pas de biais donc pas de signal. Le filtre s'applique avant le choix du sweep.
-4. **CHoCH** en M15 (M5 avec `S2_CONFIRM_TF=M5`) : clôture au-delà du dernier swing formé dans les 12 bougies M15 (36 en M5) avant l'extrême du sweep, avec déplacement (≥ 1,2 fois), parmi les 2 dernières bougies.
-5. **Killzone** : déclencheur à Londres, New York ou London Close (marchés à séance).
-6. **Zone H4/H1** (`S2_HTF_ZONE`) : l'étendue du sweep recoupe (tolérance 0,25 unité H1) un bloc d'ordre ou un FVG **non retesté** du sens du trade, né d'un déplacement qui casse la structure ; H4 avant H1, bloc d'ordre avant FVG.
-7. **Entrée** : ordre limite sur le bloc d'ordre M15 (bord proche) ou le FVG M15 (milieu) du mouvement ; à défaut, marché si le prix n'a pas fui de plus de 0,75 unité depuis la clôture du déclencheur. Une zone à plus de 1,5 unité du prix écarte le signal. **Stop** : au-delà de l'extrême du sweep, plus 0,15 unité M15 ; **risque maximal 1,5 unité H1**. Avec `S2_STOP_MODE=ob`, le stop passe à l'autre extrémité du bloc d'ordre (ou du FVG) d'entrée.
-8. **Fibonacci** (`S2_FIB_FILTER`) : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe H4 (discount pour un achat, premium pour une vente) ; sans effet si la jambe fait moins de 1,5 unité H1.
-9. **Objectifs sur la liquidité opposée intacte** entre 1 R et 6 R (placés 0,1 unité M15 avant le niveau) : TP1 = la première ; TP2 = la suivante située à plus de 0,5 R de TP1, sinon TP1 + 1 R ; TP3 de même. Sans liquidité : TP1 au ratio minimal (3 R), puis +1 R et +2 R. Ratio ≥ 3 sur TP1.
-10. **Invalidation** : l'extrême du sweep.
+1. **Volatilité** (mode `atr`) : ATR H1 ≥ 0,5 fois sa médiane.
+2. **Niveaux de liquidité** (chacun a une date de naissance) : plus haut/bas de la veille (PDH/PDL, journée 17h-17h New York), extrêmes de la plage asiatique (20h-02h, valables dès 02h00, au moins 20 bougies M15), **equal highs/lows** H1 (deux swings à moins de 0,15 unité H1, parmi les 8 derniers). Un niveau n'est de la liquidité **qu'une fois** : s'il a déjà été dépassé par une mèche M15 depuis sa naissance, il est ignoré.
+3. **Sweep M15** parmi les 8 dernières bougies : la mèche dépasse le niveau d'au moins 0,1 unité M15 et n'est pas suivie d'une clôture au-delà.
+4. **Biais de structure** (`S2_BIAS_FILTER`, **actif par défaut**) : tendance **H4 exclusivement** (le H1 n'est jamais consulté), selon la définition de § 5. On ne prend que les ventes après un sweep de sommet dans un biais baissier, et les achats dans un biais haussier ; si le H4 n'a pas de tendance claire, pas de biais donc pas de signal. Le filtre s'applique avant le choix du sweep.
+5. **CHoCH** en M15 (M5 avec `S2_CONFIRM_TF=M5`) : clôture au-delà du dernier swing formé dans les 12 bougies M15 (36 en M5) avant l'extrême du sweep, avec déplacement (≥ 1,2 fois), parmi les 2 dernières bougies.
+6. **Killzone** : déclencheur à Londres, New York ou London Close (marchés à séance).
+7. **Zone H4/H1** (`S2_HTF_ZONE`) : l'étendue du sweep recoupe (tolérance 0,25 unité H1) un bloc d'ordre ou un FVG **non retesté** du sens du trade, né d'un déplacement qui casse la structure ; H4 avant H1, bloc d'ordre avant FVG.
+8. **Entrée** : ordre limite sur le bloc d'ordre M15 (bord proche) ou le FVG M15 (milieu) du mouvement ; à défaut, marché si le prix n'a pas fui de plus de 0,75 unité depuis la clôture du déclencheur. Une zone à plus de 1,5 unité du prix écarte le signal. **Stop** : au-delà de l'extrême du sweep, plus 0,15 unité M15 ; **risque maximal 1,5 unité H1**. Avec `S2_STOP_MODE=ob`, le stop passe à l'autre extrémité du bloc d'ordre (ou du FVG) d'entrée.
+9. **Fibonacci** (`S2_FIB_FILTER`) : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe H4 (discount pour un achat, premium pour une vente) ; sans effet si la jambe fait moins de 1,5 unité H1.
+10. **Objectifs sur la liquidité opposée intacte** entre 1 R et 6 R (placés 0,1 unité M15 avant le niveau) : TP1 = la première ; TP2 = la suivante située à plus de 0,5 R de TP1, sinon TP1 + 1 R ; TP3 de même. Sans liquidité : TP1 au ratio minimal (3 R), puis +1 R et +2 R. Ratio ≥ 3 sur TP1.
+11. **Invalidation** : l'extrême du sweep.
 
 ### 6.3 S3 Figures & Retournement
 
@@ -199,10 +202,10 @@ Deux sources de signaux dans la même stratégie, **au plus un signal par sens**
 1. Tendance **H4 mûre** (4 jambes ou plus) encore intacte.
 2. **Sweep H1** d'un sommet (creux) récent datant de moins de 6 bougies H1 (niveau non déjà pris), situé sur un **niveau majeur** : sommet/creux H4, zone H4 ou plus haut/bas de la veille.
 3. **Cassure de structure H1** contre la tendance : clôture sous le dernier creux (au-dessus du dernier sommet) formé dans les 12 bougies H1 qui précèdent l'extrême atteint après le sweep, la cassure datant de 2 bougies H1 au plus.
-4. **Essoufflement** : les 2 signes (`REVERSAL_MIN_SIGNS`, défaut 2 sur 2) : bougies qui rétrécissent (corps moyen des 3 dernières < 60 % du corps de référence, soit 0,4 unité), mèche de rejet (≥ 2 fois le corps).
+4. **Essoufflement** : au moins 1 signe sur 2 (`REVERSAL_MIN_SIGNS`) : bougies qui rétrécissent (corps moyen des 3 dernières < 60 % du corps de référence, soit 0,4 unité), mèche de rejet (≥ 2 fois le corps). Avec `REVERSAL_RSI=1`, une **divergence RSI H1** (RSI de Wilder à 14 périodes : le sommet du sweep dépasse le précédent mais son RSI est inférieur d'au moins 1 point) devient un 3e signe et il en faut alors 2 sur 3.
 - **Entrée** au retest du dernier creux (sommet) H1 cassé, **stop** au-delà de l'extrême du sweep plus 0,2 unité H1, risque maximal 3 unités H1, retest à 1 unité H1 du prix au plus. **Objectifs** sur la liquidité opposée intacte (comme S2 : TP1 = première liquidité entre 1 R et 6 R, sinon TP1 = 3 R, +1 R, +2 R), ratio ≥ 3 sur TP1. Alerte toujours marquée **contre la tendance H4** : taille réduite conseillée.
 
-**Garde-fous communs** : sessions (Londres/New York/London Close, marchés à séance), âge du déclencheur ≤ 20 minutes, obstacles H4/H1 du cadre intraday (figures : obstacles H4 et veille seulement ; retournement : H4 et H1).
+**Garde-fous communs** : sessions (Londres/New York/London Close, marchés à séance), âge du déclencheur ≤ 20 minutes, volatilité (mode `atr`), obstacles H4/H1 du cadre intraday (figures : obstacles H4 et veille seulement ; retournement : H4 et H1).
 
 ### 6.4 S4 CRT (Candle Range Theory)
 
@@ -214,7 +217,7 @@ Deux sources de signaux dans la même stratégie, **au plus un signal par sens**
 | Entrée | Première clôture M15 au-delà du dernier swing M15 (CHoCH avec déplacement ≥ 1,2 fois), **après la clôture de C2**, avec ce swing à 16 bougies M15 (48 en M5) au plus avant l'extrême de C2 et une cassure parmi les 2 dernières bougies. Si le prix reprend l'extrême de C2, le sweep est annulé. Ordre limite sur le bloc d'ordre ou le FVG M15 du mouvement (jusqu'à 1,5 unité M15 du prix) ; sinon marché si le prix n'a pas fui de plus de 0,75 unité M15. |
 | Stop | Au-delà de l'extrême de C2, plus 0,15 unité M15 (avec `S4_STOP_MODE=ob` : à l'autre extrémité du bloc d'ordre ou du FVG d'entrée, même marge). |
 | Objectifs | TP1 milieu de C1, TP2 bord opposé de C1, TP3 bord opposé + 50 % du range. **Ratio ≥ 3 jusqu'au milieu de C1.** |
-| Garde-fous | Âge du déclencheur ≤ 20 min, **pas contre une tendance H4 ou D1 claire**, obstacles H4/H1 du cadre intraday. Aucune limite de session. |
+| Garde-fous | Volatilité (mode `atr`, ATR H1 ≥ 0,5 fois sa médiane), âge du déclencheur ≤ 20 min, **pas contre une tendance H4 ou D1 claire**, obstacles H4/H1 du cadre intraday. Aucune limite de session. |
 
 Au plus un signal par bougie de référence (D1 et H4). L'invalidation est l'extrême de C2.
 
@@ -382,6 +385,6 @@ Workflow **Backtest Or** (manuel) ou, en local : `python backtest.py --days 120 
 
 ## 13. Ce qui a été vérifié, et ce qui ne l'a pas été
 
-**Vérifié** : les 275 tests unitaires passent hors réseau (les scénarios de test remplacent l'unité de prix fixe par une unité calculée sur leurs bougies pour tester la logique des filtres ; l'unité de production a ses propres tests) (stratégies, suivi, garde-fous, messages, graphique, backtest) ; le code s'exécute de bout en bout sur des données simulées, et sur une marche aléatoire l'espérance est proche de zéro. Les valeurs de ce document ont été relevées dans le code.
+**Vérifié** : les 281 tests unitaires passent hors réseau (les scénarios de test remplacent l'unité de prix fixe par une unité calculée sur leurs bougies pour tester la logique des filtres ; l'unité de production a ses propres tests) (stratégies, suivi, garde-fous, messages, graphique, backtest) ; le code s'exécute de bout en bout sur des données simulées, et sur une marche aléatoire l'espérance est proche de zéro. Les valeurs de ce document ont été relevées dans le code.
 
-**Non vérifié** : le comportement de S9 sur marché réel (setups A, B, C, D, E : seuls A, B, C et E ont été déclenchés dans des tests, sur données fabriquées ou aléatoires), le calibrage des unités de prix par actif (estimations de départ, à comparer à l'amplitude réelle des bougies de chaque actif), la connexion à l'API Deriv, l'envoi Telegram sur ton compte et surtout **la rentabilité sur marché réel**. Fais d'abord un run avec `test = true`, puis un backtest sur Deriv (deux périodes, spread réaliste), avant de suivre les alertes. Les suivis supposent un remplissage au prix du signal, sans glissement.
+**Non vérifié** : le comportement de S9 sur marché réel (setups A, B, C, D, E : seuls A, B, C et E ont été déclenchés dans des tests, sur données fabriquées ou aléatoires), le calibrage des unités de prix par actif du mode `UNIT_MODE=fixed` (estimations de départ, à comparer à l'amplitude réelle des bougies de chaque actif), la connexion à l'API Deriv, l'envoi Telegram sur ton compte et surtout **la rentabilité sur marché réel**. Fais d'abord un run avec `test = true`, puis un backtest sur Deriv (deux périodes, spread réaliste), avant de suivre les alertes. Les suivis supposent un remplissage au prix du signal, sans glissement.
