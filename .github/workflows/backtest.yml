@@ -44,6 +44,11 @@ jobs:
           SPREAD: ${{ github.event.inputs.spread_pct }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
           UNIT_PCT: ${{ vars.UNIT_PCT }}
+          REVERSAL_RSI: ${{ vars.REVERSAL_RSI }}
+          UNIT_MODE: ${{ vars.UNIT_MODE }}
+          S2_VOL_MIN_RATIO: ${{ vars.S2_VOL_MIN_RATIO }}
+          S3_VOL_MIN_RATIO: ${{ vars.S3_VOL_MIN_RATIO }}
+          S4_VOL_MIN_RATIO: ${{ vars.S4_VOL_MIN_RATIO }}
           STOP_MODE: ${{ vars.STOP_MODE }}
           S1_STOP_MODE: ${{ vars.S1_STOP_MODE }}
           S2_STOP_MODE: ${{ vars.S2_STOP_MODE }}
