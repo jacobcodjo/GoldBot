@@ -63,12 +63,10 @@ jobs:
           S2_MIN_RR: ${{ vars.S2_MIN_RR }}
           S2_RISK_CAP_H1: ${{ vars.S2_RISK_CAP_H1 }}
           S2_MAX_AGE_MIN: ${{ vars.S2_MAX_AGE_MIN }}
-          S2_VOL_MIN_RATIO: ${{ vars.S2_VOL_MIN_RATIO }}
           S2_SWEEP_MIN_ATR: ${{ vars.S2_SWEEP_MIN_ATR }}
           S3_FIB_FILTER: ${{ vars.S3_FIB_FILTER }}
           S3_FIB_CAP_TP3: ${{ vars.S3_FIB_CAP_TP3 }}
           S3_CONTEXT_ALIGN: ${{ vars.S3_CONTEXT_ALIGN }}
-          S3_VOL_MIN_RATIO: ${{ vars.S3_VOL_MIN_RATIO }}
           S3_MAX_AGE_MIN: ${{ vars.S3_MAX_AGE_MIN }}
           S3_REV_MIN_RR: ${{ vars.S3_REV_MIN_RR }}
           S6_RISK_CAP_ATR: ${{ vars.S6_RISK_CAP_ATR }}
@@ -83,7 +81,6 @@ jobs:
           S4_CONFIRM_TF: ${{ vars.S4_CONFIRM_TF }}
           S4_MIN_RR: ${{ vars.S4_MIN_RR }}
           S4_MAX_AGE_MIN: ${{ vars.S4_MAX_AGE_MIN }}
-          S4_VOL_MIN_RATIO: ${{ vars.S4_VOL_MIN_RATIO }}
           S4_CONTEXT_ALIGN: ${{ vars.S4_CONTEXT_ALIGN }}
           S4_SWEEP_MIN_ATR: ${{ vars.S4_SWEEP_MIN_ATR }}
           SYMBOLS: ${{ vars.SYMBOLS }}
@@ -100,17 +97,11 @@ jobs:
           INTRADAY: ${{ vars.INTRADAY }}
           INTRADAY_RUNNERS: ${{ vars.INTRADAY_RUNNERS }}
           CRYPTO_INTRADAY: ${{ vars.CRYPTO_INTRADAY }}
-          PULLBACK_VARIANT: ${{ vars.PULLBACK_VARIANT }}
           RECAP_FORMAT: ${{ vars.RECAP_FORMAT }}
           REVERSAL_ALERTS: ${{ vars.REVERSAL_ALERTS }}
           SPREAD_PCT: ${{ vars.SPREAD_PCT }}
           SPREAD_TABLE: ${{ vars.SPREAD_TABLE }}
           UNIT_PCT: ${{ vars.UNIT_PCT }}
-          REVERSAL_RSI: ${{ vars.REVERSAL_RSI }}
-          UNIT_MODE: ${{ vars.UNIT_MODE }}
-          S2_VOL_MIN_RATIO: ${{ vars.S2_VOL_MIN_RATIO }}
-          S3_VOL_MIN_RATIO: ${{ vars.S3_VOL_MIN_RATIO }}
-          S4_VOL_MIN_RATIO: ${{ vars.S4_VOL_MIN_RATIO }}
           STOP_MODE: ${{ vars.STOP_MODE }}
           S1_STOP_MODE: ${{ vars.S1_STOP_MODE }}
           S2_STOP_MODE: ${{ vars.S2_STOP_MODE }}
