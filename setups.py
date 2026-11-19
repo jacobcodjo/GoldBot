@@ -1,6 +1,6 @@
 """Setups de la tendance, du retournement, de S3 (Figures & Retournement) et de S4 (CRT). Toutes les règles sont décrites dans le README (section Stratégies).
 
-Ce module regroupe quatre anciens modules, dans cet ordre : tendance (récapitulatif journalier et alerte), alerte / ordre de retournement,
+Ce module regroupe quatre blocs, dans cet ordre : tendance (récapitulatif journalier et alerte), alerte / ordre de retournement,
 figures chartistes (S3) et CRT (S4). Il importe `strategies` (primitives SMC, réglages, constantes) ; `strategies` ne l'importe qu'à l'appel.
 
 == TENDANCE ==
@@ -16,7 +16,7 @@ tendance HAUSSIÈRE :
 Tendance BAISSIÈRE : l'inverse. Sinon : pas de tendance claire.
 Informations ajoutées : durée depuis le début de la série de jambes, niveau d'invalidation (dernier creux
 pour une hausse, dernier sommet pour une baisse), et cassure « impulsive » (corps >= 1,2 x le corps moyen).
-Inspiré de la lecture de tendance de l'ancien bot (jambes consécutives), sans reprendre ses stratégies.
+Lecture de tendance par jambes consécutives.
 
 
 == RETOURNEMENT ==
@@ -28,7 +28,7 @@ Une tendance H4 mûre peut se retourner. On n'alerte que lorsque plusieurs élé
   2. sweep : une bougie H1 prend un sommet (creux) récent puis referme de l'autre côté ;
   3. ce sommet (creux) se trouve sur un niveau majeur : sommet / creux H4, zone H4, plus haut / bas de la veille ;
   4. cassure de structure H1 contre la tendance : clôture sous le dernier creux (au-dessus du dernier sommet) formé avant le sweep ;
-  5. signes d'essoufflement (au moins REVERSAL_MIN_SIGNS, défaut 1 sur 2) : bougies qui rétrécissent, mèche de rejet ; divergence RSI H1 en plus si REVERSAL_RSI=1 (défaut 2 sur 3).
+  5. signes d'essoufflement (au moins REVERSAL_MIN_SIGNS, défaut 1 sur 2) : bougies qui rétrécissent, mèche de rejet.
 
 Le raisonnement est écrit pour une tendance haussière ; une tendance baissière est traitée en miroir (prix inversés).
 
@@ -61,6 +61,7 @@ l'appel, pas au chargement.
 
 """
 import os
+from datetime import datetime
 
 import strategies as S
 from strategies import is_displacement, close_beyond
@@ -230,13 +231,6 @@ PIVOT_BARS = 12                   # le creux (sommet) cassé a été formé dans
 LEVEL_BARS = 80                   # sommets (creux) candidats : les 80 dernières bougies H1
 REV_SWING_N = 2
 STALE = 3 * 3600                  # données H1 plus vieilles : marché fermé, pas d'alerte
-RSI_N, RSI_MARGIN = 14, 1.0       # divergence : RSI au nouveau sommet inférieur d'au moins 1 point à celui du sommet précédent
-def _env_rsi():
-    """Divergence RSI H1 comptée parmi les signes d'essoufflement : désactivée par défaut (price action pur), REVERSAL_RSI=1 pour l'activer."""
-    return (os.getenv("REVERSAL_RSI") or "0").strip() == "1"
-
-
-REVERSAL_RSI = _env_rsi()
 FADE_RATIO = 0.6                  # corps moyen des 3 dernières bougies < 60 % du corps de référence (0,4 unité)
 WICK_RATIO = 2.0                  # mèche haute >= 2 fois le corps et >= la moitié de la bougie
 MAJOR_WORDS = ("H4", "veille")    # niveaux « majeurs » parmi les obstacles de strategies.htf_obstacles
@@ -244,16 +238,6 @@ MAJOR_WORDS = ("H4", "veille")    # niveaux « majeurs » parmi les obstacles de
 
 def _body(c):
     return abs(c["close"] - c["open"])
-
-
-def rsi_divergence(h, p, e, rsi=None):
-    """Divergence baissière (sens haussier, voir le module) : le plus haut de la bougie e dépasse celui de la bougie p, mais le RSI
-    de e est inférieur à celui de p. h : bougies clôturées, p < e. Retourne False si le RSI n'est pas calculable."""
-    if rsi is None:
-        rsi = S.rsi_series([c["close"] for c in h], RSI_N)
-    if p >= e or rsi[p] is None or rsi[e] is None:
-        return False
-    return h[e]["high"] > h[p]["high"] and rsi[e] < rsi[p] - RSI_MARGIN
 
 
 def shrinking_candles(h, e):
@@ -330,8 +314,6 @@ def detect(provide, now):
     if REQUIRE_LEVEL and level_name is None:
         return None
     signs = []
-    if REVERSAL_RSI and rsi_divergence(h, found["level_i"], found["ext_i"]):
-        signs.append("divergence RSI H1")
     if shrinking_candles(h, found["ext_i"]):
         signs.append("bougies qui rétrécissent")
     if rejection_wick(h[found["ext_i"]]) or rejection_wick(h[found["sweep_i"]]):
@@ -368,14 +350,10 @@ def _f(name, default):
         return float(default)
 
 
-def _default_min_signs(rsi):
-    return 2 if rsi else 1          # 2 signes sur 3 avec le RSI ; 1 sur 2 sans lui (bougies qui rétrécissent, mèche de rejet)
-
-
 try:
-    MIN_SIGNS = int(os.getenv("REVERSAL_MIN_SIGNS") or _default_min_signs(REVERSAL_RSI))   # signes d'essoufflement exigés
+    MIN_SIGNS = int(os.getenv("REVERSAL_MIN_SIGNS") or 1)             # signes d'essoufflement exigés (sur 2)
 except ValueError:
-    MIN_SIGNS = _default_min_signs(REVERSAL_RSI)
+    MIN_SIGNS = 1
 
 
 def _num(name, default):
@@ -390,7 +368,7 @@ S7_ENTRY_MAX_ATR = _num("S7_ENTRY_MAX_ATR", 1.0)     # retest du niveau cassé �
 S3_REV_MIN_RR = _num("S3_REV_MIN_RR", S.S5_MIN_RR)   # ratio minimal sur TP1 : le même que S1 et S2 par défaut (0 = désactivé)
 S7_SL_BUF_ATR = 0.2                                 # marge du stop au-delà de l'extrême du sweep (en ATR H1)
 S7_LIMIT_TTL = 7200                                 # validité de l'ordre limite, en secondes
-STRAT, LABEL = "S3", "Figures & Retournement"       # l'ancienne S7 Reversal est fusionnée dans S3 (STRAT_ALIAS : S7 -> S3)
+STRAT, LABEL = "S3", "Figures & Retournement"
 
 
 def reversal_signal(provide, now, funnel, dec=2, mode="market", rev=None):
@@ -871,7 +849,7 @@ def _s3_gate(S, sig, provide, now, funnel, kz):
 
 
 def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
-    """S3 Figures & Retournement : figures H1 / H4 (cassure confirmée en M15) et retournement possible (ex-S7). Retourne une liste de signaux (au plus un par sens), ou None.
+    """S3 Figures & Retournement : figures H1 / H4 (cassure confirmée en M15) et retournement possible. Retourne une liste de signaux (au plus un par sens), ou None.
     `kz` : les sessions ne s'appliquent qu'aux marchés à séance (False pour les marchés 24h/24)."""
     import strategies as S
     cf_n = S.confirm_tf("S3")                       # confirmation de la cassure : M15 (défaut) ou M5
@@ -884,10 +862,6 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     a_m15 = S.unit(m15c)
     if a_m15 <= 0:
         return None
-    h1v = provide("H1")
-    if S.UNIT_MODE == "atr" and S.S3_VOL_MIN_RATIO and h1v and S.vol_ratio(h1v[:-1]) < S.S3_VOL_MIN_RATIO:
-        funnel["S3_vol"] += 1
-        return None                                 # marché trop calme : le spread domine
     memo = {}
 
     def rev_fn():                                   # alerte de retournement, calculée une seule fois par scan, et seulement si utile
@@ -916,7 +890,7 @@ def scan_s3(provide, now, funnel, dec=2, kz=True, mode="market"):
     for sig in best.values():
         sig.pop("rr_tp3", None)
     out = list(best.values())
-    # Partie « retournement » (ex-S7) : le même événement (sweep d'un niveau majeur + cassure de structure H1) en ordre. Si une figure de
+    # Partie « retournement » : le même événement (sweep d'un niveau majeur + cassure de structure H1) en ordre. Si une figure de
     # retournement a déjà donné un signal dans ce sens, c'est elle qui le porte (avec sa confluence) : un seul signal par sens.
     rev = rev_fn()
     if rev and rev["dir"] not in best:
@@ -984,6 +958,17 @@ def crt_confirm(S, d, c2, tf, cfc, cf_n="M15"):
     return None
 
 
+CRT_C2_REPORT_HOURS = (1, 5, 9)        # bougies H4 (heure d'ouverture de C2, New York) suivies dans le rapport du backtest
+
+
+def _crt_c2_h4(S, tf, c2):
+    """Étiquette du rapport de backtest : heure d'ouverture (New York) de la bougie H4 C2, pour 01h, 05h et 09h seulement."""
+    if tf != "H4":
+        return {}
+    h = datetime.fromtimestamp(c2["epoch"], S.NY).hour
+    return {"c2_h4": f"{h:02d}h"} if h in CRT_C2_REPORT_HOURS else {}
+
+
 def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M15"):
     pair = crt_pair(S, ref[:-1], funnel)
     if pair is None:
@@ -1042,7 +1027,8 @@ def _crt_one(S, tf, ref, m15, m15c, a_m15, a_h1, funnel, dec, kz, mode, cf_n="M1
                {"y": pivot, "label": "CHoCH", "kind": "info"}],
         zones=[{"lo": lo1, "hi": hi1, "label": f"Range C1 {tf}", "kind": "fib"}],
         inval=ext_px, session=sess,
-        extra={"ref": tf, "c1": f"{lo1:.{dec}f}-{hi1:.{dec}f}", "poi": poi[1] if otype != d else "marché", "tp": "range C1"},
+        extra=dict({"ref": tf, "c1": f"{lo1:.{dec}f}-{hi1:.{dec}f}", "poi": poi[1] if otype != d else "marché", "tp": "range C1"},
+                   **_crt_c2_h4(S, tf, c2)),
         short=f"CRT {tf} · C2 clôturée dans C1 · CHoCH {cf_n}", trig=tc["epoch"], otype=otype, price_now=price,
         ttl=S.LIMIT_TTL["S4"] if otype != d else None,
         entry_note=S.poi_note(poi, cf_n, dec) if otype != d else "")
@@ -1061,9 +1047,6 @@ def scan_crt(provide, now, funnel, dec=2, kz=True, mode="market"):
     a_m15, a_h1 = S.unit(m15c), S.unit(h1c)
     if min(a_m15, a_h1) <= 0:
         return []
-    if S.UNIT_MODE == "atr" and S.CRT_VOL_MIN_RATIO and S.vol_ratio(h1c) < S.CRT_VOL_MIN_RATIO:
-        funnel["CRT_vol"] += 1
-        return []                                         # marché trop calme : le spread domine
     out = []
     for tf in S.CRT_REFS:
         ref = provide(tf)

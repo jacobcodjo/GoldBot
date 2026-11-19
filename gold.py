@@ -82,10 +82,9 @@ def spread_pct(sym):
 
 
 def canon_codes(codes, known_only=False):
-    """Codes de stratégie normalisés, sans doublon, dans l'ordre : l'ancien code S5 devient S1 (fusion en « Pullback »), S7 devient S3, S8 (CRT) devient S4."""
+    """Codes de stratégie sans doublon, dans l'ordre ; avec known_only, seuls les codes connus sont gardés."""
     out = []
     for c in codes:
-        c = S.STRAT_ALIAS.get(c, c)
         if c not in out and (c in S.STRAT_LABELS or not known_only):
             out.append(c)
     return out
@@ -104,7 +103,7 @@ def parse_sym_strats(text):
 ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit", "S9": "limit"}   # défaut : ordres limites partout
 for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S3:market"
     _k, _, _v = _p.partition(":")
-    _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
+    _k = _k.strip().upper()
     if _k in ENTRY_MODES and _v.strip().lower() in ("limit", "market"):
         ENTRY_MODES[_k] = _v.strip().lower()
 ENTRY_MODE = (os.getenv("ENTRY_MODE") or "auto").strip().lower()   # auto : ENTRY_MODES ; market ou limit : force toutes les stratégies
@@ -207,8 +206,6 @@ def parse_confluence(text, default=60.0):
 
 CONFLUENCE_MIN = parse_confluence(os.getenv("CONFLUENCE_MIN"))   # minutes ; 0 = pas d'étiquette de confluence
 LABEL_CODE = {v: k for k, v in S.STRAT_LABELS.items()}
-LABELS_ALL = {**S.RETIRED_LABELS, **S.STRAT_LABELS}   # libellés, y compris des stratégies supprimées (trades déjà enregistrés)
-LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S3", "Reversal": "S3", "Asian Breakout": "AB", "Mean Reversion": "MR"})   # « AB » : ancienne stratégie supprimée, sans code actif      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S2 » (trades enregistrés sans code)
 GRAN = S.GRAN
 COUNTS = {"M5": 300, "M15": 400}         # bougies téléchargées à chaque scan
 COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York ; D1 en 00h GMT pour les indices synthétiques), ~100 jours
@@ -567,7 +564,7 @@ def message_minimal(sig, tid):
 def message_essentiel(sig, tid):
     """3 lignes : type d'ordre, actif, stratégie (avec la confluence), heure ; niveaux ; validité et numéro."""
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
-    names = [sig["label"]] + [LABELS_ALL.get(x, x) for x in (sig.get("confluence") or [])]
+    names = [sig["label"]] + [S.STRAT_LABELS.get(x, x) for x in (sig.get("confluence") or [])]
     strat = ("⚡ " if len(names) > 1 else "") + " + ".join(names)
     tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
     entry = c(sig["entry"]) if is_limit(sig) else f"Marché {c(sig['entry'])}"
@@ -698,17 +695,15 @@ def confluence_with(sig, tr, batch, now):
     if win <= 0:
         return []
     own, found = sig.get("strat"), {}
-    fam = lambda c: S.STRAT_FAMILY.get(c, c)          # S1 et S5 : même idée, ce n'est pas une confirmation
     for t in T.active_list(tr):
-        code = LABEL_CODE.get(t.get("cascade")) or t.get("strat")      # le libellé d'abord : les trades enregistrés avant la renumérotation portent d'anciens codes
+        code = LABEL_CODE.get(t.get("cascade")) or t.get("strat")
         age = now - t["t0"]
-        if t["sym"] == sig["sym"] and t["dir"] == sig["dir"] and code and fam(code) != fam(own) and 0 <= age <= win:
+        if t["sym"] == sig["sym"] and t["dir"] == sig["dir"] and code and code != own and 0 <= age <= win:
             found[code] = min(age / 60, found.get(code, age / 60))
     for o in batch:
-        if o is not sig and o.get("sym") == sig["sym"] and o["dir"] == sig["dir"] and o.get("strat") not in (None, own) \
-                and fam(o["strat"]) != fam(own):
+        if o is not sig and o.get("sym") == sig["sym"] and o["dir"] == sig["dir"] and o.get("strat") not in (None, own):
             found[o["strat"]] = 0.0
-    return sorted((c, LABELS_ALL.get(c, c), a) for c, a in found.items())
+    return sorted((c, S.STRAT_LABELS.get(c, c), a) for c, a in found.items())
 
 
 def add_confluence(sig, tr, batch, now):
@@ -1032,7 +1027,7 @@ def synth_block(api, cache, sym, now):
     if RECAP_FORMAT == "compact":                       # une ligne : tendances, extrêmes de la bougie daily
         line = SU.symbol_line(name_of(sym), infos, now, dec)
         if S.S2_BIAS_FILTER:
-            bias, tf = S.s2_bias(cs["H4"], cs["H1"])
+            bias, tf = S.s2_bias(cs["H4"])
             line += f" · biais S2 {('🟢' if bias == 'BUY' else '🔴') + ' ' + tf if bias else '⚪ aucun'}"
         if cs["D1"]:
             day = cs["D1"][-1]
@@ -1040,7 +1035,7 @@ def synth_block(api, cache, sym, now):
         return line
     lines = [SU.symbol_block(name_of(sym), infos, now, dec)]
     if S.S2_BIAS_FILTER:
-        bias, tf = S.s2_bias(cs["H4"], cs["H1"])
+        bias, tf = S.s2_bias(cs["H4"])
         lines.append("  Biais S2 : " + (f"{'🟢 haussier' if bias == 'BUY' else '🔴 baissier'} ({tf}) → S2 n'émet que des {'achats' if bias == 'BUY' else 'ventes'}"
                                           if bias else "⚪ aucun → S2 n'émet pas de signal"))
     if cs["D1"]:
@@ -1144,9 +1139,7 @@ def scan(sym, provide, now, sent, funnel):
 
 def unit_check_text(api, cache):
     """Contrôle affiché dans le message de test : unité de prix fixe de chaque actif rapportée à l'amplitude médiane réelle de ses bougies H1
-    (hors mode fixed : rien). Un écart d'un facteur supérieur à 2 signale une unité mal réglée (UNIT_PCT)."""
-    if S.UNIT_MODE != "fixed":
-        return ""
+   . Un écart d'un facteur supérieur à 2 signale une unité mal réglée (UNIT_PCT)."""
     bad, n = [], 0
     for sym in SYMBOLS:
         try:
@@ -1158,7 +1151,7 @@ def unit_check_text(api, cache):
         h = h1[:-1][-200:]
         S.set_symbol(sym)
         obs = sorted(c["high"] - c["low"] for c in h)[len(h) // 2]
-        fx = S.unit_fixed(h)
+        fx = S.unit(h)
         n += 1
         if obs > 0 and not 0.5 <= fx / obs <= 2.0:
             bad.append(f"{name_of(sym)} (unité {fx:.4g}, bougie H1 médiane {obs:.4g})")

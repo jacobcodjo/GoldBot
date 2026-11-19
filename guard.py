@@ -6,14 +6,13 @@ from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import strategies as S
 import tracker as T
 
 NY = ZoneInfo("America/New_York")
 GUARD_FILE = "guard.json"
 
 # --- Limites de risque ---
-# Un seul trade par actif et par sens, toutes stratégies confondues (ONE_TRADE_PER_SIDE=0 : un par stratégie, ancien comportement).
+# Un seul trade par actif et par sens, toutes stratégies confondues (ONE_TRADE_PER_SIDE=0 : un par stratégie).
 # Deux stratégies d'accord sur le même mouvement ne doublent plus l'exposition ; leur accord reste signalé par l'étiquette de confluence.
 ONE_TRADE_PER_SIDE = (os.getenv("ONE_TRADE_PER_SIDE") or "1").strip().lower() not in ("0", "false", "non", "off", "no")
 GROUP_LIMIT = 2            # exposition nette maximale par devise (USD, EUR, JPY…) et par groupe crypto, même sens
@@ -26,9 +25,9 @@ GAP_ALERT_MIN = 30         # alerte si le bot reprend après plus de 30 min sans
 FAILS_ALERT = 3            # alerte après 3 scans de suite sans aucune donnée Deriv
 REPORT_EVERY = 7 * 86400   # bilan envoyé une fois par semaine
 
-FUNNEL_ORDER = ["data", "S2_niveau", "S2_vol", "S2_sweep", "S2_biais", "S2_zone", "S2_stale", "S2_risque", "S2_fib", "S2_rr", "S2_age", "S2_obst_entree", "S2_obst_cible", "S2_obst_rr",
-                "S2_signal", "S3_figure", "S3_vol", "S3_cassure", "S3_fib", "S3_zone", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr", "S3_signal", "S3_retournement", "CRT_vol", "CRT_sweep", "CRT_taille", "CRT_c2", "CRT_choch", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr", "CRT_signal", "S5_regime", "S5_tendance", "S5_d1", "S5_impulsion", "S5_session", "S5_risque", "S5_signal", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr", "S9_setup", "S9_session", "S9_stale", "S9_rr", "S9_risque", "S9_age", "S9_obst_cible", "S9_obst_rr", "S9_signal", "signal", "stale", "blackout", "dedupe", "risk", "alert"]
-FUNNEL_LABEL = {"data": "données", "S2_vol": "écartés S2 (marché trop calme)", "S3_vol": "écartés S3 (marché trop calme)", "CRT_vol": "écartés CRT (marché trop calme)", "S5_regime": "Pullback : volatilité normale", "S9_setup": "Market Profiles : setups détectés", "S9_session": "écartés S9 (hors session)", "S9_stale": "écartés S9 (retest trop loin ou trop tardif)", "S9_rr": "écartés S9 (ratio sous le minimum)", "S9_risque": "écartés S9 (stop trop large)", "S9_age": "écartés S9 (déclencheur trop ancien)", "S9_obst_cible": "écartés S9 (obstacle H4/H1 devant l'objectif)", "S9_obst_rr": "écartés S9 (ratio sous le minimum après obstacle)", "S9_signal": "signal Market Profiles", "S2_niveau": "Sweep + CHoCH : niveaux",
+FUNNEL_ORDER = ["data", "S2_niveau", "S2_sweep", "S2_biais", "S2_zone", "S2_stale", "S2_risque", "S2_fib", "S2_rr", "S2_age", "S2_obst_entree", "S2_obst_cible", "S2_obst_rr",
+                "S2_signal", "S3_figure", "S3_cassure", "S3_fib", "S3_zone", "S3_stale", "S3_risque", "S3_rr", "S3_session", "S3_age", "S3_contexte", "S3_obst_cible", "S3_obst_rr", "S3_signal", "S3_retournement", "CRT_sweep", "CRT_taille", "CRT_c2", "CRT_choch", "CRT_stale", "CRT_rr", "CRT_age", "CRT_contexte", "CRT_obst_cible", "CRT_obst_rr", "CRT_signal", "S5_tendance", "S5_d1", "S5_impulsion", "S5_session", "S5_risque", "S5_signal", "S5_obst_entree", "S5_obst_cible", "S5_obst_rr", "S9_setup", "S9_session", "S9_stale", "S9_rr", "S9_risque", "S9_age", "S9_obst_cible", "S9_obst_rr", "S9_signal", "signal", "stale", "blackout", "dedupe", "risk", "alert"]
+FUNNEL_LABEL = {"data": "données", "S9_setup": "Market Profiles : setups détectés", "S9_session": "écartés S9 (hors session)", "S9_stale": "écartés S9 (retest trop loin ou trop tardif)", "S9_rr": "écartés S9 (ratio sous le minimum)", "S9_risque": "écartés S9 (stop trop large)", "S9_age": "écartés S9 (déclencheur trop ancien)", "S9_obst_cible": "écartés S9 (obstacle H4/H1 devant l'objectif)", "S9_obst_rr": "écartés S9 (ratio sous le minimum après obstacle)", "S9_signal": "signal Market Profiles", "S2_niveau": "Sweep + CHoCH : niveaux",
                 "S2_sweep": "sweep (niveau intact)", "S2_biais": "sens du biais H4", "S2_zone": "sur zone H1/H4", "S2_stale": "écartés S2 (entrée trop loin ou trop tardive)", "S2_risque": "écartés S2 (stop trop large)", "S2_fib": "écartés S2 (mauvais côté Fibonacci)", "S2_rr": "écartés S2 (ratio sous le minimum)", "S2_age": "écartés S2 (déclencheur trop ancien)", "S2_obst_entree": "écartés S2 (hors niveau H4/H1)", "S2_obst_cible": "écartés S2 (obstacle devant l'objectif)", "S2_obst_rr": "écartés S2 (ratio sous le minimum après obstacle)", "S2_signal": "signal Sweep + CHoCH", "S3_figure": "Figures & Retournement : figures H1/H4", "S3_cassure": "cassure confirmée M15", "S3_fib": "écartés S3 (repli Fibonacci trop profond)", "S3_zone": "écartés S3 (pas de bloc d'ordre ni de FVG de cassure)", "S3_stale": "écartés S3 (entrée trop loin ou trop tardive)", "S3_risque": "écartés S3 (stop trop large)", "S3_rr": "écartés S3 (ratio sous le minimum)", "S3_session": "écartés S3 (hors session)", "S3_age": "écartés S3 (déclencheur trop ancien)", "S3_contexte": "écartés S3 (contre la tendance H4/D1)", "S3_obst_cible": "écartés S3 (obstacle devant l'objectif)", "S3_obst_rr": "écartés S3 (ratio sous le minimum après obstacle)", "CRT_c2": "CRT : C2 balaye C1 et clôture dedans", "CRT_sweep": "écartés CRT (balayage de C2 trop faible)", "CRT_taille": "écartés CRT (range de C1 hors taille)", "CRT_stale": "écartés CRT (entrée trop loin ou trop tardive)", "CRT_rr": "écartés CRT (ratio au milieu de C1 sous le minimum)", "CRT_age": "écartés CRT (déclencheur trop ancien)", "CRT_contexte": "écartés CRT (contre la tendance H4/D1)", "CRT_obst_cible": "écartés CRT (obstacle devant l'objectif)", "CRT_obst_rr": "écartés CRT (ratio sous le minimum après obstacle)", "CRT_choch": "CRT : cassure M15 après C2", "CRT_signal": "signal CRT", "S3_signal": "signal Figures & Retournement", "S3_retournement": "retournements détectés (ex-S7)",
                 "S5_tendance": "tendance HTF (naissante/établie)", "S5_d1": "écartés (contre la tendance D1)", "S5_impulsion": "impulsion + Fibonacci", "S5_session": "écartés (hors session)", "S5_risque": "écartés (stop trop large)", "S5_signal": "signal Pullback", "S5_obst_entree": "écartés (hors niveau H4/H1)", "S5_obst_cible": "écartés (obstacle devant l'objectif)", "S5_obst_rr": "écartés (ratio sous le minimum après obstacle)",
                 "signal": "signaux valides", "stale": "écartés (objectif déjà atteint)", "blackout": "bloqués (horaire)",
@@ -129,12 +128,11 @@ def crypto_sign(sym, d):
 
 def risk_check(tr, sym, d, now, strat=None):
     """Retourne (ok, motif). Contrôle : doublon (même actif et même sens, quelle que soit la stratégie ; avec ONE_TRADE_PER_SIDE=0, même
-    stratégie seulement, et les anciens libellés Trend Pullback / Impulsion comptent comme Pullback),
+    stratégie seulement),
     sens opposé sur le même actif (pas de couverture involontaire entre stratégies), exposition nette par devise et groupe
     crypto. Aucune limite sur le nombre total de trades ouverts. Aucun blocage lié aux pertes de la journée ou de la semaine."""
     act = T.active_list(tr)
-    fam = lambda lab: S.LABEL_FAMILY.get(lab, lab)
-    if any(t["sym"] == sym and t["dir"] == d and (ONE_TRADE_PER_SIDE or fam(t.get("cascade")) == fam(strat)) for t in act):
+    if any(t["sym"] == sym and t["dir"] == d and (ONE_TRADE_PER_SIDE or t.get("cascade") == strat) for t in act):
         return False, "dedupe"
     if any(t["sym"] == sym and t["dir"] != d for t in act):
         return False, "sens opposé déjà en cours sur l'actif"

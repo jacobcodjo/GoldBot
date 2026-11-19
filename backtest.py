@@ -27,7 +27,7 @@ Entrées : ordres limites au retest d'une zone (ENTRY_MODE=auto) ou au marché (
 Réalisme : spread retiré de chaque trade, stop exécuté à l'ouverture en cas de gap, trades forex/or clôturés le
 vendredi à 16h30 New York.
 Limites : spread constant (défaut par actif : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 %), pas de glissement, calendrier
-économique supprimé du bot (rollover et vendredi soir restent appliqués), un fichier CSV = un actif.
+économique : le bot n'en filtre aucune (rollover et vendredi soir restent appliqués), un fichier CSV = un actif.
 """
 import argparse, csv, itertools, math, random, sys, time
 from collections import Counter
@@ -312,7 +312,7 @@ def report(results, days, spread_pct, split=None):
     L += T.target_lines(ts)
     L.append("Coût du spread par stratégie :")
     L += cost_lines(ts)
-    for key in ["classe", "variante", "dir", "session", "liq", "h4", "poi", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
+    for key in ["classe", "dir", "session", "liq", "h4", "poi", "c2_h4", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
         L += breakdown(ts, key)
     if split:
         p1, p2 = [t["r"] for t in ts if t.get("period") == "1"], [t["r"] for t in ts if t.get("period") == "2"]
