@@ -12,7 +12,9 @@ import requests
 import websocket  # websocket-client
 
 import charts
+import edge as E
 import guard as G
+import news as N
 import strategies as S
 import tracker as T
 import setups as SU
@@ -41,7 +43,13 @@ SYNTH_NAMES = {"R_10": "V10", "1HZ10V": "V10 (1s)", "R_25": "V25", "1HZ25V": "V2
 SYNTHETICS = list(SYNTH_NAMES)
 ALL_SYMBOLS = [GOLD] + FOREX_MAJORS + FOREX_CROSSES + CRYPTOS + SYNTHETICS
 # Liste suivie : or + 7 majeures USD + 8 croisements majeurs Deriv + BTC + ETH + 10 indices Volatility. SYMBOLS="frxXAUUSD,cryBTCUSD" (variable d'environnement) pour la restreindre.
-SYMBOLS = [x.strip() for x in os.getenv("SYMBOLS", "").split(",") if x.strip()] or ALL_SYMBOLS
+INCLUDE_SYNTHETICS = (os.getenv("INCLUDE_SYNTHETICS") or "").strip().lower() in ("1", "true", "oui", "on", "yes")
+# Indices Volatility : prix généré aléatoirement, aucun avantage démontrable par l'analyse technique. Hors du scan par défaut ;
+# INCLUDE_SYNTHETICS=1 les remet, ou SYMBOLS=... pour les nommer explicitement.
+DEFAULT_SYMBOLS = ALL_SYMBOLS if INCLUDE_SYNTHETICS else [x for x in ALL_SYMBOLS if x not in SYNTHETICS]
+SYMBOLS = [x.strip() for x in os.getenv("SYMBOLS", "").split(",") if x.strip()] or DEFAULT_SYMBOLS
+ACCOUNT_BALANCE = float((os.getenv("ACCOUNT_BALANCE") or "0").replace(",", ".") or 0)   # solde du compte en USD (0 = pas de taille de position)
+RISK_PCT = float((os.getenv("RISK_PCT") or "1").replace(",", ".") or 1)                  # risque par trade, en % du solde
 DECIMALS = {"frxXAUUSD": 2, "cryBTCUSD": 2, "cryETHUSD": 2,   # paires en yen : 3 décimales ; les autres paires forex : 5
             "R_10": 3, "R_25": 3, "R_50": 4, "R_75": 4, "R_100": 2,   # indices Volatility (variantes 1s : 2 décimales, par défaut) ; à vérifier sur Deriv
             "1HZ10V": 2, "1HZ25V": 2, "1HZ50V": 2, "1HZ75V": 2, "1HZ100V": 2}
@@ -82,9 +90,10 @@ def spread_pct(sym):
 
 
 def canon_codes(codes, known_only=False):
-    """Codes de stratégie sans doublon, dans l'ordre ; avec known_only, seuls les codes connus sont gardés."""
+    """Codes de stratégie normalisés, sans doublon, dans l'ordre : l'ancien code S5 devient S1 (fusion en « Pullback »), S7 devient S3, S8 (CRT) devient S4."""
     out = []
     for c in codes:
+        c = S.STRAT_ALIAS.get(c, c)
         if c not in out and (c in S.STRAT_LABELS or not known_only):
             out.append(c)
     return out
@@ -103,7 +112,7 @@ def parse_sym_strats(text):
 ENTRY_MODES = {"S1": "limit", "S2": "limit", "S3": "limit", "S4": "limit", "S9": "limit"}   # défaut : ordres limites partout
 for _p in (os.getenv("ENTRY_MODES") or "").split(","):                         # ex. ENTRY_MODES="S2:market,S3:market"
     _k, _, _v = _p.partition(":")
-    _k = _k.strip().upper()
+    _k = S.STRAT_ALIAS.get(_k.strip().upper(), _k.strip().upper())      # S5:market s'applique à Pullback (S1)
     if _k in ENTRY_MODES and _v.strip().lower() in ("limit", "market"):
         ENTRY_MODES[_k] = _v.strip().lower()
 ENTRY_MODE = (os.getenv("ENTRY_MODE") or "auto").strip().lower()   # auto : ENTRY_MODES ; market ou limit : force toutes les stratégies
@@ -206,6 +215,8 @@ def parse_confluence(text, default=60.0):
 
 CONFLUENCE_MIN = parse_confluence(os.getenv("CONFLUENCE_MIN"))   # minutes ; 0 = pas d'étiquette de confluence
 LABEL_CODE = {v: k for k, v in S.STRAT_LABELS.items()}
+LABELS_ALL = {**S.RETIRED_LABELS, **S.STRAT_LABELS}   # libellés, y compris des stratégies supprimées (trades déjà enregistrés)
+LABEL_CODE.update({"Trend Pullback": "S1", "Impulsion": "S1", "Chart Patterns": "S3", "Reversal": "S3", "Asian Breakout": "AB", "Mean Reversion": "MR"})   # « AB » : ancienne stratégie supprimée, sans code actif      # trades enregistrés avant la fusion           # « Sweep + CHoCH » -> « S2 » (trades enregistrés sans code)
 GRAN = S.GRAN
 COUNTS = {"M5": 300, "M15": 400}         # bougies téléchargées à chaque scan
 COUNT_H1 = 2500                          # H1 : sert aussi à reconstruire H4 et D1 (17h New York ; D1 en 00h GMT pour les indices synthétiques), ~100 jours
@@ -564,7 +575,7 @@ def message_minimal(sig, tid):
 def message_essentiel(sig, tid):
     """3 lignes : type d'ordre, actif, stratégie (avec la confluence), heure ; niveaux ; validité et numéro."""
     d, c = sig["dir"], (lambda v: code(v, sig["dec"]))
-    names = [sig["label"]] + [S.STRAT_LABELS.get(x, x) for x in (sig.get("confluence") or [])]
+    names = [sig["label"]] + [LABELS_ALL.get(x, x) for x in (sig.get("confluence") or [])]
     strat = ("⚡ " if len(names) > 1 else "") + " + ".join(names)
     tps = " / ".join(c(sig[k]) for k in ("tp1", "tp2", "tp3") if sig.get(k) is not None)
     entry = c(sig["entry"]) if is_limit(sig) else f"Marché {c(sig['entry'])}"
@@ -592,8 +603,15 @@ def message_contexte(sig, tid):
 
 def gold_message(sig, tid=None):
     """Texte de l'alerte dans le format choisi (variable ALERT_FORMAT : complet, compact, minimal, contexte, essentiel)."""
-    return {"complet": message_complet, "compact": message_compact, "minimal": message_minimal,
-            "contexte": message_contexte, "essentiel": message_essentiel}[alert_format()](sig, tid)
+    fmt_name = alert_format()
+    text = {"complet": message_complet, "compact": message_compact, "minimal": message_minimal,
+            "contexte": message_contexte, "essentiel": message_essentiel}[fmt_name](sig, tid)
+    tail = []
+    if sig.get("grade") and fmt_name != "complet":      # le format complet affiche déjà la note dans les détails
+        tail.append(f"🏅 Note {sig['grade']} · {sig['score']:g}/10")
+    if sig.get("size_txt"):
+        tail.append(sig["size_txt"])
+    return text + ("\n" + "\n".join(tail) if tail else "")
 
 
 def trade_event_message(t, e, now=None):
@@ -695,15 +713,17 @@ def confluence_with(sig, tr, batch, now):
     if win <= 0:
         return []
     own, found = sig.get("strat"), {}
+    fam = lambda c: S.STRAT_FAMILY.get(c, c)          # S1 et S5 : même idée, ce n'est pas une confirmation
     for t in T.active_list(tr):
-        code = LABEL_CODE.get(t.get("cascade")) or t.get("strat")
+        code = LABEL_CODE.get(t.get("cascade")) or t.get("strat")      # le libellé d'abord : les trades enregistrés avant la renumérotation portent d'anciens codes
         age = now - t["t0"]
-        if t["sym"] == sig["sym"] and t["dir"] == sig["dir"] and code and code != own and 0 <= age <= win:
+        if t["sym"] == sig["sym"] and t["dir"] == sig["dir"] and code and fam(code) != fam(own) and 0 <= age <= win:
             found[code] = min(age / 60, found.get(code, age / 60))
     for o in batch:
-        if o is not sig and o.get("sym") == sig["sym"] and o["dir"] == sig["dir"] and o.get("strat") not in (None, own):
+        if o is not sig and o.get("sym") == sig["sym"] and o["dir"] == sig["dir"] and o.get("strat") not in (None, own) \
+                and fam(o["strat"]) != fam(own):
             found[o["strat"]] = 0.0
-    return sorted((c, S.STRAT_LABELS.get(c, c), a) for c, a in found.items())
+    return sorted((c, LABELS_ALL.get(c, c), a) for c, a in found.items())
 
 
 def add_confluence(sig, tr, batch, now):
@@ -1027,7 +1047,7 @@ def synth_block(api, cache, sym, now):
     if RECAP_FORMAT == "compact":                       # une ligne : tendances, extrêmes de la bougie daily
         line = SU.symbol_line(name_of(sym), infos, now, dec)
         if S.S2_BIAS_FILTER:
-            bias, tf = S.s2_bias(cs["H4"])
+            bias, tf = S.s2_bias(cs["H4"], cs["H1"])
             line += f" · biais S2 {('🟢' if bias == 'BUY' else '🔴') + ' ' + tf if bias else '⚪ aucun'}"
         if cs["D1"]:
             day = cs["D1"][-1]
@@ -1035,7 +1055,7 @@ def synth_block(api, cache, sym, now):
         return line
     lines = [SU.symbol_block(name_of(sym), infos, now, dec)]
     if S.S2_BIAS_FILTER:
-        bias, tf = S.s2_bias(cs["H4"])
+        bias, tf = S.s2_bias(cs["H4"], cs["H1"])
         lines.append("  Biais S2 : " + (f"{'🟢 haussier' if bias == 'BUY' else '🔴 baissier'} ({tf}) → S2 n'émet que des {'achats' if bias == 'BUY' else 'ventes'}"
                                           if bias else "⚪ aucun → S2 n'émet pas de signal"))
     if cs["D1"]:
@@ -1126,20 +1146,25 @@ def scan(sym, provide, now, sent, funnel):
         tl, te = SU.alert_lines(sig["dir"], infos, now)
         sig.update(trend_lines=tl, trend_short=SU.alert_short(sig["dir"], infos, now))
         sig["extra"] = dict(sig["extra"], **te)
-        why = G.blackout(sym, now)
+        why = G.blackout(sym, now) or N.blackout(sym, now)
         if why:
             funnel["blackout"] += 1
             if sig["key"] not in _LOGGED_BLOCKS:         # un seul message de journal par setup bloqué
                 _LOGGED_BLOCKS.add(sig["key"])
                 print(f"Alerte bloquée {sig['name']} {sig['label']} {sig['dir']} : {why}")
             continue
-        out.append((sig, provide(sig["ltf"])))
+        ltf = provide(sig["ltf"])
+        if not E.enrich(sig, provide, now, infos, funnel, ltf, ACCOUNT_BALANCE, RISK_PCT):
+            continue                                     # score trop bas (ou rejet exigé et absent)
+        out.append((sig, ltf))
     return out
 
 
 def unit_check_text(api, cache):
     """Contrôle affiché dans le message de test : unité de prix fixe de chaque actif rapportée à l'amplitude médiane réelle de ses bougies H1
-   . Un écart d'un facteur supérieur à 2 signale une unité mal réglée (UNIT_PCT)."""
+    (hors mode fixed : rien). Un écart d'un facteur supérieur à 2 signale une unité mal réglée (UNIT_PCT)."""
+    if S.UNIT_MODE != "fixed":
+        return ""
     bad, n = [], 0
     for sym in SYMBOLS:
         try:
@@ -1151,7 +1176,7 @@ def unit_check_text(api, cache):
         h = h1[:-1][-200:]
         S.set_symbol(sym)
         obs = sorted(c["high"] - c["low"] for c in h)[len(h) // 2]
-        fx = S.unit(h)
+        fx = S.unit_fixed(h)
         n += 1
         if obs > 0 and not 0.5 <= fx / obs <= 2.0:
             bad.append(f"{name_of(sym)} (unité {fx:.4g}, bougie H1 médiane {obs:.4g})")
@@ -1176,6 +1201,8 @@ def main():
         print("ATTENTION : secret Telegram manquant ou vide (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID)")
     try:
         G.health_start(g, BOT, now, notify)
+        if N.enabled():
+            N.load_feed(cache, now)                      # calendrier économique (jamais bloquant)
         poll_telegram(g, tr, now)
         check_symbols(api)
         track_trades(api, tr, now, g)

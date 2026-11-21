@@ -13,6 +13,7 @@ Les heures sont en heure de New York ; D1 et H4 ouvrent à 17h New York.
 """
 import math
 import os
+import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,7 @@ NY = ZoneInfo("America/New_York")
 GRAN = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300}
 
 # --- Paramètres communs ---
+ATR_N = 14
 DISP_MULT = 1.2           # corps de la bougie de cassure >= 1,2 x corps de référence (0,4 unité du timeframe)
 FRESH = 2                 # la bougie de déclenchement doit être l'une des 2 dernières clôturées
 BUF_ATR = 0.15            # marge du stop au-delà de l'extrême : 0,15 unité du timeframe d'entrée
@@ -35,7 +37,7 @@ S2_SWEEP_BARS = 8                      # le sweep M15 date de 8 bougies M15 au p
 S2_SESSIONS = ("Londres", "New York", "London Close")   # killzones : Londres 02h-05h, New York 07h-10h, London Close 10h-12h (marchés à séance)
 S2_PIVOT_BARS = 36                     # pivot M5 à moins de 36 bougies M5 (3 h) du sommet/creux du sweep
 
-# --- S1 Pullback (impulsion + retracement Fibonacci) ---
+# --- S1 Pullback (ex-S5 Impulsion + retracement Fibonacci, portée du crt-bot : impulse.py ; l'ancienne variante « classique » EMA/ADX est supprimée) ---
 S5_CASCADES = [("D1", "H4", "H1"), ("H4", "H1", "M15"), ("H1", "M15", "M5")]   # (tendance, impulsion + Fibonacci, entrée)
 
 
@@ -149,7 +151,7 @@ def _flag(name, default=True):
     return default if v == "" else v not in ("0", "false", "non", "off", "no")
 
 
-# Cadre intraday (INTRADAY=0 pour le désactiver) : contexte et obstacles en H4 / H1, confirmation en M15,
+# Cadre intraday (INTRADAY=0 pour revenir à l'ancien comportement) : contexte et obstacles en H4 / H1, confirmation en M15,
 # clôture de fin de séance (voir tracker.py).
 INTRADAY = _flag("INTRADAY", True)
 S5_CASCADES_INTRADAY = [("H4", "H1", "M15")]
@@ -198,12 +200,14 @@ CRT_MIN_RR = _num("S4_MIN_RR", S5_MIN_RR)       # ratio gain/risque minimal au m
 CRT_MIN_RANGE_ATR, CRT_MAX_RANGE_ATR = 0.8, 3.5  # taille raisonnable du range de C1 (x ATR du timeframe de référence)
 CRT_SWEEP_MIN_ATR = _num("S4_SWEEP_MIN_ATR", 0.1)   # C2 doit dépasser le bord de C1 d'au moins 0,1 ATR du timeframe de référence (0 = n'importe quelle mèche)
 CRT_LIMIT_MAX_ATR = 1.5                          # ordre limite à plus de 1,5 ATR M15 du prix : signal écarté
+S4_SESSION_FILTER = _flag("S4_SESSION_FILTER", True)   # marchés à séance : cassure M15 à Londres, New York ou London Close (S4_SESSION_FILTER=0 désactive)
+CRT_SESSIONS = ("Londres", "New York", "London Close")
 CRT_CHASE_ATR = 0.75                             # au marché : le prix ne doit pas avoir fui de plus de 0,75 ATR M15 de la clôture de déclenchement
 CRT_MAX_AGE_MIN = _num("S4_MAX_AGE_MIN", 20.0)   # déclencheur de plus de 20 minutes : signal écarté (0 = désactivé)
 CRT_CONTEXT_ALIGN = _flag("S4_CONTEXT_ALIGN", True)  # pas contre une tendance H4 ou D1 claire
 
 # --- Timeframe de confirmation / d'entrée, par stratégie : M15 ou M5 (variables S1_CONFIRM_TF ... S4_CONFIRM_TF) ---
-# Vide = défaut : M15 pour S1 (cascade selon INTRADAY), S3, S4 ; S2 suit INTRADAY (M15 si actif, sinon M5).
+# Vide = comportement historique : M15 pour S1 (cascade selon INTRADAY), S3, S4 ; S2 suit INTRADAY (M15 si actif, sinon M5).
 # M5 : la cassure de structure, le bloc d'ordre, le FVG, le stop et le suivi de fraîcheur se calculent sur les bougies M5 (cadre H4/H1
 # inchangé) : entrée plus précoce et stop plus serré, mais plus de bruit, et le spread pèse davantage. Les durées exprimées en bougies
 # M15 sont converties (x 3 en M5) par bars().
@@ -219,7 +223,7 @@ S4_CONFIRM_TF = _tf("S4_CONFIRM_TF")
 
 
 def confirm_tf(code):
-    """Timeframe de confirmation de la stratégie `code` (S2, S3, S4) : 'M15' ou 'M5' ; vide = défaut."""
+    """Timeframe de confirmation de la stratégie `code` (S2, S3, S4) : 'M15' ou 'M5' ; vide = comportement historique."""
     v = globals().get(f"{code}_CONFIRM_TF") or ""
     if v in ("M15", "M5"):
         return v
@@ -232,7 +236,7 @@ def bars(n_m15, tf):
 
 
 # ==========================================================================
-# Unité de prix : pourcentage fixe du prix propre à l'actif (price action pur : aucune moyenne de marché).
+# Unité de prix : pourcentage fixe par actif par défaut (UNIT_MODE=fixed, price action pur), ou ATR(14) (UNIT_MODE=atr). Ni ADX, ni EMA.
 # ==========================================================================
 # Toutes les distances du bot (stops, plafonds de risque, impulsion minimale, FVG, sweep...) s'expriment en « unités ».
 # L'unité d'un timeframe est un pourcentage FIXE du prix, propre à chaque actif, mis à l'échelle de la durée de la bougie
@@ -250,6 +254,19 @@ UNIT_H1_PCT = {
 }
 UNIT_DEFAULT_PCT = 0.10                  # actif inconnu
 
+# Mode de l'unité de prix : « fixed » (défaut, price action pur) = pourcentage fixe du prix propre à l'actif (UNIT_H1_PCT / UNIT_PCT), sans
+# aucune moyenne de marché ; « atr » = ATR(14) du timeframe, qui s'adapte à la volatilité. Les filtres de volatilité n'existent qu'en mode « atr ».
+def _unit_mode():
+    return "atr" if (os.getenv("UNIT_MODE") or "fixed").strip().lower() == "atr" else "fixed"
+
+
+UNIT_MODE = _unit_mode()
+S5_VOL_FAST, S5_VOL_SLOW = 14, 100       # régime de volatilité : ATR 14 / ATR 100 du timeframe d'impulsion
+S5_VOL_MIN, S5_VOL_MAX = 0.6, 2.0        # ... doit rester entre 0,6 et 2 (0, 0 pour désactiver)
+VOL_LOOKBACK = 240                       # fenêtre (en bougies H1) de la médiane de l'ATR (S2, S3 et S4)
+S2_VOL_MIN_RATIO = _num("S2_VOL_MIN_RATIO", 0.5)    # écarté si l'ATR H1 actuel < 0,5 x sa médiane récente (marché mort : le spread domine) ; 0 = off
+S3_VOL_MIN_RATIO = _num("S3_VOL_MIN_RATIO", 0.5)    # idem pour S3
+CRT_VOL_MIN_RATIO = _num("S4_VOL_MIN_RATIO", 0.5)   # idem pour S4
 
 
 def _unit_overrides():
@@ -278,9 +295,56 @@ def unit_pct(sym=None):
     return UNIT_OVERRIDES.get(sym) or UNIT_H1_PCT.get(sym) or UNIT_DEFAULT_PCT
 
 
-def unit(cs):
-    """Unité de prix du timeframe de `cs` : pourcentage fixe du dernier prix propre à l'actif, mis à l'échelle de la durée de la bougie
-    (écart minimal entre les dernières bougies, robuste aux trous de week-end). 0 si moins de 2 bougies."""
+def atr(cs, n=ATR_N):
+    """ATR : moyenne simple du vrai range (le plus grand de haut-bas, haut-clôture précédente, bas-clôture précédente) des n dernières bougies."""
+    cs = cs[-(n + 1):]
+    trs = [max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"]))
+           for p, c in zip(cs, cs[1:])]
+    return sum(trs) / len(trs) if trs else 0.0
+
+
+def vol_ratio(h1c):
+    """ATR H1 actuel rapporté à sa médiane sur les ~240 dernières bougies H1 (1 = volatilité normale)."""
+    n = len(h1c)
+    if n < 60:
+        return 1.0
+    pts = [atr(h1c[:i]) for i in range(max(ATR_N + 2, n - VOL_LOOKBACK), n + 1, 6)]
+    med = statistics.median(pts) if pts else 0.0
+    return atr(h1c) / med if med > 0 else 1.0
+
+
+def s5_vol_ok(mtf):
+    """Régime de volatilité : ATR rapide / ATR lent du timeframe d'impulsion entre S5_VOL_MIN et S5_VOL_MAX.
+    Sans assez d'historique (moins de S5_VOL_SLOW + 1 bougies clôturées), le filtre ne s'applique pas."""
+    if not (S5_VOL_MIN or S5_VOL_MAX):
+        return True
+    cs = mtf[:-1]
+    if len(cs) < S5_VOL_SLOW + 1:
+        return True
+    slow = atr(cs, S5_VOL_SLOW)
+    return slow <= 0 or S5_VOL_MIN <= atr(cs, S5_VOL_FAST) / slow <= S5_VOL_MAX
+
+
+def rsi_series(closes, n=14):
+    """RSI de Wilder pour chaque bougie (None au début). Utilisé uniquement par la divergence RSI du retournement de S3."""
+    out = [None] * len(closes)
+    if len(closes) <= n:
+        return out
+    gains = [max(closes[i] - closes[i - 1], 0) for i in range(1, n + 1)]
+    losses = [max(closes[i - 1] - closes[i], 0) for i in range(1, n + 1)]
+    ag, al = sum(gains) / n, sum(losses) / n
+    out[n] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+    for i in range(n + 1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        ag = (ag * (n - 1) + max(d, 0)) / n
+        al = (al * (n - 1) + max(-d, 0)) / n
+        out[i] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+    return out
+
+
+def unit_fixed(cs):
+    """Unité de prix fixe : pourcentage du dernier prix propre à l'actif, mis à l'échelle de la durée de la bougie (racine du temps).
+    0 si moins de 2 bougies."""
     if len(cs) < 2:
         return 0.0
     t = cs[-7:]
@@ -291,11 +355,16 @@ def unit(cs):
     return price * unit_pct() / 100.0 * math.sqrt(gap / 3600.0)
 
 
+def unit(cs):
+    """Unité de prix du timeframe de `cs` : pourcentage fixe de l'actif en mode « fixed » (défaut), ATR(14) en mode « atr »."""
+    return atr(cs) if UNIT_MODE == "atr" else unit_fixed(cs)
+
+
 BODY_REF_UNIT = 0.4                      # corps de référence d'une bougie ordinaire = 0,4 unité
 
 
 def ref_body(cs):
-    """Corps de référence servant à reconnaître un déplacement."""
+    """Corps de référence servant à reconnaître un déplacement (remplace l'ancien corps moyen)."""
     return BODY_REF_UNIT * unit(cs)
 
 
@@ -462,7 +531,7 @@ def _signal(strat, label, d, price, lv, ltf, ltf_n, key, details, **kw):
 # ==========================================================================
 # S2  Sweep + CHoCH (prise de liquidité, dans le sens du biais, sur une zone H1/H4, puis cassure de structure)
 # ==========================================================================
-S2_FRESH_LEVELS = True      # un niveau déjà pris (mèche au-delà depuis sa formation) n'est plus de la liquidité ; False = désactivé
+S2_FRESH_LEVELS = True      # un niveau déjà pris (mèche au-delà depuis sa formation) n'est plus de la liquidité ; False = ancien comportement
 S2_HTF_BARS = {"H4": 40, "H1": 72}   # profondeur de recherche des zones (bougies clôturées)
 S2_HTF_TOL_ATR = 0.25       # tolérance de contact avec la zone, en ATR H1
 S2_BIAS_FILTER = _flag("S2_BIAS_FILTER", True)   # trade seulement dans le sens du biais de structure (BOS) H4, sinon H1 si le H4 n'a pas de tendance claire
@@ -527,9 +596,10 @@ def level_taken(m15c, px, kind, t0, upto=None):
     return False
 
 
-def s2_bias(h4):
+def s2_bias(h4, h1=None):
     """(sens, 'H4') : biais de structure (BOS, règles de tendance de setups.py) déterminé EXCLUSIVEMENT sur le H4 ;
-    (None, None) si le H4 n'a pas de tendance claire (le H1 n'est pas consulté). h4 : bougies dont la dernière est en formation."""
+    (None, None) si le H4 n'a pas de tendance claire (le H1 n'est plus consulté ; `h1` n'est gardé que pour la compatibilité
+    des appels). h4 : bougies dont la dernière est en formation."""
     import setups as TR                   # import tardif : setups.py importe ce module
     info = TR.trend_info(h4, "H4")
     return (info["dir"], "H4") if info else (None, None)
@@ -658,6 +728,9 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
         cf, cfc, a_cf, cf_n, pivot_bars = m15, m15c, a_m15, "M15", S2_PIVOT_BARS_M15
     else:
         cf, cfc, a_cf, cf_n, pivot_bars = m5, m5c, a_m5, "M5", S2_PIVOT_BARS
+    if UNIT_MODE == "atr" and S2_VOL_MIN_RATIO and vol_ratio(h1c) < S2_VOL_MIN_RATIO:
+        funnel["S2_vol"] += 1
+        return None                                   # marché trop calme : le spread domine
     levels = liquidity_levels(h1c, d1, m15c, now, a_h1)
     if not levels:
         return None
@@ -681,9 +754,9 @@ def scan_s2(provide, now, funnel, dec=2, kz=True, mode="market"):
     if not cands:
         return None
     funnel["S2_sweep"] += 1
-    bias, bias_tf = s2_bias(h4)
+    bias, bias_tf = s2_bias(h4, h1)
     if S2_BIAS_FILTER:
-        # le filtre de biais s'applique AVANT le choix : un sweep récent contre le biais ne masque pas un sweep valide plus ancien
+        # le filtre de biais s'applique AVANT le choix : un sweep récent contre le biais ne masque plus un sweep valide plus ancien
         cands = [x for x in cands if ("SELL" if x[3] == "high" else "BUY") == bias]
         if not cands:
             return None                               # contre le biais de structure (ou aucun biais clair)
@@ -1083,7 +1156,7 @@ def _s5_unflip(r):
 
 
 def s1_cascades():
-    """Cascades (tendance, impulsion + Fibonacci, entrée) de S1 : celle du cadre intraday, ou les trois cascades avec INTRADAY=0. Avec S1_CONFIRM_TF=M5, même
+    """Cascades (tendance, impulsion + Fibonacci, entrée) de S1 : celles du cadre intraday ou les anciennes. Avec S1_CONFIRM_TF=M5, même
     tendance et même impulsion, seul le timeframe d'entrée devient M5 (les cascades qui deviennent identiques ne sont gardées qu'une fois)."""
     cascades = S5_CASCADES_INTRADAY if INTRADAY else S5_CASCADES
     if S1_CONFIRM_TF == "M5":
@@ -1103,6 +1176,9 @@ def scan_s5(provide, now, funnel, dec=2, kz=True, mode="market"):
         htf, mtf = provide(htf_n), provide(mtf_n)
         if not htf or not mtf:
             continue
+        if UNIT_MODE == "atr" and not s5_vol_ok(mtf):
+            continue                                  # volatilité en compression extrême ou en pic
+        funnel["S5_regime"] += 1
         ltf = None
         for d in ("BUY", "SELL"):
             buy = d == "BUY"
@@ -1199,14 +1275,23 @@ S9_TP_MAX_R = 6.0                                              # liquidité rete
 S9_H4_SWINGS = 6                                               # niveaux clés H4 : derniers sommets et creux (fractale de 2)
 
 STRAT_LABELS = {"S1": "Pullback", "S2": "Sweep + CHoCH", "S3": "Figures & Retournement", "S4": "CRT", "S9": "Market Profiles"}
-# Codes : S1 à S4, puis S9 (S5 à S8 ne sont pas utilisés).
+# Numérotation S1 à S4, puis S9. S5, S6, S7 et S8 sont d'anciens codes (alias ou libellés de trades déjà enregistrés) : la nouvelle stratégie prend donc S9.
+# Mean Reversion (ancienne S3) est supprimée : elle garde le code « MR » (S3 est maintenant Figures & Retournement), et ses trades déjà enregistrés gardent leur libellé.
+RETIRED_LABELS = {"MR": "Mean Reversion"}
+# Compatibilité : S1 (Trend Pullback) et S5 (Impulsion) ont été fusionnées en S1 « Pullback » ; Chart Patterns et S7 (Reversal)
+# en S3 « Figures & Retournement » ; l'ancien code S8 (CRT) est devenu S4. Les anciens codes, libellés et
+# trades enregistrés restent reconnus (configuration GitHub, trades en cours dans trades.json).
+STRAT_ALIAS = {"S5": "S1", "S7": "S3", "S8": "S4"}
+STRAT_FAMILY = dict(STRAT_ALIAS)
+LABEL_FAMILY = {"Trend Pullback": "Pullback", "Impulsion": "Pullback", "Chart Patterns": "Figures & Retournement", "Reversal": "Figures & Retournement"}
 
 
 def scan_pullback(provide, now, funnel, dec=2, kz=True, mode="market"):
     """S1 Pullback : tendance HTF (structure), impulsion MTF, repli de 50-79 % (Fibonacci), entrée LTF (sweep, cassure avec déplacement,
-    FVG, bloc d'ordre)."""
+    FVG, bloc d'ordre). Ex-S5 Impulsion ; l'ancienne variante « classique » (ex-S1, EMA 50/200 + ADX) est supprimée."""
     out = scan_s5(provide, now, funnel, dec, kz, mode) or []
     for sig in out:
+        sig["extra"] = dict(sig["extra"], variante="structure")
         sig.update(strat="S1", label="Pullback")
     return out
 

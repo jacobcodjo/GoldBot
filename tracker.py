@@ -282,7 +282,7 @@ def day_start(now):
 
 
 def realized_r(tr, since):
-    return sum(t["r"] for t in tr["closed"] if t.get("t_close", 0) >= since and t.get("r") is not None)
+    return sum(t["r"] for t in tr["closed"] if (t.get("t_close") or 0) >= since and t.get("r") is not None)
 
 
 # --------------------------------------------------------------------------

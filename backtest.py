@@ -27,7 +27,7 @@ Entrées : ordres limites au retest d'une zone (ENTRY_MODE=auto) ou au marché (
 Réalisme : spread retiré de chaque trade, stop exécuté à l'ouverture en cas de gap, trades forex/or clôturés le
 vendredi à 16h30 New York.
 Limites : spread constant (défaut par actif : or 0,015 %, majeures 0,006 %, BTC/ETH 0,05 %), pas de glissement, calendrier
-économique : le bot n'en filtre aucune (rollover et vendredi soir restent appliqués), un fichier CSV = un actif.
+économique supprimé du bot (rollover et vendredi soir restent appliqués), un fichier CSV = un actif.
 """
 import argparse, csv, itertools, math, random, sys, time
 from collections import Counter
@@ -263,6 +263,21 @@ def breakdown(ts, key):
     return rows
 
 
+def verdict_by_strategy(ts):
+    """Un verdict (voir verdict) par stratégie : la preuve d'un avantage se juge stratégie par stratégie, pas sur le total."""
+    rows = []
+    for val in sorted({str(t.get("cascade")) for t in ts if t.get("r") is not None}):
+        sub = [t for t in ts if str(t.get("cascade")) == val and t.get("r") is not None]
+        rows.append(f"  {val} ({len(sub)} trades) : " + verdict([t["r"] for t in sub], groups=[int(t.get("t0", 0)) // 86400 for t in sub]))
+    return rows
+
+
+def breakdown_pair(ts, key_a, key_b):
+    """Ventilation croisée de deux champs (ex. stratégie x session) : où se trouve l'avantage, et où il n'y en a pas."""
+    both = [dict(t, _pair=f"{t.get(key_a)} · {t.get(key_b)}") for t in ts if t.get(key_a) is not None and t.get(key_b) is not None]
+    return breakdown(both, "_pair")
+
+
 def run_all(datasets, spread_pct, warmup_days, split, progress=True):
     """datasets : [(sym, m5)]. Retourne [(sym, tr, funnel, stats)]. spread_pct None : défaut par actif."""
     res = []
@@ -308,11 +323,15 @@ def report(results, days, spread_pct, split=None):
             L.append(T.fmt_summary(f"  {gold.name_of(sym)}", sub) if sub else f"  {gold.name_of(sym)} : aucun trade")
     L.append("Par stratégie :")
     L += breakdown(ts, "cascade")
+    L.append("Verdict par stratégie :")
+    L += verdict_by_strategy(ts)
+    L.append("Stratégie x session :")
+    L += breakdown_pair(ts, "cascade", "session")
     L.append("RR visé et R obtenu par stratégie :")
     L += T.target_lines(ts)
     L.append("Coût du spread par stratégie :")
     L += cost_lines(ts)
-    for key in ["classe", "dir", "session", "liq", "h4", "poi", "c2_h4", "confluence", "tend_d1", "tend_h4", "result"] + (["period"] if split else []):
+    for key in ["classe", "variante", "dir", "session", "liq", "h4", "poi", "c2_h4", "confluence", "tend_d1", "tend_h4", "grade", "rejet", "tp_struct", "result"] + (["period"] if split else []):
         L += breakdown(ts, key)
     if split:
         p1, p2 = [t["r"] for t in ts if t.get("period") == "1"], [t["r"] for t in ts if t.get("period") == "2"]

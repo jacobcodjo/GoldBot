@@ -1,6 +1,6 @@
 # Gold Bot : alertes Telegram pour l'or (XAUUSD), le forex, BTC/ETH et les indices Volatility
 
-Bot Python qui scanne **28 actifs** toutes les 5 minutes sur l'API publique de Deriv, applique **5 stratégies** (S1 à S4 et S9) et envoie des **alertes Telegram** avec graphique : type d'ordre, entrée, stop, TP1 à TP3 et ratios. Il **n'exécute aucun ordre** : il suit ensuite chaque signal en R (gain en multiples du risque) et t'indique quand annuler, clôturer ou déplacer ton stop.
+Bot Python qui scanne **18 actifs** (or, forex, BTC et ETH ; les 10 indices Volatility sont hors du scan par défaut, `INCLUDE_SYNTHETICS=1` les remet) toutes les 5 minutes sur l'API publique de Deriv, applique **5 stratégies** (S1 à S4 et S9) et envoie des **alertes Telegram** avec graphique : type d'ordre, entrée, stop, TP1 à TP3 et ratios. Il **n'exécute aucun ordre** : il suit ensuite chaque signal en R (gain en multiples du risque) et t'indique quand annuler, clôturer ou déplacer ton stop.
 
 > Cette documentation décrit le comportement **du code** (valeurs par défaut, sans variable GitHub). Les seuils sont des points de départ **non validés** par un backtest sur marché réel : aucune stratégie n'a de rendement garanti, et ce document n'est pas un conseil financier.
 
@@ -12,7 +12,7 @@ Bot Python qui scanne **28 actifs** toutes les 5 minutes sur l'API publique de D
 | S4 | **CRT** (Candle Range Theory) : C1/C2 en D1 ou H4, cassure de structure M15 après C2 | D1/H4 > M15 |
 | S9 | **Market Profiles** (`profiles.py`) : range, manipulation, expansion ; 5 setups A à E sur des niveaux clés, entrée au retest | M15 (M5 ou H1 au choix), niveaux H1/H4/D1 |
 
-Les codes de stratégie sont S1 à S4 et S9.
+Anciens codes toujours lus : `S5` = S1, `S7` = S3, `S8` = S4 ; la 5e stratégie prend donc le code **S9**, car S5 à S8 sont réservés à ces alias. Les stratégies supprimées (Asian Breakout, Mean Reversion « MR », Trend Pullback « classique ») n'existent plus, mais leurs trades déjà enregistrés restent suivis.
 
 ---
 
@@ -25,13 +25,13 @@ Les codes de stratégie sont S1 à S4 et S9.
 | Forex JPY | USDJPY, EURJPY, GBPJPY, AUDJPY |
 | Forex calme | USDCHF, EURCHF, AUDUSD, NZDUSD |
 | Cryptos | `cryBTCUSD`, `cryETHUSD` |
-| Indices synthétiques | `R_10`, `R_25`, `R_50`, `R_75`, `R_100` et `1HZ10V`, `1HZ25V`, `1HZ50V`, `1HZ75V`, `1HZ100V` |
+| Indices synthétiques (hors du scan par défaut ; `INCLUDE_SYNTHETICS=1` ou `SYMBOLS=...`) | `R_10`, `R_25`, `R_50`, `R_75`, `R_100` et `1HZ10V`, `1HZ25V`, `1HZ50V`, `1HZ75V`, `1HZ100V` |
 
-- **Les classes ne filtrent rien** : elles servent aux récapitulatifs, à l'option `--sym` du backtest et à la colonne « classe » du rapport. Toutes les stratégies actives tournent sur tous les actifs, sauf restriction par `SYMBOL_STRATEGIES` (ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S3`).
-- **Marchés à séance** (or, forex) : fenêtres sans alerte (rollover, week-end), sessions de trading imposées à S1, S2 et S3, fin de séance intraday.
-- **Cryptos et indices synthétiques** (24h/24, 7j/7) : S1, S2 et S3 n'ont pas de limite d'horaire (S4 n'en a jamais), aucune fin de séance (sauf `CRYPTO_INTRADAY=1` pour les cryptos), pas de rollover ni de fermeture de week-end.
+- **Les classes ne filtrent rien** : elles servent aux récapitulatifs, à l'option `--sym` du backtest et à la colonne « classe » du rapport. Toutes les stratégies actives tournent sur tous les actifs, sauf restriction par `SYMBOL_STRATEGIES` (ex. `frxEURUSD:S1,S2;cryBTCUSD:S2,S3`). Les anciennes variables `CLASS_FILTER`, `CLASS_STRATEGIES` et `TIER_MAX` sont ignorées.
+- **Marchés à séance** (or, forex) : fenêtres sans alerte (rollover, week-end), sessions de trading (Londres, New York, London Close) imposées à S1, S2, S3, S4 et S9, fin de séance intraday.
+- **Cryptos et indices synthétiques** (24h/24, 7j/7) : aucune stratégie n'a de limite d'horaire, aucune fin de séance (sauf `CRYPTO_INTRADAY=1` pour les cryptos), pas de rollover ni de fermeture de week-end.
 - **Indices Volatility** : prix généré aléatoirement, insensible aux annonces économiques, aucune liquidité réelle. Rien ne garantit qu'une stratégie y ait un avantage : à traiter comme une expérience, à valider par `--sym synth`. Leur D1 est la bougie daily de Deriv (00h GMT) et non 17h New York.
-- **Exposition par devise** : un trade compte long ou short sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; or acheté = short USD). Maximum **2 trades nets dans le même sens** par devise ; BTC et ETH forment un groupe (2 au plus dans le même sens). Aucune limite pour les indices, ni sur le nombre total de trades, ni sur les pertes du jour.
+- **Exposition par devise** : un trade compte long ou short sur chacune de ses deux devises (EURJPY acheté = long EUR, short JPY ; or acheté = short USD). Maximum **2 trades nets dans le même sens** par devise ; BTC et ETH forment un groupe (2 au plus dans le même sens). Autres limites : **6 trades ouverts ou en attente au plus** (`MAX_OPEN_TRADES`, 0 = aucune), plus aucune alerte dans la journée (17h NY) après **−3 R** de trades clôturés (`DAILY_LOSS_LIMIT_R`) ou sur 7 jours après **−6 R** (`WEEKLY_LOSS_LIMIT_R`) ; 0 désactive chacune. Aucune limite pour les indices synthétiques sur l'exposition par devise.
 - **Spreads supposés** (en % du prix, retirés de chaque trade en direct et au backtest ; `SPREAD_PCT` ou `SPREAD_TABLE` pour les remplacer) : or 0,015 ; majeures contre USD 0,006 ; croisements EURGBP 0,007, EURJPY 0,008, EURCHF 0,009, AUDJPY 0,009, EURCAD 0,010, EURAUD 0,010, GBPJPY 0,012, GBPAUD 0,014 ; BTC et ETH 0,05 ; indices 0,02. Priorité : `SPREAD_TABLE`, puis `SPREAD_PCT`, puis ces défauts.
 - **Décimales d'affichage** : or et cryptos 2, paires en yen 3, autres paires 5, indices : V10 3, V25 3, V50 4, V75 4, V100 2, séries 1s 2.
 
@@ -49,7 +49,7 @@ Les codes de stratégie sont S1 à S4 et S9.
 | `charts.py` | Graphique joint à chaque alerte (matplotlib) |
 | `backtest.py` | Rejeu M5 des mêmes fonctions que le bot en direct, deux périodes, grille de réglages |
 | `profiles.py` | Détection des setups A à E de Market Profiles (prix pur, retourne des `Setup`) ; branché sur le bot par `setups.scan_profiles` |
-| `tests.py` | 267 tests unitaires (`python -m unittest tests -v`), sans réseau |
+| `tests.py` | 283 tests unitaires (`python -m unittest tests -v`), sans réseau |
 | `.github/workflows/` | `gold.yml` (scan, déclenché de l'extérieur), `backtest.yml` (manuel), `tests.yml` (à chaque push) |
 
 Dépendances (`requirements.txt`) : `websocket-client`, `requests`, `matplotlib`. Python 3.12 dans les workflows.
@@ -96,15 +96,16 @@ Seules les variables **transmises par `gold.yml`** agissent sur le bot en direct
 | `INTRADAY` | `0` désactive le cadre intraday ; `INTRADAY_RUNNERS=1` laisse courir le reste après TP1 en fin de séance ; `CRYPTO_INTRADAY=1` soumet les cryptos à la fin de séance |
 | `S1_MIN_RR`, `S1_RISK_CAP_H1`, `S1_D1_ALIGN`, `S1_OBST_ENTRY` | Garde-fous de S1 (défauts : 3 ; 2 ; actif ; actif) ; `0` désactive les valeurs numériques |
 | `S2_BIAS_FILTER`, `S2_HTF_ZONE`, `S2_FIB_FILTER` | Garde-fous de S2 : biais de structure, sweep sur zone H1/H4, côté Fibonacci (défaut : actifs ; `0` désactive) |
-| `S2_MIN_RR`, `S2_RISK_CAP_H1`, `S2_MAX_AGE_MIN`, `S2_SWEEP_MIN_ATR` | Ratio minimal sur TP1 (défaut : celui de S1, soit 3), risque maximal en unités H1 (1,5), âge maximal du déclencheur en minutes (20), dépassement minimal de la mèche en unités M15 (0,1) |
+| `S2_MIN_RR`, `S2_RISK_CAP_H1`, `S2_MAX_AGE_MIN`, `S2_VOL_MIN_RATIO`, `S2_SWEEP_MIN_ATR` | Ratio minimal sur TP1 (défaut : celui de S1, soit 3), risque maximal en unités H1 (1,5), âge maximal du déclencheur en minutes (20), ATR H1 minimal rapporté à sa médiane (0,5), dépassement minimal de la mèche en unités M15 (0,1) |
 | `S3_FIB_FILTER`, `S3_FIB_CAP_TP3`, `S3_CONTEXT_ALIGN` | Repli Fibonacci des continuations, plafond de TP3 des retournements, contexte H4/D1 des continuations (défaut : actifs) |
-| `S3_MAX_AGE_MIN`, `S3_REV_MIN_RR` | Âge du déclencheur (20 min), ratio minimal du retournement sur TP1 (celui de S1) |
+| `S3_VOL_MIN_RATIO`, `S3_MAX_AGE_MIN`, `S3_REV_MIN_RR` | Volatilité (0,5), âge du déclencheur (20 min), ratio minimal du retournement sur TP1 (celui de S1) |
 | `S6_TOL_ATR`, `S6_RISK_CAP_ATR`, `S6_MIN_RR`, `S6_NOCONF_MIN_RR`, `S6_CONF_RISK_FACTOR` | Figures de S3 : tolérance de touche des lignes (0,5), risque maximal en unités de la figure (5), ratio minimal vers TP3 (1), idem sans confluence (1,5), facteur de risque avec confluence (1,4) |
-| `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR`, `REVERSAL_MIN_SIGNS` | Retournement de S3 : risque maximal en unités H1 (3), retest maximal à 1 unité H1 du prix, signes d'essoufflement exigés sur 2 (1) |
-| `S4_MIN_RR`, `S4_MAX_AGE_MIN`, `S4_CONTEXT_ALIGN`, `S4_SWEEP_MIN_ATR` | CRT : ratio minimal sur TP1 (celui de S1), âge du déclencheur (20 min), pas contre une tendance H4/D1 claire (actif), dépassement minimal de C2 en unités de référence (0,1) |
+| `S7_RISK_CAP_ATR`, `S7_ENTRY_MAX_ATR`, `REVERSAL_MIN_SIGNS` | Retournement de S3 : risque maximal en unités H1 (3), retest maximal à 1 unité H1 du prix, signes d'essoufflement exigés (défaut 1 sur 2 sans RSI, 2 sur 3 avec) ; `REVERSAL_RSI=1` ajoute la divergence RSI (désactivée par défaut) |
+| `S4_MIN_RR`, `S4_MAX_AGE_MIN`, `S4_VOL_MIN_RATIO`, `S4_CONTEXT_ALIGN`, `S4_SWEEP_MIN_ATR`, `S4_SESSION_FILTER` | CRT : ratio minimal sur TP1 (celui de S1), âge du déclencheur (20 min), volatilité (0,5), pas contre une tendance H4/D1 claire (actif), dépassement minimal de C2 en unités de référence (0,1), session obligatoire sur les marchés à séance (actif ; `0` désactive) |
 | `S1_CONFIRM_TF`, `S2_CONFIRM_TF`, `S3_CONFIRM_TF`, `S4_CONFIRM_TF` | Timeframe d'entrée/confirmation : `M15` ou `M5` (voir § 6.7) |
 | `S9_TF`, `S9_BARS`, `S9_MIN_RR`, `S9_RISK_CAP_H1`, `S9_SL_BUF_ATR`, `S9_MAX_AGE_MIN`, `S9_SESSION_FILTER` | Market Profiles : timeframe d'analyse `M5`, `M15` ou `H1` (M15), bougies clôturées analysées (160), ratio minimal sur TP1 (celui de S1, soit 3), risque maximal en unités H1 (2), marge du stop au-delà du sweep en unités (0,15 ; 0 = sur l'extrême), âge maximal du déclencheur en minutes (20), session obligatoire sur les marchés à séance (actif ; `0` désactive) |
-| `UNIT_PCT` | **Unité de prix par actif** : pourcentage du prix pour une bougie H1, ex. `frxXAUUSD=0.4,cryBTCUSD=0.8` ; remplace les valeurs par défaut de `strategies.py` (voir § 5) |
+| `UNIT_MODE` | Unité de prix : `fixed` (**défaut**, pourcentage fixe par actif, price action pur) ou `atr` (ATR(14) du timeframe, avec filtres de volatilité ; voir § 5) |
+| `UNIT_PCT` | Mode `fixed` : **unité de prix par actif** : pourcentage du prix pour une bougie H1, ex. `frxXAUUSD=0.4,cryBTCUSD=0.8` ; remplace les valeurs par défaut de `strategies.py` |
 | `STOP_MODE`, `S1_STOP_MODE`, `S2_STOP_MODE`, `S4_STOP_MODE` | Placement du stop de S1, S2 et S4 : `sweep` (défaut : au-delà de l'extrême du sweep) ou `ob` (à l'autre extrémité de la zone d'entrée, voir § 6.10) ; la variable de la stratégie prime sur `STOP_MODE` |
 | `ONE_TRADE_PER_SIDE` | `1` (défaut) : un seul trade par actif et par sens, toutes stratégies confondues ; `0` : un par stratégie |
 | `CONFLUENCE_MIN` | Fenêtre de confluence en minutes (défaut 60 ; `0` désactive) |
@@ -116,15 +117,16 @@ Seules les variables **transmises par `gold.yml`** agissent sur le bot en direct
 | `RECAP_FORMAT`, `RECAP_HEURE`, `RECAP_FUSEAU`, `SYNTH_RECAP_HEURES` | Récapitulatifs de tendance (voir § 8) |
 | `DERIV_APP_ID`, `DERIV_WS_URL` | Réglages techniques : application Deriv (défaut 1089), endpoint forcé |
 
-**Note sur `S6_*`.** Le code lit aussi `S6_PIVOT_K`, `S6_MIN_SWING_ATR`, `S6_MIN_H_ATR`, `S6_BUF_ATR`, `S6_MAX_AGE`, `S6_TREND_LB`, `S6_TREND_ATR`, `S6_POLE_LB` et `S6_POLE_ATR` (détection des figures), mais **ni `gold.yml` ni `backtest.yml` ne les transmettent** : les définir dans GitHub reste sans effet tant que tu ne les ajoutes pas à l'étape `env` des deux workflows. `backtest.yml` ne transmet que les réglages utiles au rejeu (pas `STRATEGIES`, `SYMBOLS`, ni les variables d'affichage).
+**Note sur `S6_*`.** Le code lit aussi `S6_PIVOT_K`, `S6_MIN_SWING_ATR`, `S6_MIN_H_ATR`, `S6_BUF_ATR`, `S6_MAX_AGE`, `S6_TREND_LB`, `S6_TREND_ATR`, `S6_POLE_LB` et `S6_POLE_ATR` (détection des figures), mais **ni `gold.yml` ni `backtest.yml` ne les transmettent** : les définir dans GitHub reste sans effet tant que tu ne les ajoutes pas à l'étape `env` des deux workflows. À l'inverse, `PULLBACK_VARIANT` est transmise mais plus lue par le code. `backtest.yml` ne transmet que les réglages utiles au rejeu (pas `STRATEGIES`, `SYMBOLS`, ni les variables d'affichage).
 
 ---
 
 ## 5. Conventions communes
 
-- **Price action pur** : le bot n'utilise aucun indicateur (ni ATR, ni RSI, ni ADX, ni moyenne mobile) et aucune variable n'est obligatoire. Les entrées reposent sur le prix seul (structure, liquidité, FVG, blocs d'ordre, figures, Fibonacci). Toutes les distances (stops, plafonds de risque, impulsion minimale, tailles de FVG et de sweep, poursuite du prix) s'expriment en **unités de prix** : l'unité d'un actif est un **pourcentage fixe du prix**, propre à l'actif, qui ne dépend d'aucune donnée de marché récente.
-- **Unité de prix** : pourcentage du prix pour une bougie H1, mis à l'échelle de la durée de la bougie (racine du temps : M5 0,29 ; M15 0,5 ; H1 1 ; H4 2 ; D1 4,9). Valeurs de départ (estimations) ; le message de contrôle (`test = true`) compare chaque unité à l'amplitude réelle des bougies H1 et signale celles qui s'en écartent d'un facteur supérieur à 2 (réglage possible avec `UNIT_PCT`) : or 0,35 ; EURUSD 0,08, GBPUSD 0,10, USDCAD 0,08, EURGBP 0,06, EURAUD 0,10, EURCAD 0,08, GBPAUD 0,12 ; USDJPY 0,09, EURJPY 0,10, GBPJPY 0,13, AUDJPY 0,11 ; USDCHF 0,08, EURCHF 0,06, AUDUSD 0,09, NZDUSD 0,10 ; BTC 0,60, ETH 0,90 ; indices Volatility 0,17, 0,43, 0,85, 1,28 et 1,70 (V10 à V100) ; actif inconnu 0,10.
+- **Unité de prix** : toutes les distances du bot (stops, plafonds de risque, impulsion minimale, tailles de FVG et de sweep, poursuite du prix) s'expriment en **unités**. Par défaut (`UNIT_MODE=fixed`), l'unité est un **pourcentage fixe du prix**, propre à l'actif (voir ci-dessous) : aucune donnée de marché n'est moyennée. Avec `UNIT_MODE=atr`, l'unité d'un timeframe est son **ATR(14)** (moyenne simple du vrai range des 14 dernières bougies), qui s'adapte à la volatilité du moment. Les entrées, elles, restent du prix pur (structure, liquidité, FVG, blocs d'ordre, figures, Fibonacci). **ADX et EMA ont été supprimés** ; le **RSI** n'existe que pour la divergence du retournement de S3, désactivée par défaut (`REVERSAL_RSI=1`). **Par défaut, le bot est donc purement price action** : ni ATR, ni RSI, ni ADX, ni EMA, et aucune variable à régler.
+- **Unité fixe (mode par défaut)** : pourcentage du prix, propre à l'actif, pour une bougie H1, mis à l'échelle de la durée de la bougie (racine du temps : M5 0,29 ; M15 0,5 ; H1 1 ; H4 2 ; D1 4,9). Estimations de départ ; le message de contrôle (`test = true`) compare chaque unité à l'amplitude réelle des bougies H1 et signale celles qui s'en écartent d'un facteur supérieur à 2 (réglage possible avec `UNIT_PCT`) : or 0,35 ; EURUSD 0,08, GBPUSD 0,10, USDCAD 0,08, EURGBP 0,06, EURAUD 0,10, EURCAD 0,08, GBPAUD 0,12 ; USDJPY 0,09, EURJPY 0,10, GBPJPY 0,13, AUDJPY 0,11 ; USDCHF 0,08, EURCHF 0,06, AUDUSD 0,09, NZDUSD 0,10 ; BTC 0,60, ETH 0,90 ; indices Volatility 0,17, 0,43, 0,85, 1,28 et 1,70 (V10 à V100) ; actif inconnu 0,10. Dans ce mode, les filtres de volatilité (mode `atr`) n'existent pas.
 - **Corps de référence** : 0,4 unité du timeframe ; une cassure ou un FVG doit avoir un déplacement d'au moins 1,2 à 1,5 fois ce corps (soit 0,5 à 0,6 unité).
+- **Volatilité** (mode `atr`) : `vol_ratio` = ATR H1 actuel divisé par sa médiane sur environ 240 bougies H1 ; S2, S3 et S4 écartent le signal sous 0,5 (marché mort : le spread domine ; `S2_VOL_MIN_RATIO`, `S3_VOL_MIN_RATIO`, `S4_VOL_MIN_RATIO`, `0` désactive). S1 vérifie en plus que l'ATR(14) / ATR(100) du timeframe d'impulsion reste entre 0,6 et 2.
 - **Bougies clôturées uniquement** : la bougie en formation ne sert qu'au prix actuel.
 - **Heures** : le bot raisonne en heure de **New York** ; les messages affichent l'heure du Bénin (UTC+1, sans heure d'été), donc le décalage varie d'une heure avec l'heure d'été américaine (2e dimanche de mars au 1er dimanche de novembre).
 - **Déclenchement récent** : la bougie de déclenchement doit être l'une des 2 dernières clôturées (`FRESH`) ; S2, S3 et S4 écartent en plus tout signal dont le déclencheur a plus de 20 minutes.
@@ -145,8 +147,9 @@ Seules les variables **transmises par `gold.yml`** agissent sur le bot en direct
 Cascade par défaut (cadre intraday) : **tendance H4, impulsion H1, entrée M15**. Avec `INTRADAY=0`, trois cascades : D1 > H4 > H1, H4 > H1 > M15, H1 > M15 > M5. Avec `S1_CONFIRM_TF=M5`, le timeframe d'entrée devient M5. Achat et vente symétriques.
 
 **Filtres de contexte**
-1. **Tendance HTF** (structure) naissante ou établie ; la tendance mûre est écartée.
-2. **Pas contre une tendance D1 claire** (`S1_D1_ALIGN`), sauf si la tendance de la cascade est le D1.
+1. **Régime de volatilité** (mode `atr`) : ATR(14) / ATR(100) du timeframe d'impulsion entre 0,6 et 2.
+2. **Tendance HTF** (structure) naissante ou établie ; la tendance mûre est écartée.
+3. **Pas contre une tendance D1 claire** (`S1_D1_ALIGN`), sauf si la tendance de la cascade est le D1.
 
 **Impulsion** (timeframe d'impulsion) : cassure de structure avec déplacement (une bougie de la jambe ≥ 1,5 fois le corps de référence), jambe d'au moins **2 unités**, origine non reprise par le prix, extrême vieux de 48 bougies au plus, aucune clôture de retracement au-delà de **79 %** de la jambe.
 
@@ -169,16 +172,17 @@ Cascade par défaut (cadre intraday) : **tendance H4, impulsion H1, entrée M15*
 
 **Idée** : dans le sens de la structure H4/H1, le prix balaie un niveau de liquidité **dans une zone d'intérêt H1/H4**, puis casse sa structure en sens inverse ; on entre contre le balayage.
 
-1. **Niveaux de liquidité** (chacun a une date de naissance) : plus haut/bas de la veille (PDH/PDL, journée 17h-17h New York), extrêmes de la plage asiatique (20h-02h, valables dès 02h00, au moins 20 bougies M15), **equal highs/lows** H1 (deux swings à moins de 0,15 unité H1, parmi les 8 derniers). Un niveau n'est de la liquidité **qu'une fois** : s'il a déjà été dépassé par une mèche M15 depuis sa naissance, il est ignoré.
-2. **Sweep M15** parmi les 8 dernières bougies : la mèche dépasse le niveau d'au moins 0,1 unité M15 et n'est pas suivie d'une clôture au-delà.
-3. **Biais de structure** (`S2_BIAS_FILTER`, **actif par défaut**) : tendance **H4 exclusivement** (le H1 n'est jamais consulté), selon la définition de § 5. On ne prend que les ventes après un sweep de sommet dans un biais baissier, et les achats dans un biais haussier ; si le H4 n'a pas de tendance claire, pas de biais donc pas de signal. Le filtre s'applique avant le choix du sweep.
-4. **CHoCH** en M15 (M5 avec `S2_CONFIRM_TF=M5`) : clôture au-delà du dernier swing formé dans les 12 bougies M15 (36 en M5) avant l'extrême du sweep, avec déplacement (≥ 1,2 fois), parmi les 2 dernières bougies.
-5. **Killzone** : déclencheur à Londres, New York ou London Close (marchés à séance).
-6. **Zone H4/H1** (`S2_HTF_ZONE`) : l'étendue du sweep recoupe (tolérance 0,25 unité H1) un bloc d'ordre ou un FVG **non retesté** du sens du trade, né d'un déplacement qui casse la structure ; H4 avant H1, bloc d'ordre avant FVG.
-7. **Entrée** : ordre limite sur le bloc d'ordre M15 (bord proche) ou le FVG M15 (milieu) du mouvement ; à défaut, marché si le prix n'a pas fui de plus de 0,75 unité depuis la clôture du déclencheur. Une zone à plus de 1,5 unité du prix écarte le signal. **Stop** : au-delà de l'extrême du sweep, plus 0,15 unité M15 ; **risque maximal 1,5 unité H1**. Avec `S2_STOP_MODE=ob`, le stop passe à l'autre extrémité du bloc d'ordre (ou du FVG) d'entrée.
-8. **Fibonacci** (`S2_FIB_FILTER`) : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe H4 (discount pour un achat, premium pour une vente) ; sans effet si la jambe fait moins de 1,5 unité H1.
-9. **Objectifs sur la liquidité opposée intacte** entre 1 R et 6 R (placés 0,1 unité M15 avant le niveau) : TP1 = la première ; TP2 = la suivante située à plus de 0,5 R de TP1, sinon TP1 + 1 R ; TP3 de même. Sans liquidité : TP1 au ratio minimal (3 R), puis +1 R et +2 R. Ratio ≥ 3 sur TP1.
-10. **Invalidation** : l'extrême du sweep.
+1. **Volatilité** (mode `atr`) : ATR H1 ≥ 0,5 fois sa médiane.
+2. **Niveaux de liquidité** (chacun a une date de naissance) : plus haut/bas de la veille (PDH/PDL, journée 17h-17h New York), extrêmes de la plage asiatique (20h-02h, valables dès 02h00, au moins 20 bougies M15), **equal highs/lows** H1 (deux swings à moins de 0,15 unité H1, parmi les 8 derniers). Un niveau n'est de la liquidité **qu'une fois** : s'il a déjà été dépassé par une mèche M15 depuis sa naissance, il est ignoré.
+3. **Sweep M15** parmi les 8 dernières bougies : la mèche dépasse le niveau d'au moins 0,1 unité M15 et n'est pas suivie d'une clôture au-delà.
+4. **Biais de structure** (`S2_BIAS_FILTER`, **actif par défaut**) : tendance **H4 exclusivement** (le H1 n'est jamais consulté), selon la définition de § 5. On ne prend que les ventes après un sweep de sommet dans un biais baissier, et les achats dans un biais haussier ; si le H4 n'a pas de tendance claire, pas de biais donc pas de signal. Le filtre s'applique avant le choix du sweep.
+5. **CHoCH** en M15 (M5 avec `S2_CONFIRM_TF=M5`) : clôture au-delà du dernier swing formé dans les 12 bougies M15 (36 en M5) avant l'extrême du sweep, avec déplacement (≥ 1,2 fois), parmi les 2 dernières bougies.
+6. **Killzone** : déclencheur à Londres, New York ou London Close (marchés à séance).
+7. **Zone H4/H1** (`S2_HTF_ZONE`) : l'étendue du sweep recoupe (tolérance 0,25 unité H1) un bloc d'ordre ou un FVG **non retesté** du sens du trade, né d'un déplacement qui casse la structure ; H4 avant H1, bloc d'ordre avant FVG.
+8. **Entrée** : ordre limite sur le bloc d'ordre M15 (bord proche) ou le FVG M15 (milieu) du mouvement ; à défaut, marché si le prix n'a pas fui de plus de 0,75 unité depuis la clôture du déclencheur. Une zone à plus de 1,5 unité du prix écarte le signal. **Stop** : au-delà de l'extrême du sweep, plus 0,15 unité M15 ; **risque maximal 1,5 unité H1**. Avec `S2_STOP_MODE=ob`, le stop passe à l'autre extrémité du bloc d'ordre (ou du FVG) d'entrée.
+9. **Fibonacci** (`S2_FIB_FILTER`) : l'entrée doit être du bon côté de l'équilibre (50 %) de la jambe H4 (discount pour un achat, premium pour une vente) ; sans effet si la jambe fait moins de 1,5 unité H1.
+10. **Objectifs sur la liquidité opposée intacte** entre 1 R et 6 R (placés 0,1 unité M15 avant le niveau) : TP1 = la première ; TP2 = la suivante située à plus de 0,5 R de TP1, sinon TP1 + 1 R ; TP3 de même. Sans liquidité : TP1 au ratio minimal (3 R), puis +1 R et +2 R. Ratio ≥ 3 sur TP1.
+11. **Invalidation** : l'extrême du sweep.
 
 ### 6.3 S3 Figures & Retournement
 
@@ -198,10 +202,10 @@ Deux sources de signaux dans la même stratégie, **au plus un signal par sens**
 1. Tendance **H4 mûre** (4 jambes ou plus) encore intacte.
 2. **Sweep H1** d'un sommet (creux) récent datant de moins de 6 bougies H1 (niveau non déjà pris), situé sur un **niveau majeur** : sommet/creux H4, zone H4 ou plus haut/bas de la veille.
 3. **Cassure de structure H1** contre la tendance : clôture sous le dernier creux (au-dessus du dernier sommet) formé dans les 12 bougies H1 qui précèdent l'extrême atteint après le sweep, la cassure datant de 2 bougies H1 au plus.
-4. **Essoufflement** : au moins 1 signe sur 2 (`REVERSAL_MIN_SIGNS`) : bougies qui rétrécissent (corps moyen des 3 dernières < 60 % du corps de référence, soit 0,4 unité), mèche de rejet (≥ 2 fois le corps).
+4. **Essoufflement** : au moins 1 signe sur 2 (`REVERSAL_MIN_SIGNS`) : bougies qui rétrécissent (corps moyen des 3 dernières < 60 % du corps de référence, soit 0,4 unité), mèche de rejet (≥ 2 fois le corps). Avec `REVERSAL_RSI=1`, une **divergence RSI H1** (RSI de Wilder à 14 périodes : le sommet du sweep dépasse le précédent mais son RSI est inférieur d'au moins 1 point) devient un 3e signe et il en faut alors 2 sur 3.
 - **Entrée** au retest du dernier creux (sommet) H1 cassé, **stop** au-delà de l'extrême du sweep plus 0,2 unité H1, risque maximal 3 unités H1, retest à 1 unité H1 du prix au plus. **Objectifs** sur la liquidité opposée intacte (comme S2 : TP1 = première liquidité entre 1 R et 6 R, sinon TP1 = 3 R, +1 R, +2 R), ratio ≥ 3 sur TP1. Alerte toujours marquée **contre la tendance H4** : taille réduite conseillée.
 
-**Garde-fous communs** : sessions (Londres/New York/London Close, marchés à séance), âge du déclencheur ≤ 20 minutes, obstacles H4/H1 du cadre intraday (figures : obstacles H4 et veille seulement ; retournement : H4 et H1).
+**Garde-fous communs** : sessions (Londres/New York/London Close, marchés à séance), âge du déclencheur ≤ 20 minutes, volatilité (mode `atr`), obstacles H4/H1 du cadre intraday (figures : obstacles H4 et veille seulement ; retournement : H4 et H1).
 
 ### 6.4 S4 CRT (Candle Range Theory)
 
@@ -213,7 +217,7 @@ Deux sources de signaux dans la même stratégie, **au plus un signal par sens**
 | Entrée | Première clôture M15 au-delà du dernier swing M15 (CHoCH avec déplacement ≥ 1,2 fois), **après la clôture de C2**, avec ce swing à 16 bougies M15 (48 en M5) au plus avant l'extrême de C2 et une cassure parmi les 2 dernières bougies. Si le prix reprend l'extrême de C2, le sweep est annulé. Ordre limite sur le bloc d'ordre ou le FVG M15 du mouvement (jusqu'à 1,5 unité M15 du prix) ; sinon marché si le prix n'a pas fui de plus de 0,75 unité M15. |
 | Stop | Au-delà de l'extrême de C2, plus 0,15 unité M15 (avec `S4_STOP_MODE=ob` : à l'autre extrémité du bloc d'ordre ou du FVG d'entrée, même marge). |
 | Objectifs | TP1 milieu de C1, TP2 bord opposé de C1, TP3 bord opposé + 50 % du range. **Ratio ≥ 3 jusqu'au milieu de C1.** |
-| Garde-fous | Âge du déclencheur ≤ 20 min, **pas contre une tendance H4 ou D1 claire**, obstacles H4/H1 du cadre intraday. Aucune limite de session. |
+| Garde-fous | Volatilité (mode `atr`, ATR H1 ≥ 0,5 fois sa médiane), âge du déclencheur ≤ 20 min, **pas contre une tendance H4 ou D1 claire**, obstacles H4/H1 du cadre intraday, **cassure M15 à Londres, New York ou London Close** sur les marchés à séance (or, forex ; `S4_SESSION_FILTER=0` désactive). |
 
 Au plus un signal par bougie de référence (D1 et H4). Le bot utilise **toutes** les bougies H4 (17h, 21h, 01h, 05h, 09h, 13h New York) sans filtre horaire ; le rapport du backtest ventile seulement les trades dont C2 ouvre à 01h, 05h ou 09h, pour juger ces bougies avant tout filtrage. L'invalidation est l'extrême de C2.
 
@@ -223,7 +227,7 @@ Au plus un signal par bougie de référence (D1 et H4). Le bot utilise **toutes*
 - **Objectif avant le prochain obstacle** (S1, S2, S3, S4) : si un obstacle opposé est devant TP1 à moins de 1 R de l'entrée (ou à moins de 0,8 R une fois le tampon retiré), le signal est écarté ; sinon les objectifs au-delà sont ramenés à 0,1 unité H1 avant l'obstacle et le ratio minimal est recontrôlé (S1 et S2 sur TP1, retournement de S3 sur TP1, figures de S3 sur TP3, S4 sur TP1).
 - **Entrée sur réaction à un niveau** : S1 exige que l'entrée soit à moins de 0,5 unité H1 d'un niveau ou d'une zone H4/H1 du bon côté (`S1_OBST_ENTRY`) ; S2 l'exige seulement si `S2_HTF_ZONE=0` ; S3 et S4 non.
 - **Fin de séance** (or et forex) : tout trade est clôturé au plus tard à **16h45 New York** ou **10 heures** après l'alerte, **même après TP1** (sauf `INTRADAY_RUNNERS=1`) ; un ordre en attente n'est jamais conservé au-delà. Cryptos et indices : aucune fin de séance (sauf `CRYPTO_INTRADAY=1` pour les cryptos).
-- `INTRADAY=0` désactive ce cadre : cascades S1 à 3 niveaux, confirmation de S2 en M5, pas de fin de séance, pas de filtre d'obstacles.
+- `INTRADAY=0` restaure l'ancien comportement : cascades S1 à 3 niveaux, confirmation de S2 en M5, pas de fin de séance, pas de filtre d'obstacles.
 
 ### 6.6 Ordres limites
 
@@ -290,6 +294,22 @@ Par défaut (`sweep`), le stop de S1, S2 et S4 est placé au-delà de l'extrême
 
 ---
 
+## 6bis. Qualité des signaux (`edge.py`, `news.py`)
+
+Appliquée à chaque signal après sa stratégie et avant l'envoi (en direct comme au backtest). **Aucun de ces seuils n'est validé sur marché réel** : chaque mécanisme se désactive, et la note, le rejet et les objectifs structurels sont enregistrés dans chaque trade pour que le backtest les évalue (`grade`, `rejet`, `tp_struct`).
+
+| Mécanisme | Règle | Réglage |
+|---|---|---|
+| **Objectifs sur la structure** (S1 et S9) | TP1, TP2 et TP3 sur les niveaux de structure dans le sens du trade, entre 1 R et 6 R : liquidité opposée intacte (plus haut/bas de la veille, plage asiatique, equal highs/lows), obstacles H4/H1 (sommets, creux, blocs d'ordre, FVG), extensions Fibonacci 1,272 et 1,618 de la jambe H1. Jamais plus proche que le TP1 d'origine, donc le ratio minimal de la stratégie reste respecté ; sans niveau exploitable, les multiples du risque restent. S2 vise déjà la liquidité, S3 projette la hauteur de la figure, S4 le range de C1 : inchangées. | `STRUCT_TP=0` |
+| **Bougie de rejet** | Pin bar (mèche d'au moins 60 % de la bougie et 2 fois le corps, clôture à l'opposé) ou englobante, dont la mèche a testé l'entrée (à moins de 0,75 unité) dans les 6 dernières bougies de l'unité d'entrée. Compte 1 point du score. | `REJECTION_REQUIRED=1` l'exige |
+| **Niveaux psychologiques** | Chiffre rond (or 50 $, paires 0,0100, yen 1,00, BTC 1000, ETH 100), ouverture hebdomadaire (dimanche 17h NY), ouverture de minuit (NY). Compte 1 point si l'entrée est à moins de 0,35 unité M15 d'un de ces niveaux. | `PSYCH_LEVELS=0` |
+| **Score de confluence** (sur 10) | Fibonacci Golden Zone ou OTE (2), entrée sur un niveau ou une zone H4/H1 (2), tendance D1 (1), tendance H4 (1), session Londres ou New York (1), bougie de rejet (1), niveau psychologique (1), ratio TP2 d'au moins 3 (1). Note A à 7 et plus, B à 5 et plus, sinon C. Affichée dans l'alerte. | `MIN_SCORE` (4 ; 0 = aucun filtre) |
+| **Actualité économique** | Aucune alerte de 30 min avant à 15 min après une publication à fort impact d'une devise de l'actif (USD pour l'or et les cryptos ; les deux devises d'une paire ; rien pour les synthétiques). Sources : NFP (premier vendredi du mois, 8h30 NY, règle fixe), `NEWS_EVENTS` (`2026-12-16T19:00:00Z@USD@FOMC ; ...`), calendrier hebdomadaire public de Forex Factory (impact High, téléchargé au plus toutes les 6 h). Sans réseau, le filtre continue sans le calendrier. | `NEWS_FILTER=0`, `NEWS_BEFORE_MIN`, `NEWS_AFTER_MIN` |
+| **Taille de position** | Si `ACCOUNT_BALANCE` (USD) est renseigné : lot ou unités pour risquer `RISK_PCT` % (1) du solde au stop. Or (1 lot = 100 oz), paires en USD et USD/xxx (1 lot = 100 000), cryptos. Pas pour les croisements ni les synthétiques (taux de change inconnu). | `ACCOUNT_BALANCE`, `RISK_PCT` |
+| **Limites de risque** | Voir § 1 : 6 trades ouverts au plus, arrêt du jour à −3 R, de la semaine à −6 R. Les R comptent tous les trades clôturés du bot, pris ou non. | `MAX_OPEN_TRADES`, `DAILY_LOSS_LIMIT_R`, `WEEKLY_LOSS_LIMIT_R` |
+
+**Preuve d'un avantage.** Le rapport du backtest donne désormais un verdict par stratégie (intervalle de confiance de l'espérance, jours rééchantillonnés), la ventilation stratégie x session et celle par note, par rejet et par objectifs structurels. Lance `backtest.yml` sur plusieurs mois avec `--split` avant de te fier à un réglage ; ne garde `MIN_SCORE` au-dessus de 0 que si les notes A et B font mieux que C sur la période 2.
+
 ## 7. Alertes, heures et commandes
 
 **Format** (`ALERT_FORMAT`, défaut `essentiel`) : cinq formats, `essentiel` (3 lignes), `minimal` (2 à 3 lignes), `compact`, `contexte`, `complet` (détail des conditions, invalidation, règles de gestion). Le graphique est joint à chaque alerte (`CHARTS=0` pour le retirer).
@@ -338,7 +358,7 @@ L'âge du signal est indiqué (format `essentiel` : à partir de 3 minutes). Év
 ## 9. Garde-fous d'exploitation
 
 - **Fenêtres sans alerte** (or et forex) : rollover 16h55-17h15 New York ; samedi et dimanche jusqu'à 17h ; **dimanche 17h-18h** (ouverture de semaine) ; vendredi dès 15h30. Les cryptos et les indices ne sont soumis à aucune fenêtre.
-- **Aucun filtre d'annonces économiques** : le bot peut alerter juste avant ou pendant une publication à fort impact ; les spreads et les gaps y sont plus larges (stop exécuté à l'ouverture en cas de gap).
+- **Aucun filtre d'annonces économiques** : le calendrier (Forex Factory), les décisions FOMC intégrées, la fenêtre NFP et `news.json` ont été supprimés. Le bot peut donc alerter juste avant ou pendant une publication à fort impact ; les spreads et les gaps y sont plus larges (stop exécuté à l'ouverture en cas de gap).
 - **Week-end** (forex et or) : trades ouverts clôturés dès le vendredi 16h30 New York, ordres en attente annulés (`WEEKEND_EXIT=0` désactive).
 - **Santé du bot** : alerte si le scan reprend après plus de 30 minutes d'interruption, ou après 3 scans de suite sans aucune donnée Deriv ; message de retour quand les données reviennent. Seul `HEARTBEAT_URL` (cron externe supervisé) détecte une panne du cron lui-même.
 - **Gaps** : si une bougie ouvre au-delà du stop, la clôture se fait à l'ouverture (perte possible supérieure à 1 R).
@@ -371,7 +391,7 @@ Chaque trade est suivi sur les bougies de son timeframe de signal :
 Workflow **Backtest Or** (manuel) ou, en local : `python backtest.py --days 120 --split 0.6`. Il rejoue les **mêmes fonctions** que le bot (`gold.scan`, `guard.risk_check`, `tracker.advance`) sur de l'historique M5 de Deriv, avec toutes les unités de temps reconstruites depuis le M5 **sans regarder le futur**.
 
 - **Sources** : `--source deriv` (défaut), `csv` (`--file`, colonnes `epoch,open,high,low,close`, un seul actif) ou `sim` (marche aléatoire : contrôle de bon sens, l'espérance doit être proche de zéro).
-- **Actifs** : `--sym frxXAUUSD,frxEURUSD`, `all` (28 actifs), `forex`, ou une classe (`or`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`). Le workflow accepte aussi `classes` : un job par classe, en parallèle, chacun avec son rapport Telegram, sans qu'un échec arrête les autres.
+- **Actifs** : `--sym frxXAUUSD,frxEURUSD`, `all` (28 actifs, synthétiques compris), `forex`, ou une classe (`or`, `forex_session`, `forex_jpy`, `forex_calme`, `crypto`, `synth`). Le workflow accepte aussi `classes` : un job par classe, en parallèle, chacun avec son rapport Telegram, sans qu'un échec arrête les autres.
 - **Options** : `--days` (120), `--only S2,S3`, `--spread-pct`, `--warmup-days` (**35** jours, ajoutés à `--days`), `--split 0.6` (entre 0,2 et 0,8), `--sym-strats`, `--no-intraday`, `--telegram`, `--set module.NOM=v1,v2` (répétable, grille de 30 combinaisons au plus ; modules `strategies`, `tracker`, `guard`, `gold`).
 - **Réalisme** : spread retiré de chaque trade, stop exécuté à l'ouverture en cas de gap, trades forex/or clôturés le vendredi à 16h30 New York, le rollover appliqué. **Limites** : spread constant, pas de glissement, un fichier CSV = un actif ; comme le bot, le backtest ne filtre plus les annonces.
 - **Rapport** : entonnoir, ordres limites, total, **intervalle de confiance à 95 %** de l'espérance par trade (rééchantillonnage de jours entiers) avec verdict prudent, avertissement sur les comparaisons multiples, détail par actif, stratégie, RR visé contre R obtenu, coût du spread, puis par classe, variante, sens, session, liquidité, alignement H4, zone d'entrée, bougie H4 de C2 pour le CRT (01h, 05h et 09h New York seulement), confluence, tendance D1/H4, résultat final et période ; avec `--split`, stabilité entre les deux périodes.
@@ -381,6 +401,6 @@ Workflow **Backtest Or** (manuel) ou, en local : `python backtest.py --days 120 
 
 ## 13. Ce qui a été vérifié, et ce qui ne l'a pas été
 
-**Vérifié** : les 267 tests unitaires passent hors réseau (les scénarios de test remplacent l'unité de prix par une amplitude calculée sur leurs bougies pour tester la logique des filtres ; l'unité de production a ses propres tests) (stratégies, suivi, garde-fous, messages, graphique, backtest) ; le code s'exécute de bout en bout sur des données simulées, et sur une marche aléatoire l'espérance est proche de zéro. Les valeurs de ce document ont été relevées dans le code.
+**Vérifié** : les 283 tests unitaires passent hors réseau (les scénarios de test remplacent l'unité de prix fixe par une unité calculée sur leurs bougies pour tester la logique des filtres ; l'unité de production a ses propres tests) (stratégies, suivi, garde-fous, messages, graphique, backtest) ; le code s'exécute de bout en bout sur des données simulées, et sur une marche aléatoire l'espérance est proche de zéro. Les valeurs de ce document ont été relevées dans le code.
 
-**Non vérifié** : le comportement de S9 sur marché réel (setups A, B, C, D, E : seuls A, B, C et E ont été déclenchés dans des tests, sur données fabriquées ou aléatoires), le calibrage des unités de prix par actif (estimations de départ, à comparer à l'amplitude réelle des bougies de chaque actif), la connexion à l'API Deriv, l'envoi Telegram sur ton compte et surtout **la rentabilité sur marché réel**. Fais d'abord un run avec `test = true`, puis un backtest sur Deriv (deux périodes, spread réaliste), avant de suivre les alertes. Les suivis supposent un remplissage au prix du signal, sans glissement.
+**Non vérifié** : le comportement de S9 sur marché réel (setups A, B, C, D, E : seuls A, B, C et E ont été déclenchés dans des tests, sur données fabriquées ou aléatoires), le calibrage des unités de prix par actif du mode `UNIT_MODE=fixed` (estimations de départ, à comparer à l'amplitude réelle des bougies de chaque actif), la connexion à l'API Deriv, l'envoi Telegram sur ton compte et surtout **la rentabilité sur marché réel**. Fais d'abord un run avec `test = true`, puis un backtest sur Deriv (deux périodes, spread réaliste), avant de suivre les alertes. Les suivis supposent un remplissage au prix du signal, sans glissement.
